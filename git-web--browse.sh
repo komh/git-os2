@@ -188,6 +188,9 @@ start)
 opera|dillo)
 	"$browser_path" "$@" &
 	;;
+openhtml)
+	openhtml "$@"
+	;;
 *)
 	if test -n "$browser_cmd"; then
 		( eval "$browser_cmd \"\$@\"" )
