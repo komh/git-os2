@@ -8,7 +8,7 @@
 # python_for_git    python (2.6) pathname
 #
 # symbols (environment variables):
-# ASCIIDOC          asciidoc pathname 
+# ASCIIDOC          asciidoc pathname
 #
 # install-path:
 # openssl           /extras
@@ -21,7 +21,7 @@
 # ln4exe.exe        anywhere in %PATH%
 #
 # * quick'n dirty build (and install) step *
-# 
+#
 #   ./conf_os2_gcc335.sh
 #   make -f Makefile.klibc
 #   make -f Makefile.klibc install
@@ -115,7 +115,8 @@ gitbase="/git"
 #gitbase="/git-1.6.2"
 #gitbase="/usr/local"
 
-curlbase="/curl"
+#curlbase="/curl"
+curlbase="/usr"
 #use_curl="--with-curl"
 use_curl="--with-curl=$curlbase"
 #use_curl="--without-curl"
@@ -126,7 +127,8 @@ use_curl="--with-curl=$curlbase"
 #curllib=`$curlconfig --libs | sed -e s/-Z[A-Za-z_\-]*//g`
 #curlver=`$curlconfig --vernum`
 
-extrabase="/extras"
+#extrabase="/extras"
+extrabase="/usr"
 extrainc="-I$extrabase/include"
 extralib="-L$extrabase/lib"
 
@@ -151,8 +153,10 @@ CC="gcc"
 CXX="g++"
 CFLAGS="-s -std=gnu99 $c_warn $c_tune"
 CXXFLAGS="$CFLAGS"
-CPPFLAGS="-I/usr/local/include $curlinc $extrainc $expatinc"
-LIBS="-L/usr/local/lib $curllib $extralib $expatlib"
+#CPPFLAGS="-I/usr/local/include $curlinc $extrainc $expatinc"
+CPPFLAGS="-I/usr/include $curlinc $extrainc $expatinc"
+#LIBS="-L/usr/local/lib $curllib $extralib $expatlib"
+LIBS="-L/usr/lib $curllib $extralib $expatlib"
 #LDFLAGS="-Zomf"
 #LDFLAGS="-Zomf -Zbin-files"
 LDFLAGS="-Zomf -Zbin-files -Zhigh-mem"
@@ -172,7 +176,7 @@ export LDFLAGS
 export ac_cv_lib_curl_curl_global_init=yes
 export ac_cv_prog_TAR=tar
 
-# dike '-lgen' and '-lresolv' 
+# dike '-lgen' and '-lresolv'
 export ac_cv_lib_gen_basename=yes
 export ac_cv_lib_resolv_hstrerror=yes
 
