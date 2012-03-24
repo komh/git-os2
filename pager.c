@@ -3,7 +3,11 @@
 #include "sigchain.h"
 
 #ifndef DEFAULT_PAGER
+# if defined(__OS2__)
+#  define DEFAULT_PAGER "littlemore"
+# else
 #define DEFAULT_PAGER "less"
+#endif
 #endif
 
 /*
