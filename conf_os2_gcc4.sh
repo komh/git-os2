@@ -48,7 +48,8 @@ export ASCIIDOC="$python_for_git /asciidoc/asciidoc.py"
 #export XSLTPROC=xsltproc
 #export XSLTPROC="echo xslt_is_not_available"
 
-gitbase="/git"
+gitbase="/usr"
+#gitbase="/git"
 #gitbase="/git-1.7.3.5"
 #gitbase="/git-1.7.3.4"
 #gitbase="/git-1.7.3.3"
@@ -115,7 +116,8 @@ gitbase="/git"
 #gitbase="/git-1.6.2"
 #gitbase="/usr/local"
 
-curlbase="/curl"
+#curlbase="/curl"
+curlbase="/usr"
 #use_curl="--with-curl"
 use_curl="--with-curl=$curlbase"
 #use_curl="--without-curl"
@@ -126,7 +128,8 @@ use_curl="--with-curl=$curlbase"
 #curllib=`$curlconfig --libs | sed -e s/-Z[A-Za-z_\-]*//g`
 #curlver=`$curlconfig --vernum`
 
-extrabase="/extras"
+#extrabase="/extras"
+extrabase="/usr"
 extrainc="-I$extrabase/include"
 extralib="-L$extrabase/lib"
 
@@ -151,8 +154,10 @@ CC="gcc"
 CXX="g++"
 CFLAGS="-s -std=gnu99 $c_warn $c_tune"
 CXXFLAGS="$CFLAGS"
-CPPFLAGS="-I/usr/local/include $curlinc $extrainc $expatinc"
-LIBS="-L/usr/local/lib $curllib $extralib $expatlib"
+#CPPFLAGS="-I/usr/local/include $curlinc $extrainc $expatinc"
+CPPFLAGS="-I/usr/include $curlinc $extrainc $expatinc"
+#LIBS="-L/usr/local/lib $curllib $extralib $expatlib"
+LIBS="-L/usr/lib -lintl $curllib $extralib $expatlib"
 #LDFLAGS="-Zomf"
 #LDFLAGS="-Zomf -Zbin-files"
 LDFLAGS="-Zomf -Zbin-files -Zhigh-mem"
@@ -203,4 +208,4 @@ cp -p config.status config.status.backup
 cp -p config.mak.autogen config.mak.backup
 
 sed -e "s;@SHELL@;$SHELL;g" -e "s;@SHELL_PATH@;$shell_for_git;g" -e "s;@PERL_PATH@;$perl_for_git;g" -e "s;@PYTHON_PATH@;$python_for_git;g" -e "s;@LN_X@;ln4exe;g" -e "s;@CURL_CONFIG@;$curlconfig;g" -e "s;@LIBS@;$LIBS;g" < Makefile.klibc.in > Makefile.klibc
-echo "make V=1 SHELL=$SHELL SHELL_PATH=$shell_for_git PERL_PATH=$perl_for_git PYTHON_PATH=$python_for_git LN_X=ln4exe $curl"' %1 %2 %3 %4 %5 %6 %7 %8 %9 2>&1 | tee -a makeos2.log' > makeos2.cmd
+echo "make V=1 MAKESHELL=$SHELL $curl"' -f Makefile.klibc %1 %2 %3 %4 %5 %6 %7 %8 %9 2>&1 | tee makeos2.log' > makeos2.cmd
