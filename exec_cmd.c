@@ -11,10 +11,16 @@ const char *system_path(const char *path)
 {
 #ifdef RUNTIME_PREFIX
 	static const char *prefix;
+#elif defined(__OS2__)
+    static const char *prefix;
 #else
 	static const char *prefix = PREFIX;
 #endif
 	struct strbuf d = STRBUF_INIT;
+
+#if defined(__OS2__)
+	if (!prefix) prefix = PREFIX;
+#endif
 
 	if (is_absolute_path(path))
 		return path;

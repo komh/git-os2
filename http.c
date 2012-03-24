@@ -641,8 +641,12 @@ void run_active_slot(struct active_request_slot *slot)
 			FD_ZERO(&excfds);
 			select_timeout.tv_sec = 0;
 			select_timeout.tv_usec = 50000;
+#if defined(__EMX__) /* OS/2 (emx & klibc) */
+			_sleep2(select_timeout.tv_usec / 1000);
+#else
 			select(max_fd, &readfds, &writefds,
 			       &excfds, &select_timeout);
+#endif
 		}
 	}
 #else

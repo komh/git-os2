@@ -32,7 +32,15 @@ USAGE
 
 sub setup_environment
 {
+	if ($^O eq 'os2') {
+		# how about other dosish platforms (MSWin32, msys...) ?
+		my $dosishDIR = $DIR;
+		$dosishDIR =~ s/\//\\/g;
+		$ENV{PATH} = "$dosishDIR;$ENV{PATH}";
+	}
+	else {
 	$ENV{PATH} = "$DIR:$ENV{PATH}";
+	}
 	$ENV{GIT_PAGER} = '';
 	$ENV{GIT_EXTERNAL_DIFF} = 'git-difftool--helper';
 }
@@ -40,7 +48,7 @@ sub setup_environment
 sub exe
 {
 	my $exe = shift;
-	if ($^O eq 'MSWin32' || $^O eq 'msys') {
+	if ($^O eq 'MSWin32' || $^O eq 'msys' || $^O eq 'os2') {
 		return "$exe.exe";
 	}
 	return $exe;
