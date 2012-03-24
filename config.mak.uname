@@ -578,6 +578,52 @@ else
 	endif
 endif
 endif
+ifneq (,$(findstring OS/2,$(uname_S)))
+	pathsep = ;
+	NO_PREAD = YesPlease
+	NEEDS_SOCKET = YesPlease
+	NO_MMAP = UnfortunatelyYes
+	NO_IPV6 = UnfortunatelyYes
+	NEEDS_CRYPTO_WITH_SSL = YesPlease
+	NO_LIBGEN_H = YesPlease
+	NO_SYMLINK_HEAD = YesPlease
+#	NO_SETENV = YesPlease
+#	NO_UNSETENV = YesPlease
+#	NO_STRCASESTR = YesPlease
+#	NO_STRLCPY = YesPlease
+#	NO_MEMMEM = YesPlease
+#	NEEDS_LIBICONV = YesPlease
+#	OLD_ICONV = YesPlease
+#	NO_C99_FORMAT = YesPlease
+#	NO_STRTOUMAX = YesPlease
+#	NO_MKDTEMP = YesPlease
+#	NO_MKSTEMPS = YesPlease
+	NO_SVN_TESTS = YesPlease
+#	NO_PERL_MAKEMAKER = YesPlease
+#	RUNTIME_PREFIX = YesPlease
+#	NO_POSIX_ONLY_PROGRAMS = YesPlease
+#	NO_ST_BLOCKS_IN_STRUCT_STAT = YesPlease
+	NO_NSEC = YesPlease
+#	USE_WIN32_MMAP = YesPlease
+#	USE_NED_ALLOCATOR = YesPlease
+	UNRELIABLE_FSTAT = UnfortunatelyYes
+	OBJECT_CREATION_USES_RENAMES = UnfortunatelyNeedsTo
+	NO_REGEX = YesPlease
+#	NO_PYTHON = YesPlease
+	BLK_SHA1 = YesPlease
+	COMPAT_CFLAGS += -Icompat
+	COMPAT_CFLAGS += -DSTRIP_EXTENSION=\".exe\"
+	COMPAT_OBJS += compat/os2.o
+	LIB_H += compat/os2-git-compat.h
+	X = .exe
+#	htmldir=doc/git/html/
+#	prefix =
+#	INSTALL = /bin/install
+#	EXTLIBS += -lz
+#	NO_R_TO_GCC_LINKER = YesPlease
+#	INTERNAL_QSORT = YesPlease
+#	NO_CURL = YesPlease
+endif
 ifeq ($(uname_S),QNX)
 	COMPAT_CFLAGS += -DSA_RESTART=0
 	EXPAT_NEEDS_XMLPARSE_H = YesPlease

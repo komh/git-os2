@@ -180,8 +180,10 @@ static const char **prepare_shell_cmd(struct argv_array *out, const char **argv)
 		die("BUG: shell command is empty");
 
 	if (strcspn(argv[0], "|&;<>()$`\\\"' \t\n*?[#~=%") != strlen(argv[0])) {
-#ifndef GIT_WINDOWS_NATIVE
+#if !defined(GIT_WINDOWS_NATIVE) && !defined(__OS2__)
 		argv_array_push(out, SHELL_PATH);
+#elif defined(__OS2__)
+		argv_array_push(out, wrapped_getenv_for_os2("GIT_SHELL"));
 #else
 		argv_array_push(out, "sh");
 #endif
