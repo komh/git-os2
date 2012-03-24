@@ -318,6 +318,30 @@ case $(uname -s) in
 		return 1
 	}
 	;;
+*OS/2*)
+	# And also OS/2 has its own (incompatible) sort and find
+	sort () {
+		if test -z "$GIT_SORT"; then
+			echo 'You need to define $GIT_SORT for Unixish sort' >&2
+			exit 1
+		fi
+		"$GIT_SORT" "$@"
+	}
+	find () {
+		if test -z "$GIT_FIND"; then
+			echo 'You need to define $GIT_FIND for Unixish find' >&2
+			exit 1
+		fi
+		"$GIT_FIND" "$@"
+	}
+	is_absolute_path () {
+		case "$1" in
+		[/\\]* | [A-Za-z]:*)
+			return 0 ;;
+		esac
+		return 1
+	}
+	;;
 *)
 	is_absolute_path () {
 		case "$1" in

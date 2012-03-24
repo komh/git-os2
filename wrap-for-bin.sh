@@ -16,7 +16,7 @@ else
 fi
 GITPERLLIB='@@BUILD_DIR@@/perl/blib/lib'"${GITPERLLIB:+:$GITPERLLIB}"
 GIT_TEXTDOMAINDIR='@@BUILD_DIR@@/po/build/locale'
-PATH='@@BUILD_DIR@@/bin-wrappers:'"$PATH"
+PATH='@@BUILD_DIR@@/bin-wrappers@@PATH_SEPARATOR@@'"$PATH"
 export GIT_EXEC_PATH GITPERLLIB PATH GIT_TEXTDOMAINDIR
 
 if test -n "$GIT_TEST_GDB"

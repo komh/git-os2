@@ -75,6 +75,14 @@ static void *do_xmalloc(size_t size, int gentle)
 			}
 		}
 	}
+#if defined(__OS2__) && defined(__KLIBC__)
+	{
+		size_t i;
+		for(i=0; i<size; i+=4096) {
+			*((char *)ret + i) = '\0';
+		}
+	}
+#endif
 #ifdef XMALLOC_POISON
 	memset(ret, 0xA5, size);
 #endif

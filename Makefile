@@ -374,7 +374,7 @@ GIT-VERSION-FILE: FORCE
 
 # CFLAGS and LDFLAGS are for the users to override from the command line.
 
-CFLAGS = -g -O2 -Wall
+CFLAGS ?= -g -O2 -Wall
 LDFLAGS =
 ALL_CFLAGS = $(CPPFLAGS) $(CFLAGS)
 ALL_LDFLAGS = $(LDFLAGS)
@@ -437,6 +437,11 @@ CURL_CONFIG = curl-config
 PTHREAD_LIBS = -lpthread
 PTHREAD_CFLAGS =
 GCOV = gcov
+
+LN_X ?= ln
+LN_S_X ?= ln -s
+CP_X ?= cp
+GZIP ?= gzip
 
 export TCL_PATH TCLTK_PATH
 
@@ -975,7 +980,7 @@ endif
 ifdef SANE_TOOL_PATH
 SANE_TOOL_PATH_SQ = $(subst ','\'',$(SANE_TOOL_PATH))
 BROKEN_PATH_FIX = 's|^\# @@BROKEN_PATH_FIX@@$$|git_broken_path_fix $(SANE_TOOL_PATH_SQ)|'
-PATH := $(SANE_TOOL_PATH):${PATH}
+PATH := $(SANE_TOOL_PATH)$(pathsep)${PATH}
 else
 BROKEN_PATH_FIX = '/^\# @@BROKEN_PATH_FIX@@$$/d'
 endif
@@ -1055,11 +1060,23 @@ ifdef NO_CURL
 	REMOTE_CURL_NAMES =
 else
 	ifdef CURLDIR
+		CURL_CONFIG ?= $(CURLDIR)/bin/curl-config
+		ifdef CURL_CONFIG
+			BASIC_CFLAGS += $(shell $(CURL_CONFIG) --cflags)
+			CURL_LIBCURL = $(shell $(CURL_CONFIG) --libs)
+		else
 		# Try "-Wl,-rpath=$(CURLDIR)/$(lib)" in such a case.
 		BASIC_CFLAGS += -I$(CURLDIR)/include
 		CURL_LIBCURL = -L$(CURLDIR)/$(lib) $(CC_LD_DYNPATH)$(CURLDIR)/$(lib) -lcurl
+		endif
+	else
+		ifdef CURL_CONFIG
+			BASIC_CFLAGS += $(shell $(CURL_CONFIG) --cflags)
+			CURL_LIBCURL = $(shell $(CURL_CONFIG) --libs)
 	else
 		CURL_LIBCURL = -lcurl
+			CURL_CONFIG ?= curl-config
+		endif
 	endif
 	ifdef NEEDS_SSL_WITH_CURL
 		CURL_LIBCURL += -lssl
@@ -1307,6 +1324,7 @@ ifdef NO_UINTMAX_T
 	BASIC_CFLAGS += -Duintmax_t=uint32_t
 endif
 ifdef NO_SOCKADDR_STORAGE
+	BASIC_CFLAGS += -DNO_SOCKADDR_STORAGE
 ifdef NO_IPV6
 	BASIC_CFLAGS += -Dsockaddr_storage=sockaddr_in
 else
@@ -1562,7 +1580,7 @@ TCLTK_PATH_SQ = $(subst ','\'',$(TCLTK_PATH))
 DIFF_SQ = $(subst ','\'',$(DIFF))
 PERLLIB_EXTRA_SQ = $(subst ','\'',$(PERLLIB_EXTRA))
 
-LIBS = $(GITLIBS) $(EXTLIBS)
+LIBS += $(GITLIBS) $(EXTLIBS)
 
 BASIC_CFLAGS += -DSHA1_HEADER='$(SHA1_HEADER_SQ)' \
 	$(COMPAT_CFLAGS)
@@ -1716,9 +1734,9 @@ version.sp version.s version.o: EXTRA_CPPFLAGS = \
 
 $(BUILT_INS): git$X
 	$(QUIET_BUILT_IN)$(RM) $@ && \
-	ln $< $@ 2>/dev/null || \
-	ln -s $< $@ 2>/dev/null || \
-	cp $< $@
+	$(LN_X) $< $@ 2>/dev/null || \
+	$(LN_S_X) $< $@ 2>/dev/null || \
+	$(CP_X) $< $@
 
 common-cmds.h: generate-cmdlist.sh command-list.txt
 
@@ -2006,9 +2024,9 @@ git-remote-testsvn$X: remote-testsvn.o GIT-LDFLAGS $(GITLIBS) $(VCSSVN_LIB)
 
 $(REMOTE_CURL_ALIASES): $(REMOTE_CURL_PRIMARY)
 	$(QUIET_LNCP)$(RM) $@ && \
-	ln $< $@ 2>/dev/null || \
-	ln -s $< $@ 2>/dev/null || \
-	cp $< $@
+	$(LN_X) $< $@ 2>/dev/null || \
+	$(LN_S_X) $< $@ 2>/dev/null || \
+	$(CP_X) $< $@
 
 $(REMOTE_CURL_PRIMARY): remote-curl.o http.o http-walker.o GIT-LDFLAGS $(GITLIBS)
 	$(QUIET_LINK)$(CC) $(ALL_CFLAGS) -o $@ $(ALL_LDFLAGS) $(filter %.o,$^) \
@@ -2191,6 +2209,7 @@ all:: $(NO_INSTALL)
 bin-wrappers/%: wrap-for-bin.sh
 	@mkdir -p bin-wrappers
 	$(QUIET_GEN)sed -e '1s|#!.*/sh|#!$(SHELL_PATH_SQ)|' \
+	     -e 's|@@PATH_SEPARATOR@@|$(pathsep)|' \
 	     -e 's|@@BUILD_DIR@@|$(shell pwd)|' \
 	     -e 's|@@PROG@@|$(@F)|' < $< > $@ && \
 	chmod +x $@
@@ -2315,31 +2334,31 @@ endif
 	  for p in git$X $(filter $(install_bindir_programs),$(ALL_PROGRAMS)); do \
 		$(RM) "$$execdir/$$p" && \
 		test -z "$(NO_INSTALL_HARDLINKS)$(NO_CROSS_DIRECTORY_HARDLINKS)" && \
-		ln "$$bindir/$$p" "$$execdir/$$p" 2>/dev/null || \
-		cp "$$bindir/$$p" "$$execdir/$$p" || exit; \
+		$(LN_X) "$$bindir/$$p" "$$execdir/$$p" 2>/dev/null || \
+		$(CP_X) "$$bindir/$$p" "$$execdir/$$p" || exit; \
 	  done; \
 	} && \
 	for p in $(filter $(install_bindir_programs),$(BUILT_INS)); do \
 		$(RM) "$$bindir/$$p" && \
 		test -z "$(NO_INSTALL_HARDLINKS)" && \
-		ln "$$bindir/git$X" "$$bindir/$$p" 2>/dev/null || \
-		ln -s "git$X" "$$bindir/$$p" 2>/dev/null || \
-		cp "$$bindir/git$X" "$$bindir/$$p" || exit; \
+		$(LN_X) "$$bindir/git$X" "$$bindir/$$p" 2>/dev/null || \
+		$(LN_S_X) "git$X" "$$bindir/$$p" 2>/dev/null || \
+		$(CP_X) "$$bindir/git$X" "$$bindir/$$p" || exit; \
 	done && \
 	for p in $(BUILT_INS); do \
 		$(RM) "$$execdir/$$p" && \
 		test -z "$(NO_INSTALL_HARDLINKS)" && \
-		ln "$$execdir/git$X" "$$execdir/$$p" 2>/dev/null || \
-		ln -s "git$X" "$$execdir/$$p" 2>/dev/null || \
-		cp "$$execdir/git$X" "$$execdir/$$p" || exit; \
+		$(LN_X) "$$execdir/git$X" "$$execdir/$$p" 2>/dev/null || \
+		$(LN_S_X) "git$X" "$$execdir/$$p" 2>/dev/null || \
+		$(CP_X) "$$execdir/git$X" "$$execdir/$$p" || exit; \
 	done && \
 	remote_curl_aliases="$(REMOTE_CURL_ALIASES)" && \
 	for p in $$remote_curl_aliases; do \
 		$(RM) "$$execdir/$$p" && \
 		test -z "$(NO_INSTALL_HARDLINKS)" && \
-		ln "$$execdir/git-remote-http$X" "$$execdir/$$p" 2>/dev/null || \
-		ln -s "git-remote-http$X" "$$execdir/$$p" 2>/dev/null || \
-		cp "$$execdir/git-remote-http$X" "$$execdir/$$p" || exit; \
+		$(LN_X) "$$execdir/git-remote-http$X" "$$execdir/$$p" 2>/dev/null || \
+		$(LN_S_X) "git-remote-http$X" "$$execdir/$$p" 2>/dev/null || \
+		$(CP_X) "$$execdir/git-remote-http$X" "$$execdir/$$p" || exit; \
 	done && \
 	./check_bindir "z$$bindir" "z$$execdir" "$$bindir/git-add$X"
 
