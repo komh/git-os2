@@ -1261,6 +1261,7 @@ NO_PTHREADS=UnfortunatelyYes
 PTHREAD_LIBS=
 
 if test -n "$USER_NOPTHREAD"; then
+   old_CFLAGS="$CFLAGS"
    AC_MSG_NOTICE([Skipping POSIX Threads at user request.])
 # handle these separately since PTHREAD_CFLAGS could be '-lpthreads
 # -D_REENTRANT' or some such.

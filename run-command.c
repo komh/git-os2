@@ -128,7 +128,7 @@ int is_executable(const char *name)
 	    !S_ISREG(st.st_mode))
 		return 0;
 
-#if defined(GIT_WINDOWS_NATIVE)
+#if defined(GIT_WINDOWS_NATIVE) || defined(__OS2__)
 	/*
 	 * On Windows there is no executable bit. The file extension
 	 * indicates whether it can be run as an executable, and Git
@@ -270,8 +270,10 @@ static const char **prepare_shell_cmd(struct strvec *out, const char **argv)
 		BUG("shell command is empty");
 
 	if (strcspn(argv[0], "|&;<>()$`\\\"' \t\n*?[#~=%") != strlen(argv[0])) {
-#ifndef GIT_WINDOWS_NATIVE
+#if !defined(GIT_WINDOWS_NATIVE) && !defined(__OS2__)
 		strvec_push(out, SHELL_PATH);
+#elif defined(__OS2__)
+		strvec_push(out, wrapped_getenv_for_os2("GIT_SHELL"));
 #else
 		strvec_push(out, "sh");
 #endif
