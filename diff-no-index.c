@@ -45,7 +45,7 @@ static int get_mode(const char *path, int *mode)
 
 	if (!path || !strcmp(path, "/dev/null"))
 		*mode = 0;
-#ifdef GIT_WINDOWS_NATIVE
+#if defined(GIT_WINDOWS_NATIVE) || defined(__OS2__)
 	else if (!strcasecmp(path, "nul"))
 		*mode = 0;
 #endif

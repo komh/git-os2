@@ -324,7 +324,7 @@ static void setup_man_path(void)
 	 * system-wide paths after ours to find the manual page. If
 	 * there is old_path, we need ':' as delimiter. */
 	strbuf_addstr(&new_path, system_path(GIT_MAN_PATH));
-	strbuf_addch(&new_path, ':');
+	strbuf_addch(&new_path, PATH_SEP /* ':' */ );
 	if (old_path)
 		strbuf_addstr(&new_path, old_path);
 

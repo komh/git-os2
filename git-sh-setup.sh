@@ -359,3 +359,24 @@ peel_committish () {
 		;;
 	esac
 }
+
+# Fix some commands on OS/2
+case $(uname -s) in
+*OS/2*)
+	# And also OS/2 has its own (compatible) sort and find
+	sort () {
+		if test -z "$GIT_SORT"; then
+			echo 'You need to define $GIT_SORT for Unixish sort' >&2
+			exit 1
+		fi
+		"$GIT_SORT" "$@"
+	}
+	find () {
+		if test -z "$GIT_FIND"; then
+			echo 'You need to define $GIT_FIND for Unixish find' >&2
+			exit 1
+		fi
+		"$GIT_FIND" "$@"
+	}
+	;;
+esac

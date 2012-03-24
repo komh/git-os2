@@ -126,9 +126,14 @@
 #ifndef NO_SYS_POLL_H
 #include <sys/poll.h>
 #else
+#ifndef __OS2__
 #include <poll.h>
 #endif
+#endif
 
+#if defined(__OS2__)
+#include "compat/os2-git-compat.h"
+#endif
 #if defined(__MINGW32__)
 /* pull in Windows compatibility stuff */
 #include "compat/mingw.h"
