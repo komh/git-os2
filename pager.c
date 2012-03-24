@@ -5,7 +5,11 @@
 #include "alias.h"
 
 #ifndef DEFAULT_PAGER
+# if defined(__OS2__)
+#  define DEFAULT_PAGER "littlemore"
+# else
 #define DEFAULT_PAGER "less"
+#endif
 #endif
 
 static struct child_process pager_process = CHILD_PROCESS_INIT;

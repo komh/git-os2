@@ -186,12 +186,17 @@
 #include <sys/poll.h>
 #else
 /* Pull the compat stuff */
+#if !defined(NO_POLL_H)
 #include <poll.h>
+#endif
 #endif
 #ifdef HAVE_BSD_SYSCTL
 #include <sys/sysctl.h>
 #endif
 
+#if defined(__OS2__)
+#include "compat/os2-git-compat.h"
+#endif
 #if defined(__CYGWIN__)
 #include "compat/win32/path-utils.h"
 #endif
