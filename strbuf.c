@@ -638,7 +638,10 @@ int strbuf_getwholeline(struct strbuf *sb, FILE *fp, int term)
 	r = getdelim(&sb->buf, &sb->alloc, term, fp);
 
 	if (r > 0) {
-		sb->len = r;
+#ifdef __OS2__
+	_crlf(sb->buf, r, &r);
+#endif
+	sb->len = r;
 		return 0;
 	}
 	assert(r == -1);

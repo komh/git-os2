@@ -653,6 +653,11 @@ GCOV = gcov
 STRIP = strip
 SPATCH = spatch
 
+LN_X ?= ln
+LN_S_X ?= ln -s
+CP_X ?= cp
+GZIP ?= gzip
+
 export TCL_PATH TCLTK_PATH
 
 # Set our default LIBS variables
@@ -1517,7 +1522,7 @@ endif
 ifdef SANE_TOOL_PATH
 SANE_TOOL_PATH_SQ = $(subst ','\'',$(SANE_TOOL_PATH))
 BROKEN_PATH_FIX = 's|^\# @@BROKEN_PATH_FIX@@$$|git_broken_path_fix "$(SANE_TOOL_PATH_SQ)"|'
-PATH := $(SANE_TOOL_PATH):${PATH}
+PATH := $(SANE_TOOL_PATH)$(pathsep)${PATH}
 else
 BROKEN_PATH_FIX = '/^\# @@BROKEN_PATH_FIX@@$$/d'
 endif
@@ -1850,6 +1855,7 @@ ifdef NO_UINTMAX_T
 	BASIC_CFLAGS += -Duintmax_t=uint32_t
 endif
 ifdef NO_SOCKADDR_STORAGE
+	BASIC_CFLAGS += -DNO_SOCKADDR_STORAGE
 ifdef NO_IPV6
 	BASIC_CFLAGS += -Dsockaddr_storage=sockaddr_in
 else
@@ -2423,9 +2429,9 @@ version.sp version.s version.o: EXTRA_CPPFLAGS = \
 
 $(BUILT_INS): git$X
 	$(QUIET_BUILT_IN)$(RM) $@ && \
-	ln $< $@ 2>/dev/null || \
-	ln -s $< $@ 2>/dev/null || \
-	cp $< $@
+	$(LN_X) $< $@ 2>/dev/null || \
+	$(LN_S_X) $< $@ 2>/dev/null || \
+	$(CP_X) $< $@
 
 config-list.h: generate-configlist.sh
 
@@ -2793,9 +2799,9 @@ git-http-push$X: http.o http-push.o GIT-LDFLAGS $(GITLIBS)
 
 $(REMOTE_CURL_ALIASES): $(REMOTE_CURL_PRIMARY)
 	$(QUIET_LNCP)$(RM) $@ && \
-	ln $< $@ 2>/dev/null || \
-	ln -s $< $@ 2>/dev/null || \
-	cp $< $@
+	$(LN_X) $< $@ 2>/dev/null || \
+	$(LN_S_X) $< $@ 2>/dev/null || \
+	$(CP_X) $< $@
 
 $(REMOTE_CURL_PRIMARY): remote-curl.o http.o http-walker.o GIT-LDFLAGS $(GITLIBS)
 	$(QUIET_LINK)$(CC) $(ALL_CFLAGS) -o $@ $(ALL_LDFLAGS) $(filter %.o,$^) \
@@ -3171,6 +3177,7 @@ all:: $(TEST_PROGRAMS) $(test_bindir_programs)
 bin-wrappers/%: wrap-for-bin.sh
 	$(call mkdir_p_parent_template)
 	$(QUIET_GEN)sed -e '1s|#!.*/sh|#!$(SHELL_PATH_SQ)|' \
+	     -e 's|@@PATH_SEPARATOR@@|$(pathsep)|' \
 	     -e 's|@@BUILD_DIR@@|$(shell pwd)|' \
 	     -e 's|@@PROG@@|$(patsubst test-%,t/helper/test-%,$(@F))$(if $(filter-out $(BINDIR_PROGRAMS_NO_X),$(@F)),$(X),)|' < $< > $@ && \
 	chmod +x $@
@@ -3478,42 +3485,42 @@ endif
 	  for p in $(OTHER_PROGRAMS) $(filter $(install_bindir_programs),$(ALL_PROGRAMS)); do \
 		$(RM) "$$execdir/$$p" && \
 		test -n "$(INSTALL_SYMLINKS)" && \
-		ln -s "$$destdir_from_execdir_SQ/$(bindir_relative_SQ)/$$p" "$$execdir/$$p" || \
+		$(LN_S_X) "$$destdir_from_execdir_SQ/$(bindir_relative_SQ)/$$p" "$$execdir/$$p" || \
 		{ test -z "$(NO_INSTALL_HARDLINKS)$(NO_CROSS_DIRECTORY_HARDLINKS)" && \
-		  ln "$$bindir/$$p" "$$execdir/$$p" 2>/dev/null || \
-		  cp "$$bindir/$$p" "$$execdir/$$p" || exit; } \
+		  $(LN_X) "$$bindir/$$p" "$$execdir/$$p" 2>/dev/null || \
+		  $(CP_X) "$$bindir/$$p" "$$execdir/$$p" || exit; } \
 	  done; \
 	} && \
 	for p in $(filter $(install_bindir_programs),$(BUILT_INS)); do \
 		$(RM) "$$bindir/$$p" && \
 		test -n "$(INSTALL_SYMLINKS)" && \
-		ln -s "git$X" "$$bindir/$$p" || \
+		$(LN_S_X) "git$X" "$$bindir/$$p" || \
 		{ test -z "$(NO_INSTALL_HARDLINKS)" && \
-		  ln "$$bindir/git$X" "$$bindir/$$p" 2>/dev/null || \
-		  ln -s "git$X" "$$bindir/$$p" 2>/dev/null || \
-		  cp "$$bindir/git$X" "$$bindir/$$p" || exit; }; \
+		  $(LN_X) "$$bindir/git$X" "$$bindir/$$p" 2>/dev/null || \
+		  $(LN_S_X) "git$X" "$$bindir/$$p" 2>/dev/null || \
+		  $(CP_X) "$$bindir/git$X" "$$bindir/$$p" || exit; }; \
 	done && \
 	for p in $(BUILT_INS); do \
 		$(RM) "$$execdir/$$p" && \
 		if test -z "$(SKIP_DASHED_BUILT_INS)"; \
 		then \
 			test -n "$(INSTALL_SYMLINKS)" && \
-			ln -s "$$destdir_from_execdir_SQ/$(bindir_relative_SQ)/git$X" "$$execdir/$$p" || \
+			$(LN_S_X) "$$destdir_from_execdir_SQ/$(bindir_relative_SQ)/git$X" "$$execdir/$$p" || \
 			{ test -z "$(NO_INSTALL_HARDLINKS)" && \
-			  ln "$$execdir/git$X" "$$execdir/$$p" 2>/dev/null || \
-			  ln -s "git$X" "$$execdir/$$p" 2>/dev/null || \
-			  cp "$$execdir/git$X" "$$execdir/$$p" || exit; }; \
+			  $(LN_X) "$$execdir/git$X" "$$execdir/$$p" 2>/dev/null || \
+			  $(LN_S_X) "git$X" "$$execdir/$$p" 2>/dev/null || \
+			  $(CP_X) "$$execdir/git$X" "$$execdir/$$p" || exit; }; \
 		fi \
 	done && \
 	remote_curl_aliases="$(REMOTE_CURL_ALIASES)" && \
 	for p in $$remote_curl_aliases; do \
 		$(RM) "$$execdir/$$p" && \
 		test -n "$(INSTALL_SYMLINKS)" && \
-		ln -s "git-remote-http$X" "$$execdir/$$p" || \
+		$(LN_S_X) "git-remote-http$X" "$$execdir/$$p" || \
 		{ test -z "$(NO_INSTALL_HARDLINKS)" && \
-		  ln "$$execdir/git-remote-http$X" "$$execdir/$$p" 2>/dev/null || \
-		  ln -s "git-remote-http$X" "$$execdir/$$p" 2>/dev/null || \
-		  cp "$$execdir/git-remote-http$X" "$$execdir/$$p" || exit; } \
+		  $(LN_X) "$$execdir/git-remote-http$X" "$$execdir/$$p" 2>/dev/null || \
+		  $(LN_S_X) "git-remote-http$X" "$$execdir/$$p" 2>/dev/null || \
+		  $(CP_X) "$$execdir/git-remote-http$X" "$$execdir/$$p" || exit; } \
 	done
 
 .PHONY: install-doc install-man install-man-perl install-html install-info install-pdf

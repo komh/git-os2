@@ -244,7 +244,9 @@ struct strbuf;
 #include <sys/poll.h>
 #else
 /* Pull the compat stuff */
+#if !defined(NO_POLL_H)
 #include <poll.h>
+#endif
 #endif
 #ifdef HAVE_BSD_SYSCTL
 #include <sys/sysctl.h>
@@ -256,6 +258,9 @@ static inline int is_xplatform_dir_sep(int c)
 	return c == '/' || c == '\\';
 }
 
+#if defined(__OS2__)
+#include "compat/os2-git-compat.h"
+#endif
 #if defined(__CYGWIN__)
 #include "compat/win32/path-utils.h"
 #endif
