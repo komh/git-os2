@@ -3,7 +3,11 @@
 #include "sigchain.h"
 
 #ifndef DEFAULT_PAGER
+# if defined(__OS2__)
+#  define DEFAULT_PAGER "littlemore"
+# else
 #define DEFAULT_PAGER "less"
+#endif
 #endif
 
 /*
@@ -13,7 +17,7 @@
 
 static int spawned_pager;
 
-#ifndef WIN32
+#if !defined(WIN32) && !defined(__OS2__)
 static void pager_preexec(void)
 {
 	/*
@@ -89,7 +93,7 @@ void setup_pager(void)
 		static const char *env[] = { "LESS=FRSX", NULL };
 		pager_process.env = env;
 	}
-#ifndef WIN32
+#if !(defined(WIN32) || defined(__OS2__))
 	pager_process.preexec_cb = pager_preexec;
 #endif
 	if (start_command(&pager_process))

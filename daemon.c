@@ -6,6 +6,10 @@
 
 #include <syslog.h>
 
+#ifdef NO_SOCKADDR_STORAGE
+# define ss_family sin_family
+#endif
+
 #ifndef HOST_NAME_MAX
 #define HOST_NAME_MAX 256
 #endif

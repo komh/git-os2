@@ -43,6 +43,14 @@ void *xmalloc(size_t size)
 			die("Out of memory, malloc failed (tried to allocate %lu bytes)",
 			    (unsigned long)size);
 	}
+#if defined(__OS2__) && defined(__KLIBC__)
+	{
+		size_t i;
+		for(i=0; i<size; i+=4096) {
+			*((char *)ret + i) = '\0';
+		}
+	}
+#endif
 #ifdef XMALLOC_POISON
 	memset(ret, 0xA5, size);
 #endif

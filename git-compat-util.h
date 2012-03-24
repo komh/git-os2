@@ -106,7 +106,9 @@
 #include <utime.h>
 #ifndef __MINGW32__
 #include <sys/wait.h>
+#if !defined(__OS2__)
 #include <sys/poll.h>
+#endif
 #include <sys/socket.h>
 #include <sys/ioctl.h>
 #include <termios.h>
@@ -128,6 +130,9 @@
 #undef _ALL_SOURCE /* AIX 5.3L defines a struct list with _ALL_SOURCE. */
 #include <grp.h>
 #define _ALL_SOURCE 1
+#endif
+#if defined(__OS2__)
+#include "compat/os2-git-compat.h"
 #endif
 #else 	/* __MINGW32__ */
 /* pull in Windows compatibility stuff */
