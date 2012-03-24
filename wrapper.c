@@ -174,10 +174,21 @@ ssize_t xwrite(int fd, const void *buf, size_t len)
 	ssize_t nr;
 	if (len > MAX_IO_SIZE)
 	    len = MAX_IO_SIZE;
+#if defined(__OS2__) && defined(__KLIBC__)
+	int pipehandle = 0;
+	struct stat statbuf;
+
+	if (!fstat(fd, &statbuf))
+		pipehandle = S_ISFIFO(statbuf.st_mode);
+#endif
 	while (1) {
 		nr = write(fd, buf, len);
 		if ((nr < 0) && (errno == EAGAIN || errno == EINTR))
 			continue;
+#if defined(__OS2__) && defined(__KLIBC__)
+		if ((nr < 0) && pipehandle && (errno == ENOSPC))
+			continue;
+#endif
 		return nr;
 	}
 }
