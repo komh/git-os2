@@ -38,7 +38,7 @@ static int get_mode(const char *path, int *mode)
 
 	if (!path || !strcmp(path, "/dev/null"))
 		*mode = 0;
-#if defined(_WIN32) || defined(__OS2__) || defined(MSDOS)
+#ifdef _WIN32
 	else if (!strcasecmp(path, "nul"))
 		*mode = 0;
 #endif

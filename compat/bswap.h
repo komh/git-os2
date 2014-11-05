@@ -21,10 +21,6 @@ static inline uint32_t default_swab32(uint32_t val)
 
 #if defined(__GNUC__) && (defined(__i386__) || defined(__x86_64__))
 
-#if defined(__KLIBC__) && defined(bswap32)
-#undef bswap32
-#endif
-
 #define bswap32(x) ({ \
 	uint32_t __res; \
 	if (__builtin_constant_p(x)) { \

@@ -341,37 +341,6 @@ int strbuf_readlink(struct strbuf *sb, const char *path, size_t hint)
 	return -1;
 }
 
-#if defined(__OS2__) || defined(_WIN32)
-/* workaround for DOSish environment - CRLF to LF */
-int strbuf_getwholeline(struct strbuf *sb, FILE *fp, int term)
-{
-	int ch, ch_prev;
-
-	strbuf_grow(sb, 0);
-	if (feof(fp))
-		return EOF;
-
-	strbuf_reset(sb);
-	ch_prev = EOF;
-	while ((ch = fgetc(fp)) != EOF) {
-		if (ch == '\n' && ch_prev == '\r') {
-			if (sb->len > 0)
-				sb->len--;
-		} else {
-			strbuf_grow(sb, 1);
-		}
-		sb->buf[sb->len++] = ch;
-		if (ch == term)
-			break;
-		ch_prev = ch;
-	}
-	if (ch == EOF && sb->len == 0)
-		return EOF;
-
-	sb->buf[sb->len] = '\0';
-	return 0;
-}
-#else
 int strbuf_getwholeline(struct strbuf *sb, FILE *fp, int term)
 {
 	int ch;
@@ -393,7 +362,6 @@ int strbuf_getwholeline(struct strbuf *sb, FILE *fp, int term)
 	sb->buf[sb->len] = '\0';
 	return 0;
 }
-#endif
 
 int strbuf_getline(struct strbuf *sb, FILE *fp, int term)
 {

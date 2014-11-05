@@ -15,7 +15,7 @@ else
 	export GIT_TEMPLATE_DIR
 fi
 GITPERLLIB='@@BUILD_DIR@@/perl/blib/lib'
-PATH='@@BUILD_DIR@@/bin-wrappers@@PATH_SEPARATOR@@'"$PATH"
+PATH='@@BUILD_DIR@@/bin-wrappers:'"$PATH"
 export GIT_EXEC_PATH GITPERLLIB PATH
 
 exec "${GIT_EXEC_PATH}/@@PROG@@" "$@"
