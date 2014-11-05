@@ -40,6 +40,14 @@ test_expect_success 'setup remote repository' '
 	mv test_repo.git "$HTTPD_DOCUMENT_ROOT_PATH"
 '
 
+test_expect_success 'create password-protected repository' '
+	mkdir -p "$HTTPD_DOCUMENT_ROOT_PATH/auth/dumb" &&
+	cp -Rf "$HTTPD_DOCUMENT_ROOT_PATH/test_repo.git" \
+	       "$HTTPD_DOCUMENT_ROOT_PATH/auth/dumb/test_repo.git"
+'
+
+setup_askpass_helper
+
 test_expect_success 'clone remote repository' '
 	cd "$ROOT_PATH" &&
 	git clone $HTTPD_URL/dumb/test_repo.git test_repo_clone
@@ -101,7 +109,7 @@ test_expect_success 'http-push fetches packed objects' '
 	# By reset, we force git to retrieve the packed object
 	(cd "$ROOT_PATH"/test_repo_clone_packed &&
 	 git reset --hard HEAD^ &&
-	 git remote rm origin &&
+	 git remote remove origin &&
 	 git reflog expire --expire=0 --all &&
 	 git prune &&
 	 git push -f -v $HTTPD_URL/dumb/test_repo_packed.git master)
@@ -132,13 +140,42 @@ x38="$x5$x5$x5$x5$x5$x5$x5$x1$x1$x1"
 x40="$x38$x2"
 
 test_expect_success 'PUT and MOVE sends object to URLs with SHA-1 hash suffix' '
-	sed -e "s/PUT /OP /" -e "s/MOVE /OP /" "$HTTPD_ROOT_PATH"/access.log |
-	grep -e "\"OP .*/objects/$x2/${x38}_$x40 HTTP/[.0-9]*\" 20[0-9] "
+	sed \
+		-e "s/PUT /OP /" \
+		-e "s/MOVE /OP /" \
+	    -e "s|/objects/$x2/${x38}_$x40|WANTED_PATH_REQUEST|" \
+		"$HTTPD_ROOT_PATH"/access.log |
+	grep -e "\"OP .*WANTED_PATH_REQUEST HTTP/[.0-9]*\" 20[0-9] "
 
 '
 
 test_http_push_nonff "$HTTPD_DOCUMENT_ROOT_PATH"/test_repo.git \
 	"$ROOT_PATH"/test_repo_clone master
+
+test_expect_success 'push to password-protected repository (user in URL)' '
+	test_commit pw-user &&
+	set_askpass user@host &&
+	git push "$HTTPD_URL_USER/auth/dumb/test_repo.git" HEAD &&
+	git rev-parse --verify HEAD >expect &&
+	git --git-dir="$HTTPD_DOCUMENT_ROOT_PATH/auth/dumb/test_repo.git" \
+		rev-parse --verify HEAD >actual &&
+	test_cmp expect actual
+'
+
+test_expect_failure 'user was prompted only once for password' '
+	expect_askpass pass user@host
+'
+
+test_expect_failure 'push to password-protected repository (no user in URL)' '
+	test_commit pw-nouser &&
+	set_askpass user@host &&
+	git push "$HTTPD_URL/auth/dumb/test_repo.git" HEAD &&
+	expect_askpass both user@host
+	git rev-parse --verify HEAD >expect &&
+	git --git-dir="$HTTPD_DOCUMENT_ROOT_PATH/auth/dumb/test_repo.git" \
+		rev-parse --verify HEAD >actual &&
+	test_cmp expect actual
+'
 
 stop_httpd
 

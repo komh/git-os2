@@ -8,6 +8,7 @@ git-http-push - Push objects over HTTP/DAV to another repository
 
 SYNOPSIS
 --------
+[verse]
 'git http-push' [--all] [--dry-run] [--force] [--verbose] <url> <ref> [<ref>...]
 
 DESCRIPTION
@@ -90,15 +91,6 @@ With '--force', the fast-forward check is disabled for all refs.
 
 Optionally, a <ref> parameter can be prefixed with a plus '+' sign
 to disable the fast-forward check only on that ref.
-
-
-Author
-------
-Written by Nick Hengeveld <nickh@reactrix.com>
-
-Documentation
---------------
-Documentation by Nick Hengeveld
 
 GIT
 ---

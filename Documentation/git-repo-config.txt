@@ -8,6 +8,7 @@ git-repo-config - Get and set repository or global options
 
 SYNOPSIS
 --------
+[verse]
 'git repo-config' ...
 
 
@@ -16,3 +17,7 @@ DESCRIPTION
 
 This is a synonym for linkgit:git-config[1].  Please refer to the
 documentation of that command.
+
+GIT
+---
+Part of the linkgit:git[1] suite

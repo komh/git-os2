@@ -3,38 +3,6 @@
  *
  * Copyright (C) 2005 Linus Torvalds
  *
- * Careful: order of argument flags does matter. For example,
- *
- *	git checkout-index -a -f file.c
- *
- * Will first check out all files listed in the cache (but not
- * overwrite any old ones), and then force-checkout "file.c" a
- * second time (ie that one _will_ overwrite any old contents
- * with the same filename).
- *
- * Also, just doing "git checkout-index" does nothing. You probably
- * meant "git checkout-index -a". And if you want to force it, you
- * want "git checkout-index -f -a".
- *
- * Intuitiveness is not the goal here. Repeatability is. The
- * reason for the "no arguments means no work" thing is that
- * from scripts you are supposed to be able to do things like
- *
- *	find . -name '*.h' -print0 | xargs -0 git checkout-index -f --
- *
- * or:
- *
- *	find . -name '*.h' -print0 | git checkout-index -f -z --stdin
- *
- * which will force all existing *.h files to be replaced with
- * their cached copies. If an empty command line implied "all",
- * then this would force-refresh everything in the cache, which
- * was not the point.
- *
- * Oh, and the "--" is just a good idea when you know the rest
- * will be filenames. Just so that you wouldn't have a filename
- * of "-a" causing problems (not possible in the above example,
- * but get used to it in scripting!).
  */
 #include "builtin.h"
 #include "cache.h"
@@ -46,7 +14,7 @@
 static int line_termination = '\n';
 static int checkout_stage; /* default to checkout stage0 */
 static int to_tempfile;
-static char topath[4][PATH_MAX + 1];
+static char topath[4][TEMPORARY_FILENAME_LENGTH + 1];
 
 static struct checkout state;
 
@@ -155,7 +123,7 @@ static void checkout_all(const char *prefix, int prefix_length)
 }
 
 static const char * const builtin_checkout_index_usage[] = {
-	"git checkout-index [options] [--] [<file>...]",
+	N_("git checkout-index [options] [--] [<file>...]"),
 	NULL
 };
 
@@ -215,32 +183,35 @@ int cmd_checkout_index(int argc, const char **argv, const char *prefix)
 	int prefix_length;
 	int force = 0, quiet = 0, not_new = 0;
 	struct option builtin_checkout_index_options[] = {
-		OPT_BOOLEAN('a', "all", &all,
-			"checks out all files in the index"),
-		OPT_BOOLEAN('f', "force", &force,
-			"forces overwrite of existing files"),
-		OPT__QUIET(&quiet),
-		OPT_BOOLEAN('n', "no-create", &not_new,
-			"don't checkout new files"),
+		OPT_BOOL('a', "all", &all,
+			N_("check out all files in the index")),
+		OPT__FORCE(&force, N_("force overwrite of existing files")),
+		OPT__QUIET(&quiet,
+			N_("no warning for existing files and files not in index")),
+		OPT_BOOL('n', "no-create", &not_new,
+			N_("don't checkout new files")),
 		{ OPTION_CALLBACK, 'u', "index", &newfd, NULL,
-			"update stat information in the index file",
+			N_("update stat information in the index file"),
 			PARSE_OPT_NOARG, option_parse_u },
 		{ OPTION_CALLBACK, 'z', NULL, NULL, NULL,
-			"paths are separated with NUL character",
+			N_("paths are separated with NUL character"),
 			PARSE_OPT_NOARG, option_parse_z },
-		OPT_BOOLEAN(0, "stdin", &read_from_stdin,
-			"read list of paths from the standard input"),
-		OPT_BOOLEAN(0, "temp", &to_tempfile,
-			"write the content to temporary files"),
-		OPT_CALLBACK(0, "prefix", NULL, "string",
-			"when creating files, prepend <string>",
+		OPT_BOOL(0, "stdin", &read_from_stdin,
+			N_("read list of paths from the standard input")),
+		OPT_BOOL(0, "temp", &to_tempfile,
+			N_("write the content to temporary files")),
+		OPT_CALLBACK(0, "prefix", NULL, N_("string"),
+			N_("when creating files, prepend <string>"),
 			option_parse_prefix),
 		OPT_CALLBACK(0, "stage", NULL, NULL,
-			"copy out the files from named stage",
+			N_("copy out the files from named stage"),
 			option_parse_stage),
 		OPT_END()
 	};
 
+	if (argc == 2 && !strcmp(argv[1], "-h"))
+		usage_with_options(builtin_checkout_index_usage,
+				   builtin_checkout_index_options);
 	git_config(git_default_config, NULL);
 	state.base_dir = "";
 	prefix_length = prefix ? strlen(prefix) : 0;

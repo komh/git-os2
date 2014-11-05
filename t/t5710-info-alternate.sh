@@ -18,7 +18,7 @@ reachable_via() {
 
 test_valid_repo() {
 	git fsck --full > fsck.log &&
-	test `wc -l < fsck.log` = 0
+	test_line_count = 0 fsck.log
 }
 
 base_dir=`pwd`
@@ -58,7 +58,7 @@ test_expect_success 'creating too deep nesting' \
 git clone -l -s D E &&
 git clone -l -s E F &&
 git clone -l -s F G &&
-git clone -l -s G H'
+git clone --bare -l -s G H'
 
 test_expect_success 'invalidity of deepest repository' \
 'cd H && {

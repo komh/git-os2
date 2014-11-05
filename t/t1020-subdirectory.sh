@@ -7,6 +7,7 @@ test_description='Try various core-level commands in subdirectory.
 '
 
 . ./test-lib.sh
+. "$TEST_DIRECTORY"/lib-read-tree.sh
 
 test_expect_success setup '
 	long="a b c d e f g h i j k l m n o p q r s t u v w x y z" &&
@@ -15,8 +16,6 @@ test_expect_success setup '
 	for c in x y z $long a b c; do echo $c; done >dir/two &&
 	cp one original.one &&
 	cp dir/two original.two
-'
-LF='
 '
 
 test_expect_success 'update-index and ls-files' '
@@ -98,16 +97,61 @@ test_expect_success 'checkout-index' '
 test_expect_success 'read-tree' '
 	rm -f one dir/two &&
 	tree=`git write-tree` &&
-	git read-tree --reset -u "$tree" &&
+	read_tree_u_must_succeed --reset -u "$tree" &&
 	cmp one original.one &&
 	cmp dir/two original.two &&
 	(
 		cd dir &&
 		rm -f two &&
-		git read-tree --reset -u "$tree" &&
+		read_tree_u_must_succeed --reset -u "$tree" &&
 		cmp two ../original.two &&
 		cmp ../one ../original.one
 	)
+'
+
+test_expect_success 'alias expansion' '
+	(
+		git config alias.test-status-alias status &&
+		cd dir &&
+		git status &&
+		git test-status-alias
+	)
+'
+
+test_expect_success NOT_MINGW '!alias expansion' '
+	pwd >expect &&
+	(
+		git config alias.test-alias-directory !pwd &&
+		cd dir &&
+		git test-alias-directory >../actual
+	) &&
+	test_cmp expect actual
+'
+
+test_expect_success 'GIT_PREFIX for !alias' '
+	printf "dir/" >expect &&
+	(
+		git config alias.test-alias-directory "!sh -c \"printf \$GIT_PREFIX\"" &&
+		cd dir &&
+		git test-alias-directory >../actual
+	) &&
+	test_cmp expect actual
+'
+
+test_expect_success 'GIT_PREFIX for built-ins' '
+	# Use GIT_EXTERNAL_DIFF to test that the "diff" built-in
+	# receives the GIT_PREFIX variable.
+	printf "dir/" >expect &&
+	printf "#!/bin/sh\n" >diff &&
+	printf "printf \"\$GIT_PREFIX\"" >>diff &&
+	chmod +x diff &&
+	(
+		cd dir &&
+		printf "change" >two &&
+		env GIT_EXTERNAL_DIFF=./diff git diff >../actual
+		git checkout -- two
+	) &&
+	test_cmp expect actual
 '
 
 test_expect_success 'no file/rev ambiguity check inside .git' '

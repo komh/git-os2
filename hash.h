@@ -30,7 +30,7 @@ struct hash_table {
 
 extern void *lookup_hash(unsigned int hash, const struct hash_table *table);
 extern void **insert_hash(unsigned int hash, void *ptr, struct hash_table *table);
-extern int for_each_hash(const struct hash_table *table, int (*fn)(void *));
+extern int for_each_hash(const struct hash_table *table, int (*fn)(void *, void *), void *data);
 extern void free_hash(struct hash_table *table);
 
 static inline void init_hash(struct hash_table *table)
@@ -38,6 +38,13 @@ static inline void init_hash(struct hash_table *table)
 	table->size = 0;
 	table->nr = 0;
 	table->array = NULL;
+}
+
+static inline void preallocate_hash(struct hash_table *table, unsigned int elts)
+{
+	assert(table->size == 0 && table->nr == 0 && table->array == NULL);
+	table->size = elts * 2;
+	table->array = xcalloc(sizeof(struct hash_table_entry), table->size);
 }
 
 #endif

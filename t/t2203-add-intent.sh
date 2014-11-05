@@ -32,7 +32,7 @@ test_expect_success 'intent to add does not clobber existing paths' '
 	! grep "$empty" actual
 '
 
-test_expect_success 'cannot commit with i-t-a entry' '
+test_expect_success 'i-t-a entry is simply ignored' '
 	test_tick &&
 	git commit -a -m initial &&
 	git reset --hard &&
@@ -41,12 +41,14 @@ test_expect_success 'cannot commit with i-t-a entry' '
 	echo frotz >nitfol &&
 	git add rezrov &&
 	git add -N nitfol &&
-	test_must_fail git commit
+	git commit -m second &&
+	test $(git ls-tree HEAD -- nitfol | wc -l) = 0 &&
+	test $(git diff --name-only HEAD -- nitfol | wc -l) = 1
 '
 
 test_expect_success 'can commit with an unrelated i-t-a entry in index' '
 	git reset --hard &&
-	echo xyzzy >rezrov &&
+	echo bozbar >rezrov &&
 	echo frotz >nitfol &&
 	git add rezrov &&
 	git add -N nitfol &&
@@ -58,6 +60,26 @@ test_expect_success 'can "commit -a" with an i-t-a entry' '
 	: >nitfol &&
 	git add -N nitfol &&
 	git commit -a -m all
+'
+
+test_expect_success 'cache-tree invalidates i-t-a paths' '
+	git reset --hard &&
+	mkdir dir &&
+	: >dir/foo &&
+	git add dir/foo &&
+	git commit -m foo &&
+
+	: >dir/bar &&
+	git add -N dir/bar &&
+	git diff --cached --name-only >actual &&
+	echo dir/bar >expect &&
+	test_cmp expect actual &&
+
+	git write-tree >/dev/null &&
+
+	git diff --cached --name-only >actual &&
+	echo dir/bar >expect &&
+	test_cmp expect actual
 '
 
 test_done

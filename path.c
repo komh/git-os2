@@ -1,17 +1,18 @@
 /*
- * I'm tired of doing "vsnprintf()" etc just to open a
- * file, so here's a "return static buffer with printf"
- * interface for paths.
- *
- * It's obviously not thread-safe. Sue me. But it's quite
- * useful for doing things like
- *
- *   f = open(mkpath("%s/%s.git", base, name), O_RDONLY);
- *
- * which is what it's designed for.
+ * Utilities for paths and pathnames
  */
 #include "cache.h"
 #include "strbuf.h"
+#include "string-list.h"
+
+static int get_st_mode_bits(const char *path, int *mode)
+{
+	struct stat st;
+	if (lstat(path, &st) < 0)
+		return -1;
+	*mode = st.st_mode;
+	return 0;
+}
 
 static char bad_path[] = "/bad-path/";
 
@@ -48,7 +49,7 @@ char *mksnpath(char *buf, size_t n, const char *fmt, ...)
 	return cleanup_path(buf);
 }
 
-static char *git_vsnpath(char *buf, size_t n, const char *fmt, va_list args)
+static char *vsnpath(char *buf, size_t n, const char *fmt, va_list args)
 {
 	const char *git_dir = get_git_dir();
 	size_t len;
@@ -70,21 +71,37 @@ bad:
 
 char *git_snpath(char *buf, size_t n, const char *fmt, ...)
 {
+	char *ret;
 	va_list args;
 	va_start(args, fmt);
-	(void)git_vsnpath(buf, n, fmt, args);
+	ret = vsnpath(buf, n, fmt, args);
 	va_end(args);
-	return buf;
+	return ret;
 }
 
 char *git_pathdup(const char *fmt, ...)
 {
-	char path[PATH_MAX];
+	char path[PATH_MAX], *ret;
 	va_list args;
 	va_start(args, fmt);
-	(void)git_vsnpath(path, sizeof(path), fmt, args);
+	ret = vsnpath(path, sizeof(path), fmt, args);
 	va_end(args);
-	return xstrdup(path);
+	return xstrdup(ret);
+}
+
+char *mkpathdup(const char *fmt, ...)
+{
+	char *path;
+	struct strbuf sb = STRBUF_INIT;
+	va_list args;
+
+	va_start(args, fmt);
+	strbuf_vaddf(&sb, fmt, args);
+	va_end(args);
+	path = xstrdup(cleanup_path(sb.buf));
+
+	strbuf_release(&sb);
+	return path;
 }
 
 char *mkpath(const char *fmt, ...)
@@ -103,23 +120,40 @@ char *mkpath(const char *fmt, ...)
 
 char *git_path(const char *fmt, ...)
 {
-	const char *git_dir = get_git_dir();
 	char *pathname = get_pathname();
 	va_list args;
-	unsigned len;
+	char *ret;
 
-	len = strlen(git_dir);
-	if (len > PATH_MAX-100)
-		return bad_path;
-	memcpy(pathname, git_dir, len);
-	if (len && git_dir[len-1] != '/')
-		pathname[len++] = '/';
 	va_start(args, fmt);
-	len += vsnprintf(pathname + len, PATH_MAX - len, fmt, args);
+	ret = vsnpath(pathname, PATH_MAX, fmt, args);
 	va_end(args);
-	if (len >= PATH_MAX)
-		return bad_path;
-	return cleanup_path(pathname);
+	return ret;
+}
+
+void home_config_paths(char **global, char **xdg, char *file)
+{
+	char *xdg_home = getenv("XDG_CONFIG_HOME");
+	char *home = getenv("HOME");
+	char *to_free = NULL;
+
+	if (!home) {
+		if (global)
+			*global = NULL;
+	} else {
+		if (!xdg_home) {
+			to_free = mkpathdup("%s/.config", home);
+			xdg_home = to_free;
+		}
+		if (global)
+			*global = mkpathdup("%s/.gitconfig", home);
+	}
+
+	if (!xdg_home)
+		*xdg = NULL;
+	else
+		*xdg = mkpathdup("%s/git/%s", xdg_home, file);
+
+	free(to_free);
 }
 
 char *git_path_submodule(const char *path, const char *fmt, ...)
@@ -139,7 +173,7 @@ char *git_path_submodule(const char *path, const char *fmt, ...)
 		strbuf_addch(&buf, '/');
 	strbuf_addstr(&buf, ".git");
 
-	git_dir = read_gitfile_gently(buf.buf);
+	git_dir = read_gitfile(buf.buf);
 	if (git_dir) {
 		strbuf_reset(&buf);
 		strbuf_addstr(&buf, git_dir);
@@ -159,119 +193,6 @@ char *git_path_submodule(const char *path, const char *fmt, ...)
 	if (len >= PATH_MAX)
 		return bad_path;
 	return cleanup_path(pathname);
-}
-
-/* git_mkstemp() - create tmp file honoring TMPDIR variable */
-int git_mkstemp(char *path, size_t len, const char *template)
-{
-	const char *tmp;
-	size_t n;
-
-	tmp = getenv("TMPDIR");
-	if (!tmp)
-		tmp = "/tmp";
-	n = snprintf(path, len, "%s/%s", tmp, template);
-	if (len <= n) {
-		errno = ENAMETOOLONG;
-		return -1;
-	}
-	return mkstemp(path);
-}
-
-/* git_mkstemps() - create tmp file with suffix honoring TMPDIR variable. */
-int git_mkstemps(char *path, size_t len, const char *template, int suffix_len)
-{
-	const char *tmp;
-	size_t n;
-
-	tmp = getenv("TMPDIR");
-	if (!tmp)
-		tmp = "/tmp";
-	n = snprintf(path, len, "%s/%s", tmp, template);
-	if (len <= n) {
-		errno = ENAMETOOLONG;
-		return -1;
-	}
-	return mkstemps(path, suffix_len);
-}
-
-/* Adapted from libiberty's mkstemp.c. */
-
-#undef TMP_MAX
-#define TMP_MAX 16384
-
-int git_mkstemps_mode(char *pattern, int suffix_len, int mode)
-{
-	static const char letters[] =
-		"abcdefghijklmnopqrstuvwxyz"
-		"ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-		"0123456789";
-	static const int num_letters = 62;
-	uint64_t value;
-	struct timeval tv;
-	char *template;
-	size_t len;
-	int fd, count;
-
-	len = strlen(pattern);
-
-	if (len < 6 + suffix_len) {
-		errno = EINVAL;
-		return -1;
-	}
-
-	if (strncmp(&pattern[len - 6 - suffix_len], "XXXXXX", 6)) {
-		errno = EINVAL;
-		return -1;
-	}
-
-	/*
-	 * Replace pattern's XXXXXX characters with randomness.
-	 * Try TMP_MAX different filenames.
-	 */
-	gettimeofday(&tv, NULL);
-	value = ((size_t)(tv.tv_usec << 16)) ^ tv.tv_sec ^ getpid();
-	template = &pattern[len - 6 - suffix_len];
-	for (count = 0; count < TMP_MAX; ++count) {
-		uint64_t v = value;
-		/* Fill in the random bits. */
-		template[0] = letters[v % num_letters]; v /= num_letters;
-		template[1] = letters[v % num_letters]; v /= num_letters;
-		template[2] = letters[v % num_letters]; v /= num_letters;
-		template[3] = letters[v % num_letters]; v /= num_letters;
-		template[4] = letters[v % num_letters]; v /= num_letters;
-		template[5] = letters[v % num_letters]; v /= num_letters;
-
-		fd = open(pattern, O_CREAT | O_EXCL | O_RDWR, mode);
-		if (fd > 0)
-			return fd;
-		/*
-		 * Fatal error (EPERM, ENOSPC etc).
-		 * It doesn't make sense to loop.
-		 */
-		if (errno != EEXIST)
-			break;
-		/*
-		 * This is a random value.  It is only necessary that
-		 * the next TMP_MAX values generated by adding 7777 to
-		 * VALUE are different with (module 2^32).
-		 */
-		value += 7777;
-	}
-	/* We return the null string if we can't find a unique file name.  */
-	pattern[0] = '\0';
-	return -1;
-}
-
-int git_mkstemp_mode(char *pattern, int mode)
-{
-	/* mkstemp is just mkstemps with no suffix */
-	return git_mkstemps_mode(pattern, 0, mode);
-}
-
-int gitmkstemps(char *pattern, int suffix_len)
-{
-	return git_mkstemps_mode(pattern, suffix_len, 0600);
 }
 
 int validate_headref(const char *path)
@@ -396,7 +317,7 @@ return_null:
  * links.  User relative paths are also returned as they are given,
  * except DWIM suffixing.
  */
-char *enter_repo(char *path, int strict)
+const char *enter_repo(const char *path, int strict)
 {
 	static char used_path[PATH_MAX];
 	static char validated_path[PATH_MAX];
@@ -406,18 +327,21 @@ char *enter_repo(char *path, int strict)
 
 	if (!strict) {
 		static const char *suffix[] = {
-			".git/.git", "/.git", ".git", "", NULL,
+			"/.git", "", ".git/.git", ".git", NULL,
 		};
+		const char *gitfile;
 		int len = strlen(path);
 		int i;
-		while ((1 < len) && (path[len-1] == '/')) {
-			path[len-1] = 0;
+		while ((1 < len) && (path[len-1] == '/'))
 			len--;
-		}
+
 		if (PATH_MAX <= len)
 			return NULL;
-		if (path[0] == '~') {
-			char *newpath = expand_user_path(path);
+		strncpy(used_path, path, len); used_path[len] = 0 ;
+		strcpy(validated_path, used_path);
+
+		if (used_path[0] == '~') {
+			char *newpath = expand_user_path(used_path);
 			if (!newpath || (PATH_MAX - 10 < strlen(newpath))) {
 				free(newpath);
 				return NULL;
@@ -429,24 +353,26 @@ char *enter_repo(char *path, int strict)
 			 * anyway.
 			 */
 			strcpy(used_path, newpath); free(newpath);
-			strcpy(validated_path, path);
-			path = used_path;
 		}
 		else if (PATH_MAX - 10 < len)
 			return NULL;
-		else {
-			path = strcpy(used_path, path);
-			strcpy(validated_path, path);
-		}
-		len = strlen(path);
+		len = strlen(used_path);
 		for (i = 0; suffix[i]; i++) {
-			strcpy(path + len, suffix[i]);
-			if (!access(path, F_OK)) {
+			struct stat st;
+			strcpy(used_path + len, suffix[i]);
+			if (!stat(used_path, &st) &&
+			    (S_ISREG(st.st_mode) ||
+			    (S_ISDIR(st.st_mode) && is_git_directory(used_path)))) {
 				strcat(validated_path, suffix[i]);
 				break;
 			}
 		}
-		if (!suffix[i] || chdir(path))
+		if (!suffix[i])
+			return NULL;
+		gitfile = read_gitfile(used_path) ;
+		if (gitfile)
+			strcpy(used_path, gitfile);
+		if (chdir(used_path))
 			return NULL;
 		path = validated_path;
 	}
@@ -463,28 +389,14 @@ char *enter_repo(char *path, int strict)
 	return NULL;
 }
 
-int set_shared_perm(const char *path, int mode)
+static int calc_shared_perm(int mode)
 {
-	struct stat st;
-	int tweak, shared, orig_mode;
+	int tweak;
 
-	if (!shared_repository) {
-		if (mode)
-			return chmod(path, mode & ~S_IFMT);
-		return 0;
-	}
-	if (!mode) {
-		if (lstat(path, &st) < 0)
-			return -1;
-		mode = st.st_mode;
-		orig_mode = mode;
-	} else
-		orig_mode = 0;
 	if (shared_repository < 0)
-		shared = -shared_repository;
+		tweak = -shared_repository;
 	else
-		shared = shared_repository;
-	tweak = shared;
+		tweak = shared_repository;
 
 	if (!(mode & S_IWUSR))
 		tweak &= ~0222;
@@ -496,55 +408,190 @@ int set_shared_perm(const char *path, int mode)
 	else
 		mode |= tweak;
 
-	if (S_ISDIR(mode)) {
+	return mode;
+}
+
+
+int adjust_shared_perm(const char *path)
+{
+	int old_mode, new_mode;
+
+	if (!shared_repository)
+		return 0;
+	if (get_st_mode_bits(path, &old_mode) < 0)
+		return -1;
+
+	new_mode = calc_shared_perm(old_mode);
+	if (S_ISDIR(old_mode)) {
 		/* Copy read bits to execute bits */
-		mode |= (shared & 0444) >> 2;
-		mode |= FORCE_DIR_SET_GID;
+		new_mode |= (new_mode & 0444) >> 2;
+		new_mode |= FORCE_DIR_SET_GID;
 	}
 
-	if (((shared_repository < 0
-	      ? (orig_mode & (FORCE_DIR_SET_GID | 0777))
-	      : (orig_mode & mode)) != mode) &&
-	    chmod(path, (mode & ~S_IFMT)) < 0)
+	if (((old_mode ^ new_mode) & ~S_IFMT) &&
+			chmod(path, (new_mode & ~S_IFMT)) < 0)
 		return -2;
 	return 0;
 }
 
-const char *make_relative_path(const char *abs, const char *base)
+static int have_same_root(const char *path1, const char *path2)
+{
+	int is_abs1, is_abs2;
+
+	is_abs1 = is_absolute_path(path1);
+	is_abs2 = is_absolute_path(path2);
+	return (is_abs1 && is_abs2 && tolower(path1[0]) == tolower(path2[0])) ||
+	       (!is_abs1 && !is_abs2);
+}
+
+/*
+ * Give path as relative to prefix.
+ *
+ * The strbuf may or may not be used, so do not assume it contains the
+ * returned path.
+ */
+const char *relative_path(const char *in, const char *prefix,
+			  struct strbuf *sb)
+{
+	int in_len = in ? strlen(in) : 0;
+	int prefix_len = prefix ? strlen(prefix) : 0;
+	int in_off = 0;
+	int prefix_off = 0;
+	int i = 0, j = 0;
+
+	if (!in_len)
+		return "./";
+	else if (!prefix_len)
+		return in;
+
+	if (have_same_root(in, prefix)) {
+		/* bypass dos_drive, for "c:" is identical to "C:" */
+		if (has_dos_drive_prefix(in)) {
+			i = 2;
+			j = 2;
+		}
+	} else {
+		return in;
+	}
+
+	while (i < prefix_len && j < in_len && prefix[i] == in[j]) {
+		if (is_dir_sep(prefix[i])) {
+			while (is_dir_sep(prefix[i]))
+				i++;
+			while (is_dir_sep(in[j]))
+				j++;
+			prefix_off = i;
+			in_off = j;
+		} else {
+			i++;
+			j++;
+		}
+	}
+
+	if (
+	    /* "prefix" seems like prefix of "in" */
+	    i >= prefix_len &&
+	    /*
+	     * but "/foo" is not a prefix of "/foobar"
+	     * (i.e. prefix not end with '/')
+	     */
+	    prefix_off < prefix_len) {
+		if (j >= in_len) {
+			/* in="/a/b", prefix="/a/b" */
+			in_off = in_len;
+		} else if (is_dir_sep(in[j])) {
+			/* in="/a/b/c", prefix="/a/b" */
+			while (is_dir_sep(in[j]))
+				j++;
+			in_off = j;
+		} else {
+			/* in="/a/bbb/c", prefix="/a/b" */
+			i = prefix_off;
+		}
+	} else if (
+		   /* "in" is short than "prefix" */
+		   j >= in_len &&
+		   /* "in" not end with '/' */
+		   in_off < in_len) {
+		if (is_dir_sep(prefix[i])) {
+			/* in="/a/b", prefix="/a/b/c/" */
+			while (is_dir_sep(prefix[i]))
+				i++;
+			in_off = in_len;
+		}
+	}
+	in += in_off;
+	in_len -= in_off;
+
+	if (i >= prefix_len) {
+		if (!in_len)
+			return "./";
+		else
+			return in;
+	}
+
+	strbuf_reset(sb);
+	strbuf_grow(sb, in_len);
+
+	while (i < prefix_len) {
+		if (is_dir_sep(prefix[i])) {
+			strbuf_addstr(sb, "../");
+			while (is_dir_sep(prefix[i]))
+				i++;
+			continue;
+		}
+		i++;
+	}
+	if (!is_dir_sep(prefix[prefix_len - 1]))
+		strbuf_addstr(sb, "../");
+
+	strbuf_addstr(sb, in);
+
+	return sb->buf;
+}
+
+/*
+ * A simpler implementation of relative_path
+ *
+ * Get relative path by removing "prefix" from "in". This function
+ * first appears in v1.5.6-1-g044bbbc, and makes git_dir shorter
+ * to increase performance when traversing the path to work_tree.
+ */
+const char *remove_leading_path(const char *in, const char *prefix)
 {
 	static char buf[PATH_MAX + 1];
 	int i = 0, j = 0;
 
-	if (!base || !base[0])
-		return abs;
-	while (base[i]) {
-		if (is_dir_sep(base[i])) {
-			if (!is_dir_sep(abs[j]))
-				return abs;
-			while (is_dir_sep(base[i]))
+	if (!prefix || !prefix[0])
+		return in;
+	while (prefix[i]) {
+		if (is_dir_sep(prefix[i])) {
+			if (!is_dir_sep(in[j]))
+				return in;
+			while (is_dir_sep(prefix[i]))
 				i++;
-			while (is_dir_sep(abs[j]))
+			while (is_dir_sep(in[j]))
 				j++;
 			continue;
-		} else if (abs[j] != base[i]) {
-			return abs;
+		} else if (in[j] != prefix[i]) {
+			return in;
 		}
 		i++;
 		j++;
 	}
 	if (
 	    /* "/foo" is a prefix of "/foo" */
-	    abs[j] &&
+	    in[j] &&
 	    /* "/foo" is not a prefix of "/foobar" */
-	    !is_dir_sep(base[i-1]) && !is_dir_sep(abs[j])
+	    !is_dir_sep(prefix[i-1]) && !is_dir_sep(in[j])
 	   )
-		return abs;
-	while (is_dir_sep(abs[j]))
+		return in;
+	while (is_dir_sep(in[j]))
 		j++;
-	if (!abs[j])
+	if (!in[j])
 		strcpy(buf, ".");
 	else
-		strcpy(buf, abs + j);
+		strcpy(buf, in + j);
 	return buf;
 }
 
@@ -561,8 +608,14 @@ const char *make_relative_path(const char *abs, const char *base)
  *
  * Note that this function is purely textual.  It does not follow symlinks,
  * verify the existence of the path, or make any system calls.
+ *
+ * prefix_len != NULL is for a specific case of prefix_pathspec():
+ * assume that src == dst and src[0..prefix_len-1] is already
+ * normalized, any time "../" eats up to the prefix_len part,
+ * prefix_len is reduced. In the end prefix_len is the remaining
+ * prefix that has not been overridden by user pathspec.
  */
-int normalize_path_copy(char *dst, const char *src)
+int normalize_path_copy_len(char *dst, const char *src, int *prefix_len)
 {
 	char *dst0;
 
@@ -637,50 +690,52 @@ int normalize_path_copy(char *dst, const char *src)
 		/* Windows: dst[-1] cannot be backslash anymore */
 		while (dst0 < dst && dst[-1] != '/')
 			dst--;
+		if (prefix_len && *prefix_len > dst - dst0)
+			*prefix_len = dst - dst0;
 	}
 	*dst = '\0';
 	return 0;
 }
 
+int normalize_path_copy(char *dst, const char *src)
+{
+	return normalize_path_copy_len(dst, src, NULL);
+}
+
 /*
  * path = Canonical absolute path
- * prefix_list = Colon-separated list of absolute paths
+ * prefixes = string_list containing normalized, absolute paths without
+ * trailing slashes (except for the root directory, which is denoted by "/").
  *
- * Determines, for each path in prefix_list, whether the "prefix" really
+ * Determines, for each path in prefixes, whether the "prefix"
  * is an ancestor directory of path.  Returns the length of the longest
  * ancestor directory, excluding any trailing slashes, or -1 if no prefix
- * is an ancestor.  (Note that this means 0 is returned if prefix_list is
- * "/".) "/foo" is not considered an ancestor of "/foobar".  Directories
+ * is an ancestor.  (Note that this means 0 is returned if prefixes is
+ * ["/"].) "/foo" is not considered an ancestor of "/foobar".  Directories
  * are not considered to be their own ancestors.  path must be in a
  * canonical form: empty components, or "." or ".." components are not
- * allowed.  prefix_list may be null, which is like "".
+ * allowed.
  */
-int longest_ancestor_length(const char *path, const char *prefix_list)
+int longest_ancestor_length(const char *path, struct string_list *prefixes)
 {
-	char buf[PATH_MAX+1];
-	const char *ceil, *colon;
-	int len, max_len = -1;
+	int i, max_len = -1;
 
-	if (prefix_list == NULL || !strcmp(path, "/"))
+	if (!strcmp(path, "/"))
 		return -1;
 
-	for (colon = ceil = prefix_list; *colon; ceil = colon+1) {
-		for (colon = ceil; *colon && *colon != PATH_SEP; colon++);
-		len = colon - ceil;
-		if (len == 0 || len > PATH_MAX || !is_absolute_path(ceil))
-			continue;
-		strlcpy(buf, ceil, len+1);
-		if (normalize_path_copy(buf, buf) < 0)
-			continue;
-		len = strlen(buf);
-		if (len > 0 && buf[len-1] == '/')
-			buf[--len] = '\0';
+	for (i = 0; i < prefixes->nr; i++) {
+		const char *ceil = prefixes->items[i].string;
+		int len = strlen(ceil);
 
-		if (!strncmp(path, buf, len) &&
-		    path[len] == '/' &&
-		    len > max_len) {
+		if (len == 1 && ceil[0] == '/')
+			len = 0; /* root matches anything, with length 0 */
+		else if (!strncmp(path, ceil, len) && path[len] == '/')
+			; /* match of length len */
+		else
+			continue; /* no match */
+
+		if (len > max_len)
 			max_len = len;
-		}
 	}
 
 	return max_len;

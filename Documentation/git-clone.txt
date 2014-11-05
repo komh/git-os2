@@ -12,7 +12,10 @@ SYNOPSIS
 'git clone' [--template=<template_directory>]
 	  [-l] [-s] [--no-hardlinks] [-q] [-n] [--bare] [--mirror]
 	  [-o <name>] [-b <name>] [-u <upload-pack>] [--reference <repository>]
-	  [--depth <depth>] [--recursive] [--] <repository> [<directory>]
+	  [--separate-git-dir <git dir>]
+	  [--depth <depth>] [--[no-]single-branch]
+	  [--recursive | --recurse-submodules] [--] <repository>
+	  [<directory>]
 
 DESCRIPTION
 -----------
@@ -26,7 +29,8 @@ currently active branch.
 After the clone, a plain `git fetch` without arguments will update
 all the remote-tracking branches, and a `git pull` without
 arguments will in addition merge the remote master branch into the
-current master branch, if any.
+current master branch, if any (this is untrue when "--single-branch"
+is given; see below).
 
 This default configuration is achieved by creating references to
 the remote branch heads under `refs/remotes/origin` and
@@ -39,17 +43,22 @@ OPTIONS
 --local::
 -l::
 	When the repository to clone from is on a local machine,
-	this flag bypasses the normal "git aware" transport
+	this flag bypasses the normal "Git aware" transport
 	mechanism and clones the repository by making a copy of
 	HEAD and everything under objects and refs directories.
 	The files under `.git/objects/` directory are hardlinked
-	to save space when possible.  This is now the default when
-	the source repository is specified with `/path/to/repo`
-	syntax, so it essentially is a no-op option.  To force
-	copying instead of hardlinking (which may be desirable
-	if you are trying to make a back-up of your repository),
-	but still avoid the usual "git aware" transport
-	mechanism, `--no-hardlinks` can be used.
+	to save space when possible.
++
+If the repository is specified as a local path (e.g., `/path/to/repo`),
+this is the default, and --local is essentially a no-op.  If the
+repository is specified as a URL, then this flag is ignored (and we
+never use the local optimizations).  Specifying `--no-local` will
+override the default when `/path/to/repo` is given, using the regular
+Git transport instead.
++
+To force copying instead of hardlinking (which may be desirable if you
+are trying to make a back-up of your repository), but still avoid the
+usual "Git aware" transport mechanism, `--no-hardlinks` can be used.
 
 --no-hardlinks::
 	Optimize the cloning process from a repository on a
@@ -67,9 +76,9 @@ OPTIONS
 *NOTE*: this is a possibly dangerous operation; do *not* use
 it unless you understand what it does. If you clone your
 repository using this option and then delete branches (or use any
-other git command that makes any existing commit unreferenced) in the
+other Git command that makes any existing commit unreferenced) in the
 source repository, some objects may become unreferenced (or dangling).
-These objects may be removed by normal git operations (such as `git commit`)
+These objects may be removed by normal Git operations (such as `git commit`)
 which automatically call `git gc --auto`. (See linkgit:git-gc[1].)
 If these objects are removed and were referenced by the cloned repository,
 then the cloned repository will become corrupt.
@@ -116,7 +125,7 @@ objects from the source repository into a pack in the cloned repository.
 	No checkout of HEAD is performed after the clone is complete.
 
 --bare::
-	Make a 'bare' GIT repository.  That is, instead of
+	Make a 'bare' Git repository.  That is, instead of
 	creating `<directory>` and placing the administrative
 	files in `<directory>/.git`, make the `<directory>`
 	itself the `$GIT_DIR`. This obviously implies the `-n`
@@ -131,7 +140,7 @@ objects from the source repository into a pack in the cloned repository.
 	Set up a mirror of the source repository.  This implies `--bare`.
 	Compared to `--bare`, `--mirror` not only maps local branches of the
 	source to local branches of the target, it maps all refs (including
-	remote branches, notes etc.) and sets up a refspec configuration such
+	remote-tracking branches, notes etc.) and sets up a refspec configuration such
 	that all these refs are overwritten by a `git remote update` in the
 	target repository.
 
@@ -146,6 +155,8 @@ objects from the source repository into a pack in the cloned repository.
 	to by the cloned repository's HEAD, point to `<name>` branch
 	instead. In a non-bare repository, this is the branch that will
 	be checked out.
+	`--branch` can also take tags and detaches the HEAD at that commit
+	in the resulting repository.
 
 --upload-pack <upload-pack>::
 -u <upload-pack>::
@@ -157,6 +168,17 @@ objects from the source repository into a pack in the cloned repository.
 	Specify the directory from which templates will be used;
 	(See the "TEMPLATE DIRECTORY" section of linkgit:git-init[1].)
 
+--config <key>=<value>::
+-c <key>=<value>::
+	Set a configuration variable in the newly-created repository;
+	this takes effect immediately after the repository is
+	initialized, but before the remote history is fetched or any
+	files checked out.  The key is in the same format as expected by
+	linkgit:git-config[1] (e.g., `core.eol=true`). If multiple
+	values are given for the same key, each value will be written to
+	the config file. This makes it safe, for example, to add
+	additional fetch refspecs to the origin remote.
+
 --depth <depth>::
 	Create a 'shallow' clone with a history truncated to the
 	specified number of revisions.  A shallow repository has a
@@ -166,13 +188,35 @@ objects from the source repository into a pack in the cloned repository.
 	with a long history, and would want to send in fixes
 	as patches.
 
+--[no-]single-branch::
+	Clone only the history leading to the tip of a single branch,
+	either specified by the `--branch` option or the primary
+	branch remote's `HEAD` points at. When creating a shallow
+	clone with the `--depth` option, this is the default, unless
+	`--no-single-branch` is given to fetch the histories near the
+	tips of all branches.
+	Further fetches into the resulting repository will only update the
+	remote-tracking branch for the branch this option was used for the
+	initial cloning.  If the HEAD at the remote did not point at any
+	branch when `--single-branch` clone was made, no remote-tracking
+	branch is created.
+
 --recursive::
+--recurse-submodules::
 	After the clone is created, initialize all submodules within,
 	using their default settings. This is equivalent to running
 	`git submodule update --init --recursive` immediately after
 	the clone is finished. This option is ignored if the cloned
 	repository does not have a worktree/checkout (i.e. if any of
 	`--no-checkout`/`-n`, `--bare`, or `--mirror` is given)
+
+--separate-git-dir=<git dir>::
+	Instead of placing the cloned repository where it is supposed
+	to be, place the cloned repository at the specified directory,
+	then make a filesytem-agnostic Git symbolic link to there.
+	The result is Git repository can be separated from working
+	tree.
+
 
 <repository>::
 	The (possibly remote) repository to clone from.  See the
@@ -195,8 +239,8 @@ Examples
 * Clone from upstream:
 +
 ------------
-$ git clone git://git.kernel.org/pub/scm/.../linux-2.6 my2.6
-$ cd my2.6
+$ git clone git://git.kernel.org/pub/scm/.../linux.git my-linux
+$ cd my-linux
 $ make
 ------------
 
@@ -213,10 +257,10 @@ $ git show-branch
 * Clone from upstream while borrowing from an existing local directory:
 +
 ------------
-$ git clone --reference my2.6 \
-	git://git.kernel.org/pub/scm/.../linux-2.7 \
-	my2.7
-$ cd my2.7
+$ git clone --reference /git/linux.git \
+	git://git.kernel.org/pub/scm/.../linux.git \
+	my-linux
+$ cd my-linux
 ------------
 
 
@@ -225,24 +269,6 @@ $ cd my2.7
 ------------
 $ git clone --bare -l /home/proj/.git /pub/scm/proj.git
 ------------
-
-
-* Create a repository on the kernel.org machine that borrows from Linus:
-+
-------------
-$ git clone --bare -l -s /pub/scm/.../torvalds/linux-2.6.git \
-    /pub/scm/.../me/subsys-2.6.git
-------------
-
-
-Author
-------
-Written by Linus Torvalds <torvalds@osdl.org>
-
-
-Documentation
---------------
-Documentation by Junio C Hamano and the git-list <git@vger.kernel.org>.
 
 
 GIT

@@ -12,7 +12,7 @@ TRASH=`pwd`
 
 test_expect_success \
     'setup' \
-    'rm -f .git/index*
+    'rm -f .git/index* &&
      perl -e "print \"a\" x 4096;" > a &&
      perl -e "print \"b\" x 4096;" > b &&
      perl -e "print \"c\" x 4096;" > c &&
@@ -37,6 +37,10 @@ test_expect_success \
 test_expect_success \
     'pack without delta' \
     'packname_1=$(git pack-objects --window=0 test-1 <obj-list)'
+
+test_expect_success \
+    'pack-objects with bogus arguments' \
+    'test_must_fail git pack-objects --window=0 test-1 blah blah <obj-list'
 
 rm -fr .git2
 mkdir .git2
@@ -147,7 +151,7 @@ test_expect_success \
 	    git cat-file $t $object || return 1
 	 done <obj-list
     } >current &&
-    test_cmp expect current'
+    cmp expect current'
 
 test_expect_success \
     'use packed deltified (REF_DELTA) objects' \
@@ -162,7 +166,7 @@ test_expect_success \
 	    git cat-file $t $object || return 1
 	 done <obj-list
     } >current &&
-    test_cmp expect current'
+    cmp expect current'
 
 test_expect_success \
     'use packed deltified (OFS_DELTA) objects' \
@@ -177,7 +181,7 @@ test_expect_success \
 	    git cat-file $t $object || return 1
 	 done <obj-list
     } >current &&
-    test_cmp expect current'
+    cmp expect current'
 
 unset GIT_OBJECT_DIRECTORY
 
@@ -191,9 +195,9 @@ test_expect_success 'survive missing objects/pack directory' '
 		rm -fr $GOP &&
 		git index-pack --stdin --keep=test <../test-3-${packname_3}.pack &&
 		test -f $GOP/pack-${packname_3}.pack &&
-		test_cmp $GOP/pack-${packname_3}.pack ../test-3-${packname_3}.pack &&
+		cmp $GOP/pack-${packname_3}.pack ../test-3-${packname_3}.pack &&
 		test -f $GOP/pack-${packname_3}.idx &&
-		test_cmp $GOP/pack-${packname_3}.idx ../test-3-${packname_3}.idx &&
+		cmp $GOP/pack-${packname_3}.idx ../test-3-${packname_3}.idx &&
 		test -f $GOP/pack-${packname_3}.keep
 	)
 '
@@ -412,6 +416,11 @@ test_expect_success \
 test_expect_success \
     'make sure index-pack detects the SHA1 collision' \
     'test_must_fail git index-pack -o bad.idx test-3.pack 2>msg &&
-     grep "SHA1 COLLISION FOUND" msg'
+     test_i18ngrep "SHA1 COLLISION FOUND" msg'
+
+test_expect_success \
+    'make sure index-pack detects the SHA1 collision (large blobs)' \
+    'test_must_fail git -c core.bigfilethreshold=1 index-pack -o bad.idx test-3.pack 2>msg &&
+     test_i18ngrep "SHA1 COLLISION FOUND" msg'
 
 test_done

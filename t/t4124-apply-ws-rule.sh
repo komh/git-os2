@@ -10,7 +10,8 @@ prepare_test_file () {
 	#       X  RULE
 	#   	!  trailing-space
 	#   	@  space-before-tab
-	#   	#  indent-with-non-tab
+	#   	#  indent-with-non-tab (default tab width 8)
+	#	=  indent-with-non-tab,tabwidth=16
 	#   	%  tab-in-indent
 	sed -e "s/_/ /g" -e "s/>/	/" <<-\EOF
 		An_SP in an ordinary line>and a HT.
@@ -25,8 +26,8 @@ prepare_test_file () {
 		________>_Eight SP, a HT and a SP (@#%).
 		_______________Fifteen SP (#).
 		_______________>Fifteen SP and a HT (@#%).
-		________________Sixteen SP (#).
-		________________>Sixteen SP and a HT (@#%).
+		________________Sixteen SP (#=).
+		________________>Sixteen SP and a HT (@#%=).
 		_____a__Five SP, a non WS, two SP.
 		A line with a (!) trailing SP_
 		A line with a (!) trailing HT>
@@ -46,7 +47,7 @@ test_fix () {
 	# find touched lines
 	$DIFF file target | sed -n -e "s/^> //p" >fixed
 
-	# the changed lines are all expeced to change
+	# the changed lines are all expected to change
 	fixed_cnt=$(wc -l <fixed)
 	case "$1" in
 	'') expect_cnt=$fixed_cnt ;;
@@ -121,6 +122,34 @@ test_expect_success 'whitespace=error-all, no rule (attribute)' '
 
 '
 
+test_expect_success 'spaces inserted by tab-in-indent' '
+
+	git config core.whitespace -trailing,-space,-indent,tab &&
+	rm -f .gitattributes &&
+	test_fix % &&
+	sed -e "s/_/ /g" -e "s/>/	/" <<-\EOF >expect &&
+		An_SP in an ordinary line>and a HT.
+		________A HT (%).
+		________A SP and a HT (@%).
+		_________A SP, a HT and a SP (@%).
+		_______Seven SP.
+		________Eight SP (#).
+		________Seven SP and a HT (@%).
+		________________Eight SP and a HT (@#%).
+		_________Seven SP, a HT and a SP (@%).
+		_________________Eight SP, a HT and a SP (@#%).
+		_______________Fifteen SP (#).
+		________________Fifteen SP and a HT (@#%).
+		________________Sixteen SP (#=).
+		________________________Sixteen SP and a HT (@#%=).
+		_____a__Five SP, a non WS, two SP.
+		A line with a (!) trailing SP_
+		A line with a (!) trailing HT>
+	EOF
+	test_cmp expect target
+
+'
+
 for t in - ''
 do
 	case "$t" in '') tt='!' ;; *) tt= ;; esac
@@ -129,7 +158,7 @@ do
 		case "$s" in '') ts='@' ;; *) ts= ;; esac
 		for i in - ''
 		do
-			case "$i" in '') ti='#' ;; *) ti= ;; esac
+			case "$i" in '') ti='#' ti16='=';; *) ti= ti16= ;; esac
 			for h in - ''
 			do
 				[ -z "$h$i" ] && continue
@@ -142,10 +171,20 @@ do
 					test_fix "$tt$ts$ti$th"
 				'
 
+				test_expect_success "rule=$rule,tabwidth=16" '
+					git config core.whitespace "$rule,tabwidth=16" &&
+					test_fix "$tt$ts$ti16$th"
+				'
+
 				test_expect_success "rule=$rule (attributes)" '
 					git config --unset core.whitespace &&
 					echo "target whitespace=$rule" >.gitattributes &&
 					test_fix "$tt$ts$ti$th"
+				'
+
+				test_expect_success "rule=$rule,tabwidth=16 (attributes)" '
+					echo "target whitespace=$rule,tabwidth=16" >.gitattributes &&
+					test_fix "$tt$ts$ti16$th"
 				'
 
 			done
@@ -176,9 +215,8 @@ test_expect_success 'trailing whitespace & no newline at the end of file' '
 '
 
 test_expect_success 'blank at EOF with --whitespace=fix (1)' '
-	: these can fail depending on what we did before
-	git config --unset core.whitespace
-	rm -f .gitattributes
+	test_might_fail git config --unset core.whitespace &&
+	rm -f .gitattributes &&
 
 	{ echo a; echo b; echo c; } >one &&
 	git add one &&
@@ -368,7 +406,7 @@ test_expect_success 'missing blanks at EOF must only match blank lines' '
 	git diff -- one >patch &&
 
 	echo a >one &&
-	test_must_fail git apply patch
+	test_must_fail git apply patch &&
 	test_must_fail git apply --whitespace=fix patch &&
 	test_must_fail git apply --ignore-space-change --whitespace=fix patch
 '
@@ -419,7 +457,7 @@ test_expect_success 'same, but with CR-LF line endings && cr-at-eol set' '
 	printf "b\r\n" >>one &&
 	printf "c\r\n" >>one &&
 	cp one save-one &&
-	printf "                 \r\n" >>one
+	printf "                 \r\n" >>one &&
 	git add one &&
 	printf "d\r\n" >>one &&
 	cp one expect &&
@@ -436,7 +474,7 @@ test_expect_success 'same, but with CR-LF line endings && cr-at-eol unset' '
 	printf "b\r\n" >>one &&
 	printf "c\r\n" >>one &&
 	cp one save-one &&
-	printf "                 \r\n" >>one
+	printf "                 \r\n" >>one &&
 	git add one &&
 	cp one expect &&
 	printf "d\r\n" >>one &&
@@ -446,6 +484,32 @@ test_expect_success 'same, but with CR-LF line endings && cr-at-eol unset' '
 
 	git apply --ignore-space-change --whitespace=fix patch &&
 	test_cmp one expect
+'
+
+test_expect_success 'whitespace=fix to expand' '
+	qz_to_tab_space >preimage <<-\EOF &&
+	QQa
+	QQb
+	QQc
+	ZZZZZZZZZZZZZZZZd
+	QQe
+	QQf
+	QQg
+	EOF
+	qz_to_tab_space >patch <<-\EOF &&
+	diff --git a/preimage b/preimage
+	--- a/preimage
+	+++ b/preimage
+	@@ -1,7 +1,6 @@
+	 QQa
+	 QQb
+	 QQc
+	-QQd
+	 QQe
+	 QQf
+	 QQg
+	EOF
+	git -c core.whitespace=tab-in-indent apply --whitespace=fix patch
 '
 
 test_done

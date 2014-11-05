@@ -8,6 +8,7 @@ git-reflog - Manage reflog information
 
 SYNOPSIS
 --------
+[verse]
 'git reflog' <subcommand> <options>
 
 DESCRIPTION
@@ -37,14 +38,14 @@ The reflog will cover all recent actions (HEAD reflog records branch switching
 as well).  It is an alias for `git log -g --abbrev-commit --pretty=oneline`;
 see linkgit:git-log[1].
 
-The reflog is useful in various git commands, to specify the old value
-of a reference. For example, `HEAD@\{2\}` means "where HEAD used to be
-two moves ago", `master@\{one.week.ago\}` means "where master used to
+The reflog is useful in various Git commands, to specify the old value
+of a reference. For example, `HEAD@{2}` means "where HEAD used to be
+two moves ago", `master@{one.week.ago}` means "where master used to
 point to one week ago", and so on. See linkgit:gitrevisions[7] for
 more details.
 
 To delete single entries from the reflog, use the subcommand "delete"
-and specify the _exact_ entry (e.g. "`git reflog delete master@\{2\}`").
+and specify the _exact_ entry (e.g. "`git reflog delete master@{2}`").
 
 
 OPTIONS
@@ -66,14 +67,19 @@ them.
 --expire=<time>::
 	Entries older than this time are pruned.  Without the
 	option it is taken from configuration `gc.reflogExpire`,
-	which in turn defaults to 90 days.
+	which in turn defaults to 90 days.  --expire=all prunes
+	entries regardless of their age; --expire=never turns off
+	pruning of reachable entries (but see --expire-unreachable).
 
 --expire-unreachable=<time>::
 	Entries older than this time and not reachable from
 	the current tip of the branch are pruned.  Without the
 	option it is taken from configuration
 	`gc.reflogExpireUnreachable`, which in turn defaults to
-	30 days.
+	30 days.  --expire-unreachable=all prunes unreachable
+	entries regardless of their age; --expire-unreachable=never
+	turns off early pruning of unreachable entries (but see
+	--expire).
 
 --all::
 	Instead of listing <refs> explicitly, prune all refs.
@@ -89,14 +95,6 @@ them.
 
 --verbose::
 	Print extra information on screen.
-
-Author
-------
-Written by Junio C Hamano <gitster@pobox.com>
-
-Documentation
---------------
-Documentation by Junio C Hamano and the git-list <git@vger.kernel.org>.
 
 GIT
 ---

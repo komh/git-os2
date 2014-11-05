@@ -4,6 +4,9 @@
 #include "tree.h"
 #include "blob.h"
 
+#define PGP_SIGNATURE "-----BEGIN PGP SIGNATURE-----"
+#define PGP_MESSAGE "-----BEGIN PGP MESSAGE-----"
+
 const char *tag_type = "tag";
 
 struct object *deref_tag(struct object *o, const char *warn, int warnlen)
@@ -17,6 +20,18 @@ struct object *deref_tag(struct object *o, const char *warn, int warnlen)
 		if (!warnlen)
 			warnlen = strlen(warn);
 		error("missing object referenced by '%.*s'", warnlen, warn);
+	}
+	return o;
+}
+
+struct object *deref_tag_noverify(struct object *o)
+{
+	while (o && o->type == OBJ_TAG) {
+		o = parse_object(o->sha1);
+		if (o && o->type == OBJ_TAG && ((struct tag *)o)->tagged)
+			o = ((struct tag *)o)->tagged;
+		else
+			o = NULL;
 	}
 	return o;
 }
@@ -53,7 +68,7 @@ static unsigned long parse_tag_date(const char *buf, const char *tail)
 	return strtoul(dateptr, NULL, 10);
 }
 
-int parse_tag_buffer(struct tag *item, void *data, unsigned long size)
+int parse_tag_buffer(struct tag *item, const void *data, unsigned long size)
 {
 	unsigned char sha1[20];
 	char type[20];
@@ -94,7 +109,9 @@ int parse_tag_buffer(struct tag *item, void *data, unsigned long size)
 		item->tagged = NULL;
 	}
 
-	if (prefixcmp(bufptr, "tag "))
+	if (bufptr + 4 < tail && !prefixcmp(bufptr, "tag "))
+		; 		/* good */
+	else
 		return -1;
 	bufptr += 4;
 	nl = memchr(bufptr, '\n', tail - bufptr);
@@ -103,7 +120,7 @@ int parse_tag_buffer(struct tag *item, void *data, unsigned long size)
 	item->tag = xmemdupz(bufptr, nl - bufptr);
 	bufptr = nl + 1;
 
-	if (!prefixcmp(bufptr, "tagger "))
+	if (bufptr + 7 < tail && !prefixcmp(bufptr, "tagger "))
 		item->date = parse_tag_date(bufptr, tail);
 	else
 		item->date = 0;
@@ -132,4 +149,21 @@ int parse_tag(struct tag *item)
 	ret = parse_tag_buffer(item, data, size);
 	free(data);
 	return ret;
+}
+
+/*
+ * Look at a signed tag object, and return the offset where
+ * the embedded detached signature begins, or the end of the
+ * data when there is no such signature.
+ */
+size_t parse_signature(const char *buf, unsigned long size)
+{
+	char *eol;
+	size_t len = 0;
+	while (len < size && prefixcmp(buf + len, PGP_SIGNATURE) &&
+			prefixcmp(buf + len, PGP_MESSAGE)) {
+		eol = memchr(buf + len, '\n', size - len);
+		len += eol ? eol - (buf + len) + 1 : size - len;
+	}
+	return len;
 }

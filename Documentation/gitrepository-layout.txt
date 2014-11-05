@@ -12,43 +12,48 @@ $GIT_DIR/*
 DESCRIPTION
 -----------
 
-You may find these things in your git repository (`.git`
-directory for a repository associated with your working tree, or
-`<project>.git` directory for a public 'bare' repository. It is
-also possible to have a working tree where `.git` is a plain
-ASCII file containing `gitdir: <path>`, i.e. the path to the
-real git repository).
+A Git repository comes in two different flavours:
+
+ * a `.git` directory at the root of the working tree;
+
+ * a `<project>.git` directory that is a 'bare' repository
+   (i.e. without its own working tree), that is typically used for
+   exchanging histories with others by pushing into it and fetching
+   from it.
+
+*Note*: Also you can have a plain text file `.git` at the root of
+your working tree, containing `gitdir: <path>` to point at the real
+directory that has the repository.  This mechanism is often used for
+a working tree of a submodule checkout, to allow you in the
+containing superproject to `git checkout` a branch that does not
+have the submodule.  The `checkout` has to remove the entire
+submodule working tree, without losing the submodule repository.
+
+These things may exist in a Git repository.
 
 objects::
 	Object store associated with this repository.  Usually
 	an object store is self sufficient (i.e. all the objects
 	that are referred to by an object found in it are also
-	found in it), but there are couple of ways to violate
-	it.
+	found in it), but there are a few ways to violate it.
 +
-. You could populate the repository by running a commit walker
-without `-a` option.  Depending on which options are given, you
-could have only commit objects without associated blobs and
-trees this way, for example.  A repository with this kind of
-incomplete object store is not suitable to be published to the
-outside world but sometimes useful for private repository.
-. You also could have an incomplete but locally usable repository
-by cloning shallowly.  See linkgit:git-clone[1].
-. You can be using `objects/info/alternates` mechanism, or
-`$GIT_ALTERNATE_OBJECT_DIRECTORIES` mechanism to 'borrow'
+. You could have an incomplete but locally usable repository
+by creating a shallow clone.  See linkgit:git-clone[1].
+. You could be using the `objects/info/alternates` or
+`$GIT_ALTERNATE_OBJECT_DIRECTORIES` mechanisms to 'borrow'
 objects from other object stores.  A repository with this kind
 of incomplete object store is not suitable to be published for
 use with dumb transports but otherwise is OK as long as
-`objects/info/alternates` points at the right object stores
-it borrows from.
+`objects/info/alternates` points at the object stores it
+borrows from.
 
 objects/[0-9a-f][0-9a-f]::
-	Traditionally, each object is stored in its own file.
-	They are split into 256 subdirectories using the first
-	two letters from its object name to keep the number of
-	directory entries `objects` directory itself needs to
-	hold.  Objects found here are often called 'unpacked'
-	(or 'loose') objects.
+	A newly created object is stored in its own file.
+	The objects are splayed over 256 subdirectories using
+	the first two characters of the sha1 object name to
+	keep the number of directory entries in `objects`
+	itself to a manageable number. Objects found
+	here are often called 'unpacked' (or 'loose') objects.
 
 objects/pack::
 	Packs (files that store many object in compressed form,
@@ -85,7 +90,7 @@ objects/info/http-alternates::
 
 refs::
 	References are stored in subdirectories of this
-	directory.  The 'git prune' command knows to keep
+	directory.  The 'git prune' command knows to preserve
 	objects reachable from refs found in this directory and
 	its subdirectories.
 
@@ -100,6 +105,12 @@ refs/remotes/`name`::
 	records tip-of-the-tree commit objects of branches copied
 	from a remote repository.
 
+refs/replace/`<obj-sha1>`::
+	records the SHA-1 of the object that replaces `<obj-sha1>`.
+	This is similar to info/grafts and is internally used and
+	maintained by linkgit:git-replace[1]. Such refs can be exchanged
+	between repositories while grafts are not.
+
 packed-refs::
 	records the same information as refs/heads/, refs/tags/,
 	and friends record in a more efficient way.  See
@@ -109,7 +120,7 @@ HEAD::
 	A symref (see glossary) to the `refs/heads/` namespace
 	describing the currently active branch.  It does not mean
 	much if the repository is not associated with any working tree
-	(i.e. a 'bare' repository), but a valid git repository
+	(i.e. a 'bare' repository), but a valid Git repository
 	*must* have the HEAD file; some porcelains may use it to
 	guess the designated "default" branch of the repository
 	(usually 'master').  It is legal if the named branch
@@ -119,19 +130,20 @@ HEAD::
 +
 HEAD can also record a specific commit directly, instead of
 being a symref to point at the current branch.  Such a state
-is often called 'detached HEAD', and almost all commands work
-identically as normal.  See linkgit:git-checkout[1] for
-details.
+is often called 'detached HEAD.'  See linkgit:git-checkout[1]
+for details.
 
 branches::
 	A slightly deprecated way to store shorthands to be used
-	to specify URL to 'git fetch', 'git pull' and 'git push'
-	commands is to store a file in `branches/<name>` and
-	give 'name' to these commands in place of 'repository'
-	argument.
+	to specify a URL to 'git fetch', 'git pull' and 'git push'.
+	A file can be stored as `branches/<name>` and then
+	'name' can be given to these commands in place of
+	'repository' argument.  See the REMOTES section in
+	linkgit:git-fetch[1] for details.  This mechanism is legacy
+	and not likely to be found in modern repositories.
 
 hooks::
-	Hooks are customization scripts used by various git
+	Hooks are customization scripts used by various Git
 	commands.  A handful of sample hooks are installed when
 	'git init' is run, but all of them are disabled by
 	default.  To enable, the `.sample` suffix has to be
@@ -169,13 +181,19 @@ info/exclude::
 	This file, by convention among Porcelains, stores the
 	exclude pattern list. `.gitignore` is the per-directory
 	ignore file.  'git status', 'git add', 'git rm' and
-	'git clean' look at it but the core git commands do not look
+	'git clean' look at it but the core Git commands do not look
 	at it.  See also: linkgit:gitignore[5].
 
+info/sparse-checkout::
+	This file stores sparse checkout patterns.
+	See also: linkgit:git-read-tree[1].
+
 remotes::
-	Stores shorthands to be used to give URL and default
-	refnames to interact with remote repository to
-	'git fetch', 'git pull' and 'git push' commands.
+	Stores shorthands for URL and default refnames for use
+	when interacting with remote repositories via 'git fetch',
+	'git pull' and 'git push' commands.  See the REMOTES section
+	in linkgit:git-fetch[1] for details.  This mechanism is legacy
+	and not likely to be found in modern repositories.
 
 logs::
 	Records of changes made to refs are stored in this
@@ -192,6 +210,9 @@ shallow::
 	This is similar to `info/grafts` but is internally used
 	and maintained by shallow clone mechanism.  See `--depth`
 	option to linkgit:git-clone[1] and linkgit:git-fetch[1].
+
+modules::
+	Contains the git-repositories of the submodules.
 
 SEE ALSO
 --------

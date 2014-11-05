@@ -43,6 +43,10 @@ TEST_PATH="$TEST_DIRECTORY"/lib-httpd
 HTTPD_ROOT_PATH="$PWD"/httpd
 HTTPD_DOCUMENT_ROOT_PATH=$HTTPD_ROOT_PATH/www
 
+# hack to suppress apache PassEnv warnings
+GIT_VALGRIND=$GIT_VALGRIND; export GIT_VALGRIND
+GIT_VALGRIND_OPTIONS=$GIT_VALGRIND_OPTIONS; export GIT_VALGRIND_OPTIONS
+
 if ! test -x "$LIB_HTTPD_PATH"
 then
 	skip_all="skipping test, no web server found at '$LIB_HTTPD_PATH'"
@@ -75,12 +79,14 @@ fi
 
 prepare_httpd() {
 	mkdir -p "$HTTPD_DOCUMENT_ROOT_PATH"
+	cp "$TEST_PATH"/passwd "$HTTPD_ROOT_PATH"
+	cp "$TEST_PATH"/broken-smart-http.sh "$HTTPD_ROOT_PATH"
 
 	ln -s "$LIB_HTTPD_MODULE_PATH" "$HTTPD_ROOT_PATH/modules"
 
 	if test -n "$LIB_HTTPD_SSL"
 	then
-		HTTPD_URL=https://127.0.0.1:$LIB_HTTPD_PORT
+		HTTPD_PROTO=https
 
 		RANDFILE_PATH="$HTTPD_ROOT_PATH"/.rnd openssl req \
 			-config "$TEST_PATH/ssl.cnf" \
@@ -91,8 +97,12 @@ prepare_httpd() {
 		export GIT_SSL_NO_VERIFY
 		HTTPD_PARA="$HTTPD_PARA -DSSL"
 	else
-		HTTPD_URL=http://127.0.0.1:$LIB_HTTPD_PORT
+		HTTPD_PROTO=http
 	fi
+	HTTPD_DEST=127.0.0.1:$LIB_HTTPD_PORT
+	HTTPD_URL=$HTTPD_PROTO://$HTTPD_DEST
+	HTTPD_URL_USER=$HTTPD_PROTO://user%40host@$HTTPD_DEST
+	HTTPD_URL_USER_PASS=$HTTPD_PROTO://user%40host:user%40host@$HTTPD_DEST
 
 	if test -n "$LIB_HTTPD_DAV" -o -n "$LIB_HTTPD_SVN"
 	then
@@ -131,10 +141,11 @@ stop_httpd() {
 		-f "$TEST_PATH/apache.conf" $HTTPD_PARA -k stop
 }
 
-test_http_push_nonff() {
+test_http_push_nonff () {
 	REMOTE_REPO=$1
 	LOCAL_REPO=$2
 	BRANCH=$3
+	EXPECT_CAS_RESULT=${4-failure}
 
 	test_expect_success 'non-fast-forward push fails' '
 		cd "$REMOTE_REPO" &&
@@ -155,7 +166,62 @@ test_http_push_nonff() {
 	'
 
 	test_expect_success 'non-fast-forward push shows help message' '
-		grep "To prevent you from losing history, non-fast-forward updates were rejected" \
-			output
+		test_i18ngrep "Updates were rejected because" output
 	'
+
+	test_expect_${EXPECT_CAS_RESULT} 'force with lease aka cas' '
+		HEAD=$(	cd "$REMOTE_REPO" && git rev-parse --verify HEAD ) &&
+		test_when_finished '\''
+			(cd "$REMOTE_REPO" && git update-ref HEAD "$HEAD")
+		'\'' &&
+		(
+			cd "$LOCAL_REPO" &&
+			git push -v --force-with-lease=$BRANCH:$HEAD origin
+		) &&
+		git rev-parse --verify "$BRANCH" >expect &&
+		(
+			cd "$REMOTE_REPO" && git rev-parse --verify HEAD
+		) >actual &&
+		test_cmp expect actual
+	'
+}
+
+setup_askpass_helper() {
+	test_expect_success 'setup askpass helper' '
+		write_script "$TRASH_DIRECTORY/askpass" <<-\EOF &&
+		echo >>"$TRASH_DIRECTORY/askpass-query" "askpass: $*" &&
+		cat "$TRASH_DIRECTORY/askpass-response"
+		EOF
+		GIT_ASKPASS="$TRASH_DIRECTORY/askpass" &&
+		export GIT_ASKPASS &&
+		export TRASH_DIRECTORY
+	'
+}
+
+set_askpass() {
+	>"$TRASH_DIRECTORY/askpass-query" &&
+	echo "$*" >"$TRASH_DIRECTORY/askpass-response"
+}
+
+expect_askpass() {
+	dest=$HTTPD_DEST${3+/$3}
+
+	{
+		case "$1" in
+		none)
+			;;
+		pass)
+			echo "askpass: Password for 'http://$2@$dest': "
+			;;
+		both)
+			echo "askpass: Username for 'http://$dest': "
+			echo "askpass: Password for 'http://$2@$dest': "
+			;;
+		*)
+			false
+			;;
+		esac
+	} >"$TRASH_DIRECTORY/askpass-expect" &&
+	test_cmp "$TRASH_DIRECTORY/askpass-expect" \
+		 "$TRASH_DIRECTORY/askpass-query"
 }

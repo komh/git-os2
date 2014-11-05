@@ -99,11 +99,11 @@ test_expect_success \
     'validate result of -B -M (#4)' \
     'compare_diff_raw expected current'
 
-test_expect_success SYMLINKS \
+test_expect_success \
     'make file0 into something completely different' \
     'rm -f file0 &&
-     ln -s frotz file0 &&
-     git update-index file0 file1'
+     test_ln_s_add frotz file0 &&
+     git update-index file1'
 
 test_expect_success \
     'run diff with -B' \
@@ -114,7 +114,7 @@ cat >expected <<\EOF
 :100644 100644 6ff87c4664981e4397625791c8ea3bbb5f2279a3 f5deac7be59e7eeab8657fd9ae706fd6a57daed2 M100	file1
 EOF
 
-test_expect_success SYMLINKS \
+test_expect_success \
     'validate result of -B (#5)' \
     'compare_diff_raw expected current'
 
@@ -129,7 +129,7 @@ cat >expected <<\EOF
 :100644 100644 6ff87c4664981e4397625791c8ea3bbb5f2279a3 f5deac7be59e7eeab8657fd9ae706fd6a57daed2 R	file0	file1
 EOF
 
-test_expect_success SYMLINKS \
+test_expect_success \
     'validate result of -B -M (#6)' \
     'compare_diff_raw expected current'
 
@@ -144,7 +144,7 @@ cat >expected <<\EOF
 :100644 100644 6ff87c4664981e4397625791c8ea3bbb5f2279a3 f5deac7be59e7eeab8657fd9ae706fd6a57daed2 M	file1
 EOF
 
-test_expect_success SYMLINKS \
+test_expect_success \
     'validate result of -M (#7)' \
     'compare_diff_raw expected current'
 
@@ -155,7 +155,7 @@ test_expect_success \
      git checkout-index -f -u -a &&
      sed -e "s/git/GIT/" file0 >file1 &&
      sed -e "s/git/GET/" file0 >file2 &&
-     rm -f file0
+     rm -f file0 &&
      git update-index --add --remove file0 file1 file2'
 
 test_expect_success \
@@ -173,8 +173,8 @@ test_expect_success \
     'compare_diff_raw expected current'
 
 test_expect_success \
-    'run diff with -B -M' \
-    'git diff-index -B -M "$tree" >current'
+    'run diff with -B -C' \
+    'git diff-index -B -C "$tree" >current'
 
 cat >expected <<\EOF
 :100644 100644 f5deac7be59e7eeab8657fd9ae706fd6a57daed2 08bb2fb671deff4c03a4d4a0a1315dff98d5732c C095	file0	file1

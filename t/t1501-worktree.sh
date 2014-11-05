@@ -7,7 +7,6 @@ test_expect_success 'setup' '
 	EMPTY_TREE=$(git write-tree) &&
 	EMPTY_BLOB=$(git hash-object -t blob --stdin </dev/null) &&
 	CHANGED_BLOB=$(echo changed | git hash-object -t blob --stdin) &&
-	ZEROES=0000000000000000000000000000000000000000 &&
 	EMPTY_BLOB7=$(echo $EMPTY_BLOB | sed "s/\(.......\).*/\1/") &&
 	CHANGED_BLOB7=$(echo $CHANGED_BLOB | sed "s/\(.......\).*/\1/") &&
 
@@ -49,7 +48,7 @@ test_expect_success 'setup: helper for testing rev-parse' '
 '
 
 test_expect_success 'setup: core.worktree = relative path' '
-	unset GIT_WORK_TREE;
+	sane_unset GIT_WORK_TREE &&
 	GIT_DIR=repo.git &&
 	GIT_CONFIG="$(pwd)"/$GIT_DIR/config &&
 	export GIT_DIR GIT_CONFIG &&
@@ -69,7 +68,7 @@ test_expect_success 'inside work tree' '
 	)
 '
 
-test_expect_failure 'empty prefix is actually written out' '
+test_expect_success 'empty prefix is actually written out' '
 	echo >expected &&
 	(
 		cd work &&
@@ -90,7 +89,7 @@ test_expect_success 'subdir of work tree' '
 '
 
 test_expect_success 'setup: core.worktree = absolute path' '
-	unset GIT_WORK_TREE;
+	sane_unset GIT_WORK_TREE &&
 	GIT_DIR=$(pwd)/repo.git &&
 	GIT_CONFIG=$GIT_DIR/config &&
 	export GIT_DIR GIT_CONFIG &&
@@ -239,10 +238,10 @@ test_expect_success '_gently() groks relative GIT_DIR & GIT_WORK_TREE' '
 
 test_expect_success 'diff-index respects work tree under .git dir' '
 	cat >diff-index-cached.expected <<-EOF &&
-	:000000 100644 $ZEROES $EMPTY_BLOB A	sub/dir/tracked
+	:000000 100644 $_z40 $EMPTY_BLOB A	sub/dir/tracked
 	EOF
 	cat >diff-index.expected <<-EOF &&
-	:000000 100644 $ZEROES $ZEROES A	sub/dir/tracked
+	:000000 100644 $_z40 $_z40 A	sub/dir/tracked
 	EOF
 
 	(
@@ -258,7 +257,7 @@ test_expect_success 'diff-index respects work tree under .git dir' '
 
 test_expect_success 'diff-files respects work tree under .git dir' '
 	cat >diff-files.expected <<-EOF &&
-	:100644 100644 $EMPTY_BLOB $ZEROES M	sub/dir/tracked
+	:100644 100644 $EMPTY_BLOB $_z40 M	sub/dir/tracked
 	EOF
 
 	(
@@ -335,9 +334,16 @@ test_expect_success 'absolute pathspec should fail gracefully' '
 '
 
 test_expect_success 'make_relative_path handles double slashes in GIT_DIR' '
-	>dummy_file
+	>dummy_file &&
 	echo git --git-dir="$(pwd)//repo.git" --work-tree="$(pwd)" add dummy_file &&
 	git --git-dir="$(pwd)//repo.git" --work-tree="$(pwd)" add dummy_file
+'
+
+test_expect_success 'relative $GIT_WORK_TREE and git subprocesses' '
+	GIT_DIR=repo.git GIT_WORK_TREE=repo.git/work \
+	test-subprocess --setup-work-tree rev-parse --show-toplevel >actual &&
+	echo "$(pwd)/repo.git/work" >expected &&
+	test_cmp expected actual
 '
 
 test_done

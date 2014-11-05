@@ -1,5 +1,4 @@
-#include "cache.h"
-#include "exec_cmd.h"
+#include "builtin.h"
 
 static void flush_current_id(int patchlen, unsigned char *id, git_SHA_CTX *c)
 {
@@ -57,13 +56,13 @@ static int scan_hunk_header(const char *p, int *p_before, int *p_after)
 	return 1;
 }
 
-int get_one_patchid(unsigned char *next_sha1, git_SHA_CTX *ctx)
+static int get_one_patchid(unsigned char *next_sha1, git_SHA_CTX *ctx, struct strbuf *line_buf)
 {
-	static char line[1000];
 	int patchlen = 0, found_next = 0;
 	int before = -1, after = -1;
 
-	while (fgets(line, sizeof(line), stdin) != NULL) {
+	while (strbuf_getwholeline(line_buf, stdin, '\n') != EOF) {
+		char *line = line_buf->buf;
 		char *p = line;
 		int len;
 
@@ -73,6 +72,8 @@ int get_one_patchid(unsigned char *next_sha1, git_SHA_CTX *ctx)
 			p += 7;
 		else if (!memcmp(line, "From ", 5))
 			p += 5;
+		else if (!memcmp(line, "\\ ", 2) && 12 < strlen(line))
+			continue;
 
 		if (!get_sha1_hex(p, next_sha1)) {
 			found_next = 1;
@@ -132,14 +133,16 @@ static void generate_id_list(void)
 	unsigned char sha1[20], n[20];
 	git_SHA_CTX ctx;
 	int patchlen;
+	struct strbuf line_buf = STRBUF_INIT;
 
 	git_SHA1_Init(&ctx);
 	hashclr(sha1);
 	while (!feof(stdin)) {
-		patchlen = get_one_patchid(n, &ctx);
+		patchlen = get_one_patchid(n, &ctx, &line_buf);
 		flush_current_id(patchlen, sha1, &ctx);
 		hashcpy(sha1, n);
 	}
+	strbuf_release(&line_buf);
 }
 
 static const char patch_id_usage[] = "git patch-id < patch";

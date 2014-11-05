@@ -10,6 +10,7 @@
 #include "quote.h"
 #include "builtin.h"
 #include "parse-options.h"
+#include "pathspec.h"
 
 static int line_termination = '\n';
 #define LS_RECURSIVE 1
@@ -19,12 +20,12 @@ static int line_termination = '\n';
 #define LS_SHOW_SIZE 16
 static int abbrev;
 static int ls_options;
-static const char **pathspec;
+static struct pathspec pathspec;
 static int chomp_prefix;
 static const char *ls_tree_prefix;
 
 static const  char * const ls_tree_usage[] = {
-	"git ls-tree [<options>] <tree-ish> [<path>...]",
+	N_("git ls-tree [<options>] <tree-ish> [<path>...]"),
 	NULL
 };
 
@@ -35,7 +36,7 @@ static int show_recursive(const char *base, int baselen, const char *pathname)
 	if (ls_options & LS_RECURSIVE)
 		return 1;
 
-	s = pathspec;
+	s = pathspec._raw;
 	if (!s)
 		return 0;
 
@@ -120,27 +121,27 @@ int cmd_ls_tree(int argc, const char **argv, const char *prefix)
 {
 	unsigned char sha1[20];
 	struct tree *tree;
-	int full_tree = 0;
+	int i, full_tree = 0;
 	const struct option ls_tree_options[] = {
-		OPT_BIT('d', NULL, &ls_options, "only show trees",
+		OPT_BIT('d', NULL, &ls_options, N_("only show trees"),
 			LS_TREE_ONLY),
-		OPT_BIT('r', NULL, &ls_options, "recurse into subtrees",
+		OPT_BIT('r', NULL, &ls_options, N_("recurse into subtrees"),
 			LS_RECURSIVE),
-		OPT_BIT('t', NULL, &ls_options, "show trees when recursing",
+		OPT_BIT('t', NULL, &ls_options, N_("show trees when recursing"),
 			LS_SHOW_TREES),
 		OPT_SET_INT('z', NULL, &line_termination,
-			    "terminate entries with NUL byte", 0),
-		OPT_BIT('l', "long", &ls_options, "include object size",
+			    N_("terminate entries with NUL byte"), 0),
+		OPT_BIT('l', "long", &ls_options, N_("include object size"),
 			LS_SHOW_SIZE),
-		OPT_BIT(0, "name-only", &ls_options, "list only filenames",
+		OPT_BIT(0, "name-only", &ls_options, N_("list only filenames"),
 			LS_NAME_ONLY),
-		OPT_BIT(0, "name-status", &ls_options, "list only filenames",
+		OPT_BIT(0, "name-status", &ls_options, N_("list only filenames"),
 			LS_NAME_ONLY),
 		OPT_SET_INT(0, "full-name", &chomp_prefix,
-			    "use full path names", 0),
-		OPT_BOOLEAN(0, "full-tree", &full_tree,
-			    "list entire tree; not just current directory "
-			    "(implies --full-name)"),
+			    N_("use full path names"), 0),
+		OPT_BOOL(0, "full-tree", &full_tree,
+			 N_("list entire tree; not just current directory "
+			    "(implies --full-name)")),
 		OPT__ABBREV(&abbrev),
 		OPT_END()
 	};
@@ -166,11 +167,20 @@ int cmd_ls_tree(int argc, const char **argv, const char *prefix)
 	if (get_sha1(argv[0], sha1))
 		die("Not a valid object name %s", argv[0]);
 
-	pathspec = get_pathspec(prefix, argv + 1);
+	/*
+	 * show_recursive() rolls its own matching code and is
+	 * generally ignorant of 'struct pathspec'. The magic mask
+	 * cannot be lifted until it is converted to use
+	 * match_pathspec_depth() or tree_entry_interesting()
+	 */
+	parse_pathspec(&pathspec, PATHSPEC_GLOB | PATHSPEC_ICASE,
+		       PATHSPEC_PREFER_CWD,
+		       prefix, argv + 1);
+	for (i = 0; i < pathspec.nr; i++)
+		pathspec.items[i].nowildcard_len = pathspec.items[i].len;
+	pathspec.has_wildcard = 0;
 	tree = parse_tree_indirect(sha1);
 	if (!tree)
 		die("not a tree object");
-	read_tree_recursive(tree, "", 0, 0, pathspec, show_tree, NULL);
-
-	return 0;
+	return !!read_tree_recursive(tree, "", 0, 0, &pathspec, show_tree, NULL);
 }

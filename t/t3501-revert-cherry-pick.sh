@@ -47,7 +47,7 @@ test_expect_success 'cherry-pick --nonsense' '
 	git diff --exit-code HEAD &&
 	test_must_fail git cherry-pick --nonsense 2>msg &&
 	git diff --exit-code HEAD "$pos" &&
-	grep '[Uu]sage:' msg
+	test_i18ngrep '[Uu]sage:' msg
 '
 
 test_expect_success 'revert --nonsense' '
@@ -56,7 +56,7 @@ test_expect_success 'revert --nonsense' '
 	git diff --exit-code HEAD &&
 	test_must_fail git revert --nonsense 2>msg &&
 	git diff --exit-code HEAD "$pos" &&
-	grep '[Uu]sage:' msg
+	test_i18ngrep '[Uu]sage:' msg
 '
 
 test_expect_success 'cherry-pick after renaming branch' '
@@ -81,13 +81,64 @@ test_expect_success 'revert after renaming branch' '
 
 '
 
+test_expect_success 'cherry-pick on stat-dirty working tree' '
+	git clone . copy &&
+	(
+		cd copy &&
+		git checkout initial &&
+		test-chmtime +40 oops &&
+		git cherry-pick added
+	)
+'
+
 test_expect_success 'revert forbidden on dirty working tree' '
 
 	echo content >extra_file &&
 	git add extra_file &&
 	test_must_fail git revert HEAD 2>errors &&
-	grep "Your local changes would be overwritten by " errors
+	test_i18ngrep "Your local changes would be overwritten by " errors
 
+'
+
+test_expect_success 'cherry-pick on unborn branch' '
+	git checkout --orphan unborn &&
+	git rm --cached -r . &&
+	rm -rf * &&
+	git cherry-pick initial &&
+	git diff --quiet initial &&
+	! test_cmp_rev initial HEAD
+'
+
+test_expect_success 'cherry-pick "-" to pick from previous branch' '
+	git checkout unborn &&
+	test_commit to-pick actual content &&
+	git checkout master &&
+	git cherry-pick - &&
+	echo content >expect &&
+	test_cmp expect actual
+'
+
+test_expect_success 'cherry-pick "-" is meaningless without checkout' '
+	test_create_repo afresh &&
+	(
+		cd afresh &&
+		test_commit one &&
+		test_commit two &&
+		test_commit three &&
+		test_must_fail git cherry-pick -
+	)
+'
+
+test_expect_success 'cherry-pick "-" works with arguments' '
+	git checkout -b side-branch &&
+	test_commit change actual change &&
+	git checkout master &&
+	git cherry-pick -s - &&
+	echo "Signed-off-by: C O Mitter <committer@example.com>" >expect &&
+	git cat-file commit HEAD | grep ^Signed-off-by: >signoff &&
+	test_cmp expect signoff &&
+	echo change >expect &&
+	test_cmp expect actual
 '
 
 test_done

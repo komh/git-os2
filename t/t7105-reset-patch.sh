@@ -18,22 +18,24 @@ test_expect_success PERL 'setup' '
 # note: bar sorts before foo, so the first 'n' is always to skip 'bar'
 
 test_expect_success PERL 'saying "n" does nothing' '
-	set_and_save_state dir/foo work work
+	set_and_save_state dir/foo work work &&
 	(echo n; echo n) | git reset -p &&
 	verify_saved_state dir/foo &&
 	verify_saved_state bar
 '
 
 test_expect_success PERL 'git reset -p' '
-	(echo n; echo y) | git reset -p &&
+	(echo n; echo y) | git reset -p >output &&
 	verify_state dir/foo work head &&
-	verify_saved_state bar
+	verify_saved_state bar &&
+	test_i18ngrep "Unstage" output
 '
 
 test_expect_success PERL 'git reset -p HEAD^' '
-	(echo n; echo y) | git reset -p HEAD^ &&
+	(echo n; echo y) | git reset -p HEAD^ >output &&
 	verify_state dir/foo work parent &&
-	verify_saved_state bar
+	verify_saved_state bar &&
+	test_i18ngrep "Apply" output
 '
 
 # The idea in the rest is that bar sorts first, so we always say 'y'
@@ -42,14 +44,14 @@ test_expect_success PERL 'git reset -p HEAD^' '
 # the failure case (and thus get out of the loop).
 
 test_expect_success PERL 'git reset -p dir' '
-	set_state dir/foo work work
+	set_state dir/foo work work &&
 	(echo y; echo n) | git reset -p dir &&
 	verify_state dir/foo work head &&
 	verify_saved_state bar
 '
 
 test_expect_success PERL 'git reset -p -- foo (inside dir)' '
-	set_state dir/foo work work
+	set_state dir/foo work work &&
 	(echo y; echo n) | (cd dir && git reset -p -- foo) &&
 	verify_state dir/foo work head &&
 	verify_saved_state bar

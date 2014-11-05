@@ -44,7 +44,9 @@ void strbuf_release(struct strbuf *sb)
 
 char *strbuf_detach(struct strbuf *sb, size_t *sz)
 {
-	char *res = sb->alloc ? sb->buf : NULL;
+	char *res;
+	strbuf_grow(sb, 0);
+	res = sb->buf;
 	if (sz)
 		*sz = sb->len;
 	strbuf_init(sb, 0);
@@ -63,11 +65,15 @@ void strbuf_attach(struct strbuf *sb, void *buf, size_t len, size_t alloc)
 
 void strbuf_grow(struct strbuf *sb, size_t extra)
 {
-	if (sb->len + extra + 1 <= sb->len)
+	int new_buf = !sb->alloc;
+	if (unsigned_add_overflows(extra, 1) ||
+	    unsigned_add_overflows(sb->len, extra + 1))
 		die("you want to use way too much memory");
-	if (!sb->alloc)
+	if (new_buf)
 		sb->buf = NULL;
 	ALLOC_GROW(sb->buf, sb->len + extra + 1, sb->alloc);
+	if (new_buf)
+		sb->buf[0] = '\0';
 }
 
 void strbuf_trim(struct strbuf *sb)
@@ -100,32 +106,30 @@ void strbuf_ltrim(struct strbuf *sb)
 	sb->buf[sb->len] = '\0';
 }
 
-struct strbuf **strbuf_split(const struct strbuf *sb, int delim)
+struct strbuf **strbuf_split_buf(const char *str, size_t slen,
+				 int terminator, int max)
 {
-	int alloc = 2, pos = 0;
-	char *n, *p;
-	struct strbuf **ret;
+	struct strbuf **ret = NULL;
+	size_t nr = 0, alloc = 0;
 	struct strbuf *t;
 
-	ret = xcalloc(alloc, sizeof(struct strbuf *));
-	p = n = sb->buf;
-	while (n < sb->buf + sb->len) {
-		int len;
-		n = memchr(n, delim, sb->len - (n - sb->buf));
-		if (pos + 1 >= alloc) {
-			alloc = alloc * 2;
-			ret = xrealloc(ret, sizeof(struct strbuf *) * alloc);
+	while (slen) {
+		int len = slen;
+		if (max <= 0 || nr + 1 < max) {
+			const char *end = memchr(str, terminator, slen);
+			if (end)
+				len = end - str + 1;
 		}
-		if (!n)
-			n = sb->buf + sb->len - 1;
-		len = n - p + 1;
 		t = xmalloc(sizeof(struct strbuf));
 		strbuf_init(t, len);
-		strbuf_add(t, p, len);
-		ret[pos] = t;
-		ret[++pos] = NULL;
-		p = ++n;
+		strbuf_add(t, str, len);
+		ALLOC_GROW(ret, nr + 2, alloc);
+		ret[nr++] = t;
+		str += len;
+		slen -= len;
 	}
+	ALLOC_GROW(ret, nr + 1, alloc); /* In case string was empty */
+	ret[nr] = NULL;
 	return ret;
 }
 
@@ -152,7 +156,7 @@ int strbuf_cmp(const struct strbuf *a, const struct strbuf *b)
 void strbuf_splice(struct strbuf *sb, size_t pos, size_t len,
 				   const void *data, size_t dlen)
 {
-	if (pos + len < pos)
+	if (unsigned_add_overflows(pos, len))
 		die("you want to use way too much memory");
 	if (pos > sb->len)
 		die("`pos' is too far after the end of the buffer");
@@ -194,24 +198,77 @@ void strbuf_adddup(struct strbuf *sb, size_t pos, size_t len)
 
 void strbuf_addf(struct strbuf *sb, const char *fmt, ...)
 {
-	int len;
 	va_list ap;
+	va_start(ap, fmt);
+	strbuf_vaddf(sb, fmt, ap);
+	va_end(ap);
+}
+
+static void add_lines(struct strbuf *out,
+			const char *prefix1,
+			const char *prefix2,
+			const char *buf, size_t size)
+{
+	while (size) {
+		const char *prefix;
+		const char *next = memchr(buf, '\n', size);
+		next = next ? (next + 1) : (buf + size);
+
+		prefix = (prefix2 && buf[0] == '\n') ? prefix2 : prefix1;
+		strbuf_addstr(out, prefix);
+		strbuf_add(out, buf, next - buf);
+		size -= next - buf;
+		buf = next;
+	}
+	strbuf_complete_line(out);
+}
+
+void strbuf_add_commented_lines(struct strbuf *out, const char *buf, size_t size)
+{
+	static char prefix1[3];
+	static char prefix2[2];
+
+	if (prefix1[0] != comment_line_char) {
+		sprintf(prefix1, "%c ", comment_line_char);
+		sprintf(prefix2, "%c", comment_line_char);
+	}
+	add_lines(out, prefix1, prefix2, buf, size);
+}
+
+void strbuf_commented_addf(struct strbuf *sb, const char *fmt, ...)
+{
+	va_list params;
+	struct strbuf buf = STRBUF_INIT;
+	int incomplete_line = sb->len && sb->buf[sb->len - 1] != '\n';
+
+	va_start(params, fmt);
+	strbuf_vaddf(&buf, fmt, params);
+	va_end(params);
+
+	strbuf_add_commented_lines(sb, buf.buf, buf.len);
+	if (incomplete_line)
+		sb->buf[--sb->len] = '\0';
+
+	strbuf_release(&buf);
+}
+
+void strbuf_vaddf(struct strbuf *sb, const char *fmt, va_list ap)
+{
+	int len;
+	va_list cp;
 
 	if (!strbuf_avail(sb))
 		strbuf_grow(sb, 64);
-	va_start(ap, fmt);
-	len = vsnprintf(sb->buf + sb->len, sb->alloc - sb->len, fmt, ap);
-	va_end(ap);
+	va_copy(cp, ap);
+	len = vsnprintf(sb->buf + sb->len, sb->alloc - sb->len, fmt, cp);
+	va_end(cp);
 	if (len < 0)
-		die("your vsnprintf is broken");
+		die("BUG: your vsnprintf is broken (returned %d)", len);
 	if (len > strbuf_avail(sb)) {
 		strbuf_grow(sb, len);
-		va_start(ap, fmt);
 		len = vsnprintf(sb->buf + sb->len, sb->alloc - sb->len, fmt, ap);
-		va_end(ap);
-		if (len > strbuf_avail(sb)) {
-			die("this should not happen, your snprintf is broken");
-		}
+		if (len > strbuf_avail(sb))
+			die("BUG: your vsnprintf is broken (insatiable)");
 	}
 	strbuf_setlen(sb, sb->len + len);
 }
@@ -345,7 +402,6 @@ int strbuf_getwholeline(struct strbuf *sb, FILE *fp, int term)
 {
 	int ch;
 
-	strbuf_grow(sb, 0);
 	if (feof(fp))
 		return EOF;
 
@@ -372,6 +428,22 @@ int strbuf_getline(struct strbuf *sb, FILE *fp, int term)
 	return 0;
 }
 
+int strbuf_getwholeline_fd(struct strbuf *sb, int fd, int term)
+{
+	strbuf_reset(sb);
+
+	while (1) {
+		char ch;
+		ssize_t len = xread(fd, &ch, 1);
+		if (len <= 0)
+			return EOF;
+		strbuf_addch(sb, ch);
+		if (ch == term)
+			break;
+	}
+	return 0;
+}
+
 int strbuf_read_file(struct strbuf *sb, const char *path, size_t hint)
 {
 	int fd, len;
@@ -387,18 +459,114 @@ int strbuf_read_file(struct strbuf *sb, const char *path, size_t hint)
 	return len;
 }
 
-int strbuf_branchname(struct strbuf *sb, const char *name)
+void strbuf_add_lines(struct strbuf *out, const char *prefix,
+		      const char *buf, size_t size)
 {
-	int len = strlen(name);
-	if (interpret_branch_name(name, sb) == len)
-		return 0;
-	strbuf_add(sb, name, len);
-	return len;
+	add_lines(out, prefix, NULL, buf, size);
 }
 
-int strbuf_check_branch_ref(struct strbuf *sb, const char *name)
+void strbuf_addstr_xml_quoted(struct strbuf *buf, const char *s)
 {
-	strbuf_branchname(sb, name);
-	strbuf_splice(sb, 0, 0, "refs/heads/", 11);
-	return check_ref_format(sb->buf);
+	while (*s) {
+		size_t len = strcspn(s, "\"<>&");
+		strbuf_add(buf, s, len);
+		s += len;
+		switch (*s) {
+		case '"':
+			strbuf_addstr(buf, "&quot;");
+			break;
+		case '<':
+			strbuf_addstr(buf, "&lt;");
+			break;
+		case '>':
+			strbuf_addstr(buf, "&gt;");
+			break;
+		case '&':
+			strbuf_addstr(buf, "&amp;");
+			break;
+		case 0:
+			return;
+		}
+		s++;
+	}
+}
+
+static int is_rfc3986_reserved(char ch)
+{
+	switch (ch) {
+		case '!': case '*': case '\'': case '(': case ')': case ';':
+		case ':': case '@': case '&': case '=': case '+': case '$':
+		case ',': case '/': case '?': case '#': case '[': case ']':
+			return 1;
+	}
+	return 0;
+}
+
+static int is_rfc3986_unreserved(char ch)
+{
+	return isalnum(ch) ||
+		ch == '-' || ch == '_' || ch == '.' || ch == '~';
+}
+
+static void strbuf_add_urlencode(struct strbuf *sb, const char *s, size_t len,
+				 int reserved)
+{
+	strbuf_grow(sb, len);
+	while (len--) {
+		char ch = *s++;
+		if (is_rfc3986_unreserved(ch) ||
+		    (!reserved && is_rfc3986_reserved(ch)))
+			strbuf_addch(sb, ch);
+		else
+			strbuf_addf(sb, "%%%02x", ch);
+	}
+}
+
+void strbuf_addstr_urlencode(struct strbuf *sb, const char *s,
+			     int reserved)
+{
+	strbuf_add_urlencode(sb, s, strlen(s), reserved);
+}
+
+void strbuf_humanise_bytes(struct strbuf *buf, off_t bytes)
+{
+	if (bytes > 1 << 30) {
+		strbuf_addf(buf, "%u.%2.2u GiB",
+			    (int)(bytes >> 30),
+			    (int)(bytes & ((1 << 30) - 1)) / 10737419);
+	} else if (bytes > 1 << 20) {
+		int x = bytes + 5243;  /* for rounding */
+		strbuf_addf(buf, "%u.%2.2u MiB",
+			    x >> 20, ((x & ((1 << 20) - 1)) * 100) >> 20);
+	} else if (bytes > 1 << 10) {
+		int x = bytes + 5;  /* for rounding */
+		strbuf_addf(buf, "%u.%2.2u KiB",
+			    x >> 10, ((x & ((1 << 10) - 1)) * 100) >> 10);
+	} else {
+		strbuf_addf(buf, "%u bytes", (int)bytes);
+	}
+}
+
+int printf_ln(const char *fmt, ...)
+{
+	int ret;
+	va_list ap;
+	va_start(ap, fmt);
+	ret = vprintf(fmt, ap);
+	va_end(ap);
+	if (ret < 0 || putchar('\n') == EOF)
+		return -1;
+	return ret + 1;
+}
+
+int fprintf_ln(FILE *fp, const char *fmt, ...)
+{
+	int ret;
+	va_list ap;
+	va_start(ap, fmt);
+	ret = vfprintf(fp, fmt, ap);
+	va_end(ap);
+	if (ret < 0 || putc('\n', fp) == EOF)
+		return -1;
+	return ret + 1;
 }

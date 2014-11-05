@@ -1,4 +1,4 @@
-Everyday GIT With 20 Commands Or So
+Everyday Git With 20 Commands Or So
 ===================================
 
 <<Individual Developer (Standalone)>> commands are essential for
@@ -12,7 +12,7 @@ commands in addition to the above.
 
 <<Repository Administration>> commands are for system
 administrators who are responsible for the care and feeding
-of git repositories.
+of Git repositories.
 
 
 Individual Developer (Standalone)[[Individual Developer (Standalone)]]
@@ -87,7 +87,7 @@ $ git log v2.43.. curses/ <12>
 +
 <1> create a new topic branch.
 <2> revert your botched changes in `curses/ux_audio_oss.c`.
-<3> you need to tell git if you added a new file; removal and
+<3> you need to tell Git if you added a new file; removal and
 modification will be caught if you do `git commit -a` later.
 <4> to see what changes you are committing.
 <5> commit everything as you have tested, with your sign-off.
@@ -98,8 +98,8 @@ you originally wrote.
 <9> switch to the master branch.
 <10> merge a topic branch into your master branch.
 <11> review commit logs; other forms to limit output can be
-combined and include `\--max-count=10` (show 10 commits),
-`\--until=2005-12-10`, etc.
+combined and include `--max-count=10` (show 10 commits),
+`--until=2005-12-10`, etc.
 <12> view only the changes that touch what's in `curses/`
 directory, since `v2.43` tag.
 
@@ -180,12 +180,12 @@ directory; clone from it to start a repository on the satellite
 machine.
 <2> clone sets these configuration variables by default.
 It arranges `git pull` to fetch and store the branches of mothership
-machine to local `remotes/origin/*` tracking branches.
+machine to local `remotes/origin/*` remote-tracking branches.
 <3> arrange `git push` to push local `master` branch to
 `remotes/satellite/master` branch of the mothership machine.
 <4> push will stash our work away on `remotes/satellite/master`
-tracking branch on the mothership machine.  You could use this as
-a back-up method.
+remote-tracking branch on the mothership machine.  You could use this
+as a back-up method.
 <5> on mothership machine, merge the work done on the satellite
 machine into the master branch.
 
@@ -229,7 +229,7 @@ commands in addition to the ones needed by participants.
 Examples
 ~~~~~~~~
 
-My typical GIT day.::
+My typical Git day.::
 +
 ------------
 $ git status <1>
@@ -304,7 +304,7 @@ and maintain access to the repository by developers.
   * linkgit:git-shell[1] can be used as a 'restricted login shell'
     for shared central repository users.
 
-link:howto/update-hook-example.txt[update hook howto] has a good
+link:howto/update-hook-example.html[update hook howto] has a good
 example of managing a shared central repository.
 
 
@@ -332,7 +332,7 @@ Run git-daemon to serve /pub/scm from xinetd.::
 ------------
 $ cat /etc/xinetd.d/git-daemon
 # default: off
-# description: The git server offers access to git repositories
+# description: The Git server offers access to Git repositories
 service git
 {
         disable = no

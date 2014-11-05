@@ -4,12 +4,9 @@
 #include "parse-options.h"
 
 static const char * const prune_packed_usage[] = {
-	"git prune-packed [-n|--dry-run] [-q|--quiet]",
+	N_("git prune-packed [-n|--dry-run] [-q|--quiet]"),
 	NULL
 };
-
-#define DRY_RUN 01
-#define VERBOSE 02
 
 static struct progress *progress;
 
@@ -29,14 +26,12 @@ static void prune_dir(int i, DIR *dir, char *pathname, int len, int opts)
 		if (!has_sha1_pack(sha1))
 			continue;
 		memcpy(pathname + len, de->d_name, 38);
-		if (opts & DRY_RUN)
+		if (opts & PRUNE_PACKED_DRY_RUN)
 			printf("rm -f %s\n", pathname);
 		else
 			unlink_or_warn(pathname);
 		display_progress(progress, i + 1);
 	}
-	pathname[len] = 0;
-	rmdir(pathname);
 }
 
 void prune_packed_objects(int opts)
@@ -46,7 +41,7 @@ void prune_packed_objects(int opts)
 	const char *dir = get_object_directory();
 	int len = strlen(dir);
 
-	if (opts == VERBOSE)
+	if (opts & PRUNE_PACKED_VERBOSE)
 		progress = start_progress_delay("Removing duplicate objects",
 			256, 95, 2);
 
@@ -65,16 +60,20 @@ void prune_packed_objects(int opts)
 			continue;
 		prune_dir(i, d, pathname, len + 3, opts);
 		closedir(d);
+		pathname[len + 2] = '\0';
+		rmdir(pathname);
 	}
 	stop_progress(&progress);
 }
 
 int cmd_prune_packed(int argc, const char **argv, const char *prefix)
 {
-	int opts = isatty(2) ? VERBOSE : 0;
+	int opts = isatty(2) ? PRUNE_PACKED_VERBOSE : 0;
 	const struct option prune_packed_options[] = {
-		OPT_BIT('n', "dry-run", &opts, "dry run", DRY_RUN),
-		OPT_NEGBIT('q', "quiet", &opts, "be quiet", VERBOSE),
+		OPT_BIT('n', "dry-run", &opts, N_("dry run"),
+			PRUNE_PACKED_DRY_RUN),
+		OPT_NEGBIT('q', "quiet", &opts, N_("be quiet"),
+			   PRUNE_PACKED_VERBOSE),
 		OPT_END()
 	};
 

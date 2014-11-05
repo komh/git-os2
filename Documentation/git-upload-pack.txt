@@ -8,6 +8,7 @@ git-upload-pack - Send objects packed back to git-fetch-pack
 
 SYNOPSIS
 --------
+[verse]
 'git-upload-pack' [--strict] [--timeout=<n>] <directory>
 
 DESCRIPTION
@@ -25,7 +26,7 @@ OPTIONS
 -------
 
 --strict::
-	Do not try <directory>/.git/ if <directory> is no git directory.
+	Do not try <directory>/.git/ if <directory> is no Git directory.
 
 --timeout=<n>::
 	Interrupt transfer after <n> seconds of inactivity.
@@ -33,13 +34,9 @@ OPTIONS
 <directory>::
 	The repository to sync from.
 
-Author
-------
-Written by Linus Torvalds <torvalds@osdl.org>
-
-Documentation
---------------
-Documentation by Junio C Hamano.
+SEE ALSO
+--------
+linkgit:gitnamespaces[7]
 
 GIT
 ---

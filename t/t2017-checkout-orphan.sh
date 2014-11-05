@@ -14,7 +14,7 @@ TEST_FILE=foo
 test_expect_success 'Setup' '
 	echo "Initial" >"$TEST_FILE" &&
 	git add "$TEST_FILE" &&
-	git commit -m "First Commit"
+	git commit -m "First Commit" &&
 	test_tick &&
 	echo "State 1" >>"$TEST_FILE" &&
 	git add "$TEST_FILE" &&
@@ -114,6 +114,12 @@ test_expect_success '--orphan refuses to switch if a merge is needed' '
 	test_cmp "$TEST_FILE" "$TEST_FILE.saved" &&
 	git diff-index --quiet --cached HEAD &&
 	git reset --hard
+'
+
+test_expect_success 'cannot --detach on an unborn branch' '
+	git checkout master &&
+	git checkout --orphan new &&
+	test_must_fail git checkout --detach
 '
 
 test_done

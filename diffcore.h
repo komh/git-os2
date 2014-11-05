@@ -43,9 +43,10 @@ struct diff_filespec {
 	unsigned should_free : 1; /* data should be free()'ed */
 	unsigned should_munmap : 1; /* data should be munmap()'ed */
 	unsigned dirty_submodule : 2;  /* For submodules: its work tree is dirty */
+	unsigned is_stdin : 1;
 #define DIRTY_SUBMODULE_UNTRACKED 1
 #define DIRTY_SUBMODULE_MODIFIED  2
-
+	unsigned has_more_entries : 1; /* only appear in combined diff */
 	struct userdiff_driver *driver;
 	/* data should be considered "binary"; -1 means "don't know yet" */
 	int is_binary;
@@ -54,7 +55,7 @@ struct diff_filespec {
 extern struct diff_filespec *alloc_filespec(const char *);
 extern void free_filespec(struct diff_filespec *);
 extern void fill_filespec(struct diff_filespec *, const unsigned char *,
-			  unsigned short);
+			  int, unsigned short);
 
 extern int diff_populate_filespec(struct diff_filespec *, int);
 extern void diff_free_filespec_data(struct diff_filespec *);
@@ -107,7 +108,7 @@ extern void diff_q(struct diff_queue_struct *, struct diff_filepair *);
 extern void diffcore_break(int);
 extern void diffcore_rename(struct diff_options *);
 extern void diffcore_merge_broken(void);
-extern void diffcore_pickaxe(const char *needle, int opts);
+extern void diffcore_pickaxe(struct diff_options *);
 extern void diffcore_order(const char *orderfile);
 
 #define DIFF_DEBUG 0

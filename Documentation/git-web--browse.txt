@@ -3,10 +3,11 @@ git-web{litdd}browse(1)
 
 NAME
 ----
-git-web--browse - git helper script to launch a web browser
+git-web--browse - Git helper script to launch a web browser
 
 SYNOPSIS
 --------
+[verse]
 'git web{litdd}browse' [OPTIONS] URL/FILE ...
 
 DESCRIPTION
@@ -20,13 +21,21 @@ The following browsers (or commands) are currently supported:
 
 * firefox (this is the default under X Window when not using KDE)
 * iceweasel
+* seamonkey
+* iceape
+* chromium (also supported as chromium-browser)
+* google-chrome (also supported as chrome)
 * konqueror (this is the default under KDE, see 'Note about konqueror' below)
+* opera
 * w3m (this is the default outside graphical environments)
+* elinks
 * links
 * lynx
 * dillo
 * open (this is the default under Mac OS X GUI)
 * start (this is the default under MinGW)
+* cygstart (this is the default under Cygwin)
+* xdg-open
 
 Custom commands may also be specified.
 
@@ -43,7 +52,7 @@ OPTIONS
 
 -c <conf.var>::
 --config=<conf.var>::
-	CONF.VAR is looked up in the git config files. If it's set,
+	CONF.VAR is looked up in the Git config files. If it's set,
 	then its value specifies the browser that should be used.
 
 CONFIGURATION VARIABLES
@@ -62,7 +71,7 @@ browser.<tool>.path
 You can explicitly provide a full path to your preferred browser by
 setting the configuration variable 'browser.<tool>.path'. For example,
 you can configure the absolute path to firefox by setting
-'browser.firefox.path'. Otherwise, 'git web--browse' assumes the tool
+'browser.firefox.path'. Otherwise, 'git web{litdd}browse' assumes the tool
 is available in PATH.
 
 browser.<tool>.cmd
@@ -109,16 +118,6 @@ $ git config --global web.browser firefox
 
 as they are probably more user specific than repository specific.
 See linkgit:git-config[1] for more information about this.
-
-Author
-------
-Written by Christian Couder <chriscool@tuxfamily.org> and the git-list
-<git@vger.kernel.org>, based on 'git mergetool' by Theodore Y. Ts'o.
-
-Documentation
--------------
-Documentation by Christian Couder <chriscool@tuxfamily.org> and the
-git-list <git@vger.kernel.org>.
 
 GIT
 ---

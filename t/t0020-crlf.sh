@@ -81,6 +81,14 @@ test_expect_success 'safecrlf: print warning only once' '
 	test $(git add doublewarn 2>&1 | grep "CRLF will be replaced by LF" | wc -l) = 1
 '
 
+
+test_expect_success 'safecrlf: git diff demotes safecrlf=true to warn' '
+	git config core.autocrlf input &&
+	git config core.safecrlf true &&
+	git diff HEAD
+'
+
+
 test_expect_success 'switch off autocrlf, safecrlf, reset HEAD' '
 	git config core.autocrlf false &&
 	git config core.safecrlf false &&
@@ -439,7 +447,7 @@ test_expect_success 'checkout when deleting .gitattributes' '
 	git rm .gitattributes &&
 	echo "contentsQ" | q_to_cr > .file2 &&
 	git add .file2 &&
-	git commit -m third
+	git commit -m third &&
 
 	git checkout master~1 &&
 	git checkout master &&

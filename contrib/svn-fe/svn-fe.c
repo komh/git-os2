@@ -8,8 +8,10 @@
 
 int main(int argc, char **argv)
 {
-	svndump_init(NULL);
-	svndump_read((argc > 1) ? argv[1] : NULL);
+	if (svndump_init(NULL))
+		return 1;
+	svndump_read((argc > 1) ? argv[1] : NULL, "refs/heads/master",
+			"refs/notes/svn/revs");
 	svndump_deinit();
 	svndump_reset();
 	return 0;

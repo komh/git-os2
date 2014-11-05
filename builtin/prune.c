@@ -5,15 +5,17 @@
 #include "builtin.h"
 #include "reachable.h"
 #include "parse-options.h"
+#include "progress.h"
 #include "dir.h"
 
 static const char * const prune_usage[] = {
-	"git prune [-n] [-v] [--expire <time>] [--] [<head>...]",
+	N_("git prune [-n] [-v] [--expire <time>] [--] [<head>...]"),
 	NULL
 };
 static int show_only;
 static int verbose;
 static unsigned long expire;
+static int show_progress = -1;
 
 static int prune_tmp_object(const char *path, const char *filename)
 {
@@ -23,7 +25,8 @@ static int prune_tmp_object(const char *path, const char *filename)
 		return error("Could not stat '%s'", fullpath);
 	if (st.st_mtime > expire)
 		return 0;
-	printf("Removing stale temporary file %s\n", fullpath);
+	if (show_only || verbose)
+		printf("Removing stale temporary file %s\n", fullpath);
 	if (!show_only)
 		unlink_or_warn(fullpath);
 	return 0;
@@ -83,9 +86,9 @@ static int prune_dir(int i, char *path)
 		}
 		fprintf(stderr, "bad sha1 file: %s/%s\n", path, de->d_name);
 	}
+	closedir(dir);
 	if (!show_only)
 		rmdir(path);
-	closedir(dir);
 	return 0;
 }
 
@@ -124,12 +127,13 @@ static void remove_temporary_files(const char *path)
 int cmd_prune(int argc, const char **argv, const char *prefix)
 {
 	struct rev_info revs;
+	struct progress *progress = NULL;
 	const struct option options[] = {
-		OPT_BOOLEAN('n', "dry-run", &show_only,
-			    "do not remove, show only"),
-		OPT_BOOLEAN('v', "verbose", &verbose, "report pruned objects"),
-		OPT_DATE(0, "expire", &expire,
-			 "expire objects older than <time>"),
+		OPT__DRY_RUN(&show_only, N_("do not remove, show only")),
+		OPT__VERBOSE(&verbose, N_("report pruned objects")),
+		OPT_BOOL(0, "progress", &show_progress, N_("show progress")),
+		OPT_EXPIRY_DATE(0, "expire", &expire,
+				N_("expire objects older than <time>")),
 		OPT_END()
 	};
 	char *s;
@@ -145,20 +149,25 @@ int cmd_prune(int argc, const char **argv, const char *prefix)
 		const char *name = *argv++;
 
 		if (!get_sha1(name, sha1)) {
-			struct object *object = parse_object(sha1);
-			if (!object)
-				die("bad object: %s", name);
+			struct object *object = parse_object_or_die(sha1, name);
 			add_pending_object(&revs, object, "");
 		}
 		else
 			die("unrecognized argument: %s", name);
 	}
-	mark_reachable_objects(&revs, 1);
+
+	if (show_progress == -1)
+		show_progress = isatty(2);
+	if (show_progress)
+		progress = start_progress_delay("Checking connectivity", 0, 0, 2);
+
+	mark_reachable_objects(&revs, 1, progress);
+	stop_progress(&progress);
 	prune_object_dir(get_object_directory());
 
-	prune_packed_objects(show_only);
+	prune_packed_objects(show_only ? PRUNE_PACKED_DRY_RUN : 0);
 	remove_temporary_files(get_object_directory());
-	s = xstrdup(mkpath("%s/pack", get_object_directory()));
+	s = mkpathdup("%s/pack", get_object_directory());
 	remove_temporary_files(s);
 	free(s);
 	return 0;

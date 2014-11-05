@@ -8,38 +8,38 @@ test_description='Merge base and parent list computation.
 
 . ./test-lib.sh
 
+M=1130000000
+Z=+0000
+
+GIT_COMMITTER_EMAIL=git@comm.iter.xz
+GIT_COMMITTER_NAME='C O Mmiter'
+GIT_AUTHOR_NAME='A U Thor'
+GIT_AUTHOR_EMAIL=git@au.thor.xz
+export GIT_COMMITTER_EMAIL GIT_COMMITTER_NAME GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL
+
+doit () {
+	OFFSET=$1 &&
+	NAME=$2 &&
+	shift 2 &&
+
+	PARENTS= &&
+	for P
+	do
+		PARENTS="${PARENTS}-p $P "
+	done &&
+
+	GIT_COMMITTER_DATE="$(($M + $OFFSET)) $Z" &&
+	GIT_AUTHOR_DATE=$GIT_COMMITTER_DATE &&
+	export GIT_COMMITTER_DATE GIT_AUTHOR_DATE &&
+
+	commit=$(echo $NAME | git commit-tree $T $PARENTS) &&
+
+	echo $commit >.git/refs/tags/$NAME &&
+	echo $commit
+}
+
 test_expect_success 'setup' '
-	T=$(git write-tree) &&
-
-	M=1130000000 &&
-	Z=+0000 &&
-
-	GIT_COMMITTER_EMAIL=git@comm.iter.xz &&
-	GIT_COMMITTER_NAME="C O Mmiter" &&
-	GIT_AUTHOR_NAME="A U Thor" &&
-	GIT_AUTHOR_EMAIL=git@au.thor.xz &&
-	export GIT_COMMITTER_EMAIL GIT_COMMITTER_NAME GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL &&
-
-	doit() {
-		OFFSET=$1 &&
-		NAME=$2 &&
-		shift 2 &&
-
-		PARENTS= &&
-		for P
-		do
-			PARENTS="${PARENTS}-p $P "
-		done &&
-
-		GIT_COMMITTER_DATE="$(($M + $OFFSET)) $Z" &&
-		GIT_AUTHOR_DATE=$GIT_COMMITTER_DATE &&
-		export GIT_COMMITTER_DATE GIT_AUTHOR_DATE &&
-
-		commit=$(echo $NAME | git commit-tree $T $PARENTS) &&
-
-		echo $commit >.git/refs/tags/$NAME &&
-		echo $commit
-	}
+	T=$(git mktree </dev/null)
 '
 
 test_expect_success 'set up G and H' '
@@ -131,7 +131,7 @@ test_expect_success 'unsynchronized clocks' '
 	R2=$(doit  3 R2 $R1) &&
 
 	PL=$(doit  4 PL $L2 $C2) &&
-	PR=$(doit  4 PR $C2 $R2)
+	PR=$(doit  4 PR $C2 $R2) &&
 
 	git name-rev $C2 >expected &&
 

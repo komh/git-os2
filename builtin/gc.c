@@ -14,11 +14,13 @@
 #include "cache.h"
 #include "parse-options.h"
 #include "run-command.h"
+#include "sigchain.h"
+#include "argv-array.h"
 
 #define FAILED_RUN "failed to run %s"
 
 static const char * const builtin_gc_usage[] = {
-	"git gc [options]",
+	N_("git gc [options]"),
 	NULL
 };
 
@@ -28,12 +30,26 @@ static int gc_auto_threshold = 6700;
 static int gc_auto_pack_limit = 50;
 static const char *prune_expire = "2.weeks.ago";
 
-#define MAX_ADD 10
-static const char *argv_pack_refs[] = {"pack-refs", "--all", "--prune", NULL};
-static const char *argv_reflog[] = {"reflog", "expire", "--all", NULL};
-static const char *argv_repack[MAX_ADD] = {"repack", "-d", "-l", NULL};
-static const char *argv_prune[] = {"prune", "--expire", NULL, NULL};
-static const char *argv_rerere[] = {"rerere", "gc", NULL};
+static struct argv_array pack_refs_cmd = ARGV_ARRAY_INIT;
+static struct argv_array reflog = ARGV_ARRAY_INIT;
+static struct argv_array repack = ARGV_ARRAY_INIT;
+static struct argv_array prune = ARGV_ARRAY_INIT;
+static struct argv_array rerere = ARGV_ARRAY_INIT;
+
+static char *pidfile;
+
+static void remove_pidfile(void)
+{
+	if (pidfile)
+		unlink(pidfile);
+}
+
+static void remove_pidfile_on_signal(int signo)
+{
+	remove_pidfile();
+	sigchain_pop(signo);
+	raise(signo);
+}
 
 static int gc_config(const char *var, const char *value, void *cb)
 {
@@ -60,24 +76,11 @@ static int gc_config(const char *var, const char *value, void *cb)
 		if (value && strcmp(value, "now")) {
 			unsigned long now = approxidate("now");
 			if (approxidate(value) >= now)
-				return error("Invalid %s: '%s'", var, value);
+				return error(_("Invalid %s: '%s'"), var, value);
 		}
 		return git_config_string(&prune_expire, var, value);
 	}
 	return git_default_config(var, value, cb);
-}
-
-static void append_option(const char **cmd, const char *opt, int max_length)
-{
-	int i;
-
-	for (i = 0; cmd[i]; i++)
-		;
-
-	if (i + 2 >= max_length)
-		die("Too many options specified");
-	cmd[i++] = opt;
-	cmd[i] = NULL;
 }
 
 static int too_many_loose_objects(void)
@@ -100,7 +103,7 @@ static int too_many_loose_objects(void)
 		return 0;
 
 	if (sizeof(path) <= snprintf(path, sizeof(path), "%s/17", objdir)) {
-		warning("insanely long object directory %.*s", 50, objdir);
+		warning(_("insanely long object directory %.*s"), 50, objdir);
 		return 0;
 	}
 	dir = opendir(path);
@@ -144,6 +147,17 @@ static int too_many_packs(void)
 	return gc_auto_pack_limit <= cnt;
 }
 
+static void add_repack_all_option(void)
+{
+	if (prune_expire && !strcmp(prune_expire, "now"))
+		argv_array_push(&repack, "-a");
+	else {
+		argv_array_push(&repack, "-A");
+		if (prune_expire)
+			argv_array_pushf(&repack, "--unpack-unreachable=%s", prune_expire);
+	}
+}
+
 static int need_to_gc(void)
 {
 	/*
@@ -160,10 +174,7 @@ static int need_to_gc(void)
 	 * there is no need.
 	 */
 	if (too_many_packs())
-		append_option(argv_repack,
-			      prune_expire && !strcmp(prune_expire, "now") ?
-			      "-a" : "-A",
-			      MAX_ADD);
+		add_repack_all_option();
 	else if (!too_many_loose_objects())
 		return 0;
 
@@ -172,22 +183,97 @@ static int need_to_gc(void)
 	return 1;
 }
 
+/* return NULL on success, else hostname running the gc */
+static const char *lock_repo_for_gc(int force, pid_t* ret_pid)
+{
+	static struct lock_file lock;
+	static char locking_host[128];
+	char my_host[128];
+	struct strbuf sb = STRBUF_INIT;
+	struct stat st;
+	uintmax_t pid;
+	FILE *fp;
+	int fd, should_exit;
+
+	if (pidfile)
+		/* already locked */
+		return NULL;
+
+	if (gethostname(my_host, sizeof(my_host)))
+		strcpy(my_host, "unknown");
+
+	fd = hold_lock_file_for_update(&lock, git_path("gc.pid"),
+				       LOCK_DIE_ON_ERROR);
+	if (!force) {
+		fp = fopen(git_path("gc.pid"), "r");
+		memset(locking_host, 0, sizeof(locking_host));
+		should_exit =
+			fp != NULL &&
+			!fstat(fileno(fp), &st) &&
+			/*
+			 * 12 hour limit is very generous as gc should
+			 * never take that long. On the other hand we
+			 * don't really need a strict limit here,
+			 * running gc --auto one day late is not a big
+			 * problem. --force can be used in manual gc
+			 * after the user verifies that no gc is
+			 * running.
+			 */
+			time(NULL) - st.st_mtime <= 12 * 3600 &&
+			fscanf(fp, "%"PRIuMAX" %127c", &pid, locking_host) == 2 &&
+			/* be gentle to concurrent "gc" on remote hosts */
+			(strcmp(locking_host, my_host) || !kill(pid, 0));
+		if (fp != NULL)
+			fclose(fp);
+		if (should_exit) {
+			if (fd >= 0)
+				rollback_lock_file(&lock);
+			*ret_pid = pid;
+			return locking_host;
+		}
+	}
+
+	strbuf_addf(&sb, "%"PRIuMAX" %s",
+		    (uintmax_t) getpid(), my_host);
+	write_in_full(fd, sb.buf, sb.len);
+	strbuf_release(&sb);
+	commit_lock_file(&lock);
+
+	pidfile = git_pathdup("gc.pid");
+	sigchain_push_common(remove_pidfile_on_signal);
+	atexit(remove_pidfile);
+
+	return NULL;
+}
+
 int cmd_gc(int argc, const char **argv, const char *prefix)
 {
 	int aggressive = 0;
 	int auto_gc = 0;
 	int quiet = 0;
-	char buf[80];
+	int force = 0;
+	const char *name;
+	pid_t pid;
 
 	struct option builtin_gc_options[] = {
-		OPT__QUIET(&quiet),
-		{ OPTION_STRING, 0, "prune", &prune_expire, "date",
-			"prune unreferenced objects",
+		OPT__QUIET(&quiet, N_("suppress progress reporting")),
+		{ OPTION_STRING, 0, "prune", &prune_expire, N_("date"),
+			N_("prune unreferenced objects"),
 			PARSE_OPT_OPTARG, NULL, (intptr_t)prune_expire },
-		OPT_BOOLEAN(0, "aggressive", &aggressive, "be more thorough (increased runtime)"),
-		OPT_BOOLEAN(0, "auto", &auto_gc, "enable auto-gc mode"),
+		OPT_BOOL(0, "aggressive", &aggressive, N_("be more thorough (increased runtime)")),
+		OPT_BOOL(0, "auto", &auto_gc, N_("enable auto-gc mode")),
+		OPT_BOOL(0, "force", &force, N_("force running gc even if there may be another gc running")),
 		OPT_END()
 	};
+
+	if (argc == 2 && !strcmp(argv[1], "-h"))
+		usage_with_options(builtin_gc_usage, builtin_gc_options);
+
+	argv_array_pushl(&pack_refs_cmd, "pack-refs", "--all", "--prune", NULL);
+	argv_array_pushl(&reflog, "reflog", "expire", "--all", NULL);
+	argv_array_pushl(&repack, "repack", "-d", "-l", NULL);
+	argv_array_pushl(&prune, "prune", "--expire", NULL );
+	argv_array_pushl(&rerere, "rerere", "gc", NULL);
 
 	git_config(gc_config, NULL);
 
@@ -200,15 +286,13 @@ int cmd_gc(int argc, const char **argv, const char *prefix)
 		usage_with_options(builtin_gc_usage, builtin_gc_options);
 
 	if (aggressive) {
-		append_option(argv_repack, "-f", MAX_ADD);
-		append_option(argv_repack, "--depth=250", MAX_ADD);
-		if (aggressive_window > 0) {
-			sprintf(buf, "--window=%d", aggressive_window);
-			append_option(argv_repack, buf, MAX_ADD);
-		}
+		argv_array_push(&repack, "-f");
+		argv_array_push(&repack, "--depth=250");
+		if (aggressive_window > 0)
+			argv_array_pushf(&repack, "--window=%d", aggressive_window);
 	}
 	if (quiet)
-		append_option(argv_repack, "-q", MAX_ADD);
+		argv_array_push(&repack, "-q");
 
 	if (auto_gc) {
 		/*
@@ -216,40 +300,45 @@ int cmd_gc(int argc, const char **argv, const char *prefix)
 		 */
 		if (!need_to_gc())
 			return 0;
-		fprintf(stderr,
-			"Auto packing the repository for optimum performance.%s\n",
-			quiet
-			? ""
-			: (" You may also\n"
-			   "run \"git gc\" manually. See "
-			   "\"git help gc\" for more information."));
+		if (!quiet)
+			fprintf(stderr,
+					_("Auto packing the repository for optimum performance. You may also\n"
+					"run \"git gc\" manually. See "
+					"\"git help gc\" for more information.\n"));
 	} else
-		append_option(argv_repack,
-			      prune_expire && !strcmp(prune_expire, "now")
-			      ? "-a" : "-A",
-			      MAX_ADD);
+		add_repack_all_option();
 
-	if (pack_refs && run_command_v_opt(argv_pack_refs, RUN_GIT_CMD))
-		return error(FAILED_RUN, argv_pack_refs[0]);
-
-	if (run_command_v_opt(argv_reflog, RUN_GIT_CMD))
-		return error(FAILED_RUN, argv_reflog[0]);
-
-	if (run_command_v_opt(argv_repack, RUN_GIT_CMD))
-		return error(FAILED_RUN, argv_repack[0]);
-
-	if (prune_expire) {
-		argv_prune[2] = prune_expire;
-		if (run_command_v_opt(argv_prune, RUN_GIT_CMD))
-			return error(FAILED_RUN, argv_prune[0]);
+	name = lock_repo_for_gc(force, &pid);
+	if (name) {
+		if (auto_gc)
+			return 0; /* be quiet on --auto */
+		die(_("gc is already running on machine '%s' pid %"PRIuMAX" (use --force if not)"),
+		    name, (uintmax_t)pid);
 	}
 
-	if (run_command_v_opt(argv_rerere, RUN_GIT_CMD))
-		return error(FAILED_RUN, argv_rerere[0]);
+	if (pack_refs && run_command_v_opt(pack_refs_cmd.argv, RUN_GIT_CMD))
+		return error(FAILED_RUN, pack_refs_cmd.argv[0]);
+
+	if (run_command_v_opt(reflog.argv, RUN_GIT_CMD))
+		return error(FAILED_RUN, reflog.argv[0]);
+
+	if (run_command_v_opt(repack.argv, RUN_GIT_CMD))
+		return error(FAILED_RUN, repack.argv[0]);
+
+	if (prune_expire) {
+		argv_array_push(&prune, prune_expire);
+		if (quiet)
+			argv_array_push(&prune, "--no-progress");
+		if (run_command_v_opt(prune.argv, RUN_GIT_CMD))
+			return error(FAILED_RUN, prune.argv[0]);
+	}
+
+	if (run_command_v_opt(rerere.argv, RUN_GIT_CMD))
+		return error(FAILED_RUN, rerere.argv[0]);
 
 	if (auto_gc && too_many_loose_objects())
-		warning("There are too many unreachable loose objects; "
-			"run 'git prune' to remove them.");
+		warning(_("There are too many unreachable loose objects; "
+			"run 'git prune' to remove them."));
 
 	return 0;
 }

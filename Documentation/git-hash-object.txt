@@ -40,7 +40,7 @@ OPTIONS
 --path::
 	Hash object as it were located at the given path. The location of
 	file does not directly influence on the hash value, but path is
-	used to determine what git filters should be applied to the object
+	used to determine what Git filters should be applied to the object
 	before it can be placed to the object database, and, as result of
 	applying filters, the actual blob put into the object database may
 	differ from the given file. This option is mainly useful for hashing
@@ -52,14 +52,6 @@ OPTIONS
 	have been chosen by the attributes mechanism, including the end-of-line
 	conversion. If the file is read from standard input then this
 	is always implied, unless the --path option is given.
-
-Author
-------
-Written by Junio C Hamano <gitster@pobox.com>
-
-Documentation
---------------
-Documentation by David Greaves, Junio C Hamano and the git-list <git@vger.kernel.org>.
 
 GIT
 ---

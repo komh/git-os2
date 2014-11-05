@@ -1,7 +1,7 @@
 #!/usr/bin/perl
 use lib (split(/:/, $ENV{GITPERLLIB}));
 
-use 5.006002;
+use 5.008;
 use warnings;
 use strict;
 
@@ -33,6 +33,10 @@ is($r->config_int("test.int"), 2048, "config_int: integer");
 is($r->config_int("test.nonexistent"), undef, "config_int: nonexistent");
 ok($r->config_bool("test.booltrue"), "config_bool: true");
 ok(!$r->config_bool("test.boolfalse"), "config_bool: false");
+is($r->config_path("test.path"), $r->config("test.pathexpanded"),
+   "config_path: ~/foo expansion");
+is_deeply([$r->config_path("test.pathmulti")], ["foo", "bar"],
+   "config_path: multiple values");
 our $ansi_green = "\x1b[32m";
 is($r->get_color("color.test.slot1", "red"), $ansi_green, "get_color");
 # Cannot test $r->get_colorbool("color.foo")) because we do not
@@ -41,9 +45,9 @@ is($r->get_color("color.test.slot1", "red"), $ansi_green, "get_color");
 # Failure cases for config:
 # Save and restore STDERR; we will probably extract this into a
 # "dies_ok" method and possibly move the STDERR handling to Git.pm.
-open our $tmpstderr, ">&STDERR" or die "cannot save STDERR"; close STDERR;
-eval { $r->config("test.dupstring") };
-ok($@, "config: duplicate entry in scalar context fails");
+open our $tmpstderr, ">&STDERR" or die "cannot save STDERR";
+open STDERR, ">", "/dev/null" or die "cannot redirect STDERR to /dev/null";
+is($r->config("test.dupstring"), "value2", "config: multivar");
 eval { $r->config_bool("test.boolother") };
 ok($@, "config_bool: non-boolean values fail");
 open STDERR, ">&", $tmpstderr or die "cannot restore STDERR";
@@ -112,6 +116,16 @@ my $last_commit = $r2->command_oneline(qw(rev-parse --verify HEAD));
 like($last_commit, qr/^[0-9a-fA-F]{40}$/, 'rev-parse returned hash');
 my $dir_commit = $r2->command_oneline('log', '-n1', '--pretty=format:%H', '.');
 isnt($last_commit, $dir_commit, 'log . does not show last commit');
+
+# commands outside working tree
+chdir($abs_repo_dir . '/..');
+my $r3 = Git->repository(Directory => $abs_repo_dir);
+my $tmpfile3 = "$abs_repo_dir/file3.tmp";
+open TEMPFILE3, "+>$tmpfile3" or die "Can't open $tmpfile3: $!";
+is($r3->cat_blob($file1hash, \*TEMPFILE3), 15, "cat_blob(outside): size");
+close TEMPFILE3;
+unlink $tmpfile3;
+chdir($abs_repo_dir);
 
 printf "1..%d\n", Test::More->builder->current_test;
 

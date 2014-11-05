@@ -6,22 +6,36 @@
  */
 
 typedef int pid_t;
+typedef int uid_t;
+typedef int socklen_t;
 #define hstrerror strerror
 
 #define S_IFLNK    0120000 /* Symbolic link */
 #define S_ISLNK(x) (((x) & S_IFMT) == S_IFLNK)
 #define S_ISSOCK(x) 0
+
 #define S_IRGRP 0
 #define S_IWGRP 0
 #define S_IXGRP 0
-#define S_ISGID 0
+#define S_IRWXG (S_IRGRP | S_IWGRP | S_IXGRP)
 #define S_IROTH 0
+#define S_IWOTH 0
 #define S_IXOTH 0
+#define S_IRWXO (S_IROTH | S_IWOTH | S_IXOTH)
+
+#define S_ISUID 0004000
+#define S_ISGID 0002000
+#define S_ISVTX 0001000
 
 #define WIFEXITED(x) 1
 #define WIFSIGNALED(x) 0
 #define WEXITSTATUS(x) ((x) & 0xff)
 #define WTERMSIG(x) SIGTERM
+
+#ifndef EWOULDBLOCK
+#define EWOULDBLOCK EAGAIN
+#endif
+#define SHUT_WR SD_SEND
 
 #define SIGHUP 1
 #define SIGQUIT 3
@@ -34,23 +48,18 @@ typedef int pid_t;
 #define F_SETFD 2
 #define FD_CLOEXEC 0x1
 
+#ifndef EAFNOSUPPORT
+#define EAFNOSUPPORT WSAEAFNOSUPPORT
+#endif
+#ifndef ECONNABORTED
+#define ECONNABORTED WSAECONNABORTED
+#endif
+
 struct passwd {
 	char *pw_name;
 	char *pw_gecos;
 	char *pw_dir;
 };
-
-extern char *getpass(const char *prompt);
-
-#ifndef POLLIN
-struct pollfd {
-	int fd;           /* file descriptor */
-	short events;     /* requested events */
-	short revents;    /* returned events */
-};
-#define POLLIN 1
-#define POLLHUP 2
-#endif
 
 typedef void (__cdecl *sig_handler_t)(int);
 struct sigaction {
@@ -66,6 +75,12 @@ struct itimerval {
 #define ITIMER_REAL 0
 
 /*
+ * sanitize preprocessor namespace polluted by Windows headers defining
+ * macros which collide with git local versions
+ */
+#undef HELP_COMMAND /* from winuser.h */
+
+/*
  * trivial stubs
  */
 
@@ -75,17 +90,17 @@ static inline int symlink(const char *oldpath, const char *newpath)
 { errno = ENOSYS; return -1; }
 static inline int fchmod(int fildes, mode_t mode)
 { errno = ENOSYS; return -1; }
-static inline int fork(void)
+static inline pid_t fork(void)
 { errno = ENOSYS; return -1; }
 static inline unsigned int alarm(unsigned int seconds)
 { return 0; }
 static inline int fsync(int fd)
 { return _commit(fd); }
-static inline int getppid(void)
+static inline pid_t getppid(void)
 { return 1; }
 static inline void sync(void)
 {}
-static inline int getuid()
+static inline uid_t getuid(void)
 { return 1; }
 static inline struct passwd *getpwnam(const char *name)
 { return NULL; }
@@ -109,21 +124,11 @@ static inline int mingw_mkdir(const char *path, int mode)
 }
 #define mkdir mingw_mkdir
 
-static inline int mingw_unlink(const char *pathname)
-{
-	/* read-only files cannot be removed */
-	chmod(pathname, 0666);
-	return unlink(pathname);
-}
-#define unlink mingw_unlink
+#define WNOHANG 1
+pid_t waitpid(pid_t pid, int *status, int options);
 
-static inline int waitpid(pid_t pid, int *status, unsigned options)
-{
-	if (options == 0)
-		return _cwait(status, pid, 0);
-	errno = EINVAL;
-	return -1;
-}
+#define kill mingw_kill
+int mingw_kill(pid_t pid, int sig);
 
 #ifndef NO_OPENSSL
 #include <openssl/ssl.h>
@@ -154,11 +159,10 @@ int pipe(int filedes[2]);
 unsigned int sleep (unsigned int seconds);
 int mkstemp(char *template);
 int gettimeofday(struct timeval *tv, void *tz);
-int poll(struct pollfd *ufds, unsigned int nfds, int timeout);
 struct tm *gmtime_r(const time_t *timep, struct tm *result);
 struct tm *localtime_r(const time_t *timep, struct tm *result);
 int getpagesize(void);	/* defined in MinGW's libgcc.a */
-struct passwd *getpwuid(int uid);
+struct passwd *getpwuid(uid_t uid);
 int setitimer(int type, struct itimerval *in, struct itimerval *out);
 int sigaction(int sig, struct sigaction *in, struct sigaction *out);
 int link(const char *oldpath, const char *newpath);
@@ -167,11 +171,20 @@ int link(const char *oldpath, const char *newpath);
  * replacements of existing functions
  */
 
+int mingw_unlink(const char *pathname);
+#define unlink mingw_unlink
+
+int mingw_rmdir(const char *path);
+#define rmdir mingw_rmdir
+
 int mingw_open (const char *filename, int oflags, ...);
 #define open mingw_open
 
 ssize_t mingw_write(int fd, const void *buf, size_t count);
 #define write mingw_write
+
+int mingw_fgetc(FILE *stream);
+#define fgetc mingw_fgetc
 
 FILE *mingw_fopen (const char *filename, const char *otype);
 #define fopen mingw_fopen
@@ -179,11 +192,17 @@ FILE *mingw_fopen (const char *filename, const char *otype);
 FILE *mingw_freopen (const char *filename, const char *otype, FILE *stream);
 #define freopen mingw_freopen
 
+int mingw_fflush(FILE *stream);
+#define fflush mingw_fflush
+
 char *mingw_getcwd(char *pointer, int len);
 #define getcwd mingw_getcwd
 
 char *mingw_getenv(const char *name);
 #define getenv mingw_getenv
+
+int mingw_gethostname(char *host, int namelen);
+#define gethostname mingw_gethostname
 
 struct hostent *mingw_gethostbyname(const char *host);
 #define gethostbyname mingw_gethostbyname
@@ -206,6 +225,21 @@ int mingw_socket(int domain, int type, int protocol);
 int mingw_connect(int sockfd, struct sockaddr *sa, size_t sz);
 #define connect mingw_connect
 
+int mingw_bind(int sockfd, struct sockaddr *sa, size_t sz);
+#define bind mingw_bind
+
+int mingw_setsockopt(int sockfd, int lvl, int optname, void *optval, int optlen);
+#define setsockopt mingw_setsockopt
+
+int mingw_shutdown(int sockfd, int how);
+#define shutdown mingw_shutdown
+
+int mingw_listen(int sockfd, int backlog);
+#define listen mingw_listen
+
+int mingw_accept(int sockfd, struct sockaddr *sa, socklen_t *sz);
+#define accept mingw_accept
+
 int mingw_rename(const char*, const char*);
 #define rename mingw_rename
 
@@ -214,18 +248,51 @@ int mingw_getpagesize(void);
 #define getpagesize mingw_getpagesize
 #endif
 
-/* Use mingw_lstat() instead of lstat()/stat() and
- * mingw_fstat() instead of fstat() on Windows.
+struct rlimit {
+	unsigned int rlim_cur;
+};
+#define RLIMIT_NOFILE 0
+
+static inline int getrlimit(int resource, struct rlimit *rlp)
+{
+	if (resource != RLIMIT_NOFILE) {
+		errno = EINVAL;
+		return -1;
+	}
+
+	rlp->rlim_cur = 2048;
+	return 0;
+}
+
+/*
+ * Use mingw specific stat()/lstat()/fstat() implementations on Windows.
  */
 #define off_t off64_t
 #define lseek _lseeki64
-#ifndef ALREADY_DECLARED_STAT_FUNCS
+
+/* use struct stat with 64 bit st_size */
+#ifdef stat
+#undef stat
+#endif
 #define stat _stati64
 int mingw_lstat(const char *file_name, struct stat *buf);
+int mingw_stat(const char *file_name, struct stat *buf);
 int mingw_fstat(int fd, struct stat *buf);
+#ifdef fstat
+#undef fstat
+#endif
 #define fstat mingw_fstat
+#ifdef lstat
+#undef lstat
+#endif
 #define lstat mingw_lstat
-#define _stati64(x,y) mingw_lstat(x,y)
+
+#ifndef _stati64
+# define _stati64(x,y) mingw_stat(x,y)
+#elif defined (_USE_32BIT_TIME_T)
+# define _stat32i64(x,y) mingw_stat(x,y)
+#else
+# define _stat64(x,y) mingw_stat(x,y)
 #endif
 
 int mingw_utime(const char *file_name, const struct utimbuf *times);
@@ -234,8 +301,10 @@ int mingw_utime(const char *file_name, const struct utimbuf *times);
 pid_t mingw_spawnvpe(const char *cmd, const char **argv, char **env,
 		     const char *dir,
 		     int fhin, int fhout, int fherr);
-void mingw_execvp(const char *cmd, char *const *argv);
+int mingw_execvp(const char *cmd, char *const *argv);
 #define execvp mingw_execvp
+int mingw_execv(const char *cmd, char *const *argv);
+#define execv mingw_execv
 
 static inline unsigned int git_ntohl(unsigned int x)
 { return (unsigned int)ntohl(x); }
@@ -243,6 +312,9 @@ static inline unsigned int git_ntohl(unsigned int x)
 
 sig_handler_t mingw_signal(int sig, sig_handler_t handler);
 #define signal mingw_signal
+
+int mingw_raise(int sig);
+#define raise mingw_raise
 
 /*
  * ANSI emulation wrappers
@@ -261,8 +333,18 @@ int winansi_fprintf(FILE *stream, const char *format, ...) __attribute__((format
 
 #define has_dos_drive_prefix(path) (isalpha(*(path)) && (path)[1] == ':')
 #define is_dir_sep(c) ((c) == '/' || (c) == '\\')
+static inline char *mingw_find_last_dir_sep(const char *path)
+{
+	char *ret = NULL;
+	for (; *path; ++path)
+		if (is_dir_sep(*path))
+			ret = (char *)path;
+	return ret;
+}
+#define find_last_dir_sep mingw_find_last_dir_sep
 #define PATH_SEP ';'
 #define PRIuMAX "I64u"
+#define PRId64 "I64d"
 
 void mingw_open_html(const char *path);
 #define open_html mingw_open_html
@@ -275,51 +357,31 @@ char **make_augmented_environ(const char *const *vars);
 void free_environ(char **env);
 
 /*
+ * A critical section used in the implementation of the spawn
+ * functions (mingw_spawnv[p]e()) and waitpid(). Intialised in
+ * the replacement main() macro below.
+ */
+extern CRITICAL_SECTION pinfo_cs;
+
+/*
  * A replacement of main() that ensures that argv[0] has a path
  * and that default fmode and std(in|out|err) are in binary mode
  */
 
 #define main(c,v) dummy_decl_mingw_main(); \
-static int mingw_main(); \
-int main(int argc, const char **argv) \
+static int mingw_main(c,v); \
+int main(int argc, char **argv) \
 { \
+	extern CRITICAL_SECTION pinfo_cs; \
 	_fmode = _O_BINARY; \
 	_setmode(_fileno(stdin), _O_BINARY); \
 	_setmode(_fileno(stdout), _O_BINARY); \
 	_setmode(_fileno(stderr), _O_BINARY); \
 	argv[0] = xstrdup(_pgmptr); \
+	InitializeCriticalSection(&pinfo_cs); \
 	return mingw_main(argc, argv); \
 } \
 static int mingw_main(c,v)
-
-#ifndef NO_MINGW_REPLACE_READDIR
-/*
- * A replacement of readdir, to ensure that it reads the file type at
- * the same time. This avoid extra unneeded lstats in git on MinGW
- */
-#undef DT_UNKNOWN
-#undef DT_DIR
-#undef DT_REG
-#undef DT_LNK
-#define DT_UNKNOWN	0
-#define DT_DIR		1
-#define DT_REG		2
-#define DT_LNK		3
-
-struct mingw_dirent
-{
-	long		d_ino;			/* Always zero. */
-	union {
-		unsigned short	d_reclen;	/* Always zero. */
-		unsigned char   d_type;		/* Reimplementation adds this */
-	};
-	unsigned short	d_namlen;		/* Length of name in d_name. */
-	char		d_name[FILENAME_MAX];	/* File name. */
-};
-#define dirent mingw_dirent
-#define readdir(x) mingw_readdir(x)
-struct dirent *mingw_readdir(DIR *dir);
-#endif // !NO_MINGW_REPLACE_READDIR
 
 /*
  * Used by Pthread API implementation for Windows

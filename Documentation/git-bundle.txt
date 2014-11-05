@@ -19,7 +19,7 @@ DESCRIPTION
 
 Some workflows require that one or more branches of development on one
 machine be replicated on another machine, but the two machines cannot
-be directly connected, and therefore the interactive git protocols (git,
+be directly connected, and therefore the interactive Git protocols (git,
 ssh, rsync, http) cannot be used.  This command provides support for
 'git fetch' and 'git pull' to operate by packaging objects and references
 in an archive at the originating machine, then importing those into
@@ -59,9 +59,9 @@ unbundle <file>::
 
 <git-rev-list-args>::
 	A list of arguments, acceptable to 'git rev-parse' and
-	'git rev-list' (and containg a named ref, see SPECIFYING REFERENCES
+	'git rev-list' (and containing a named ref, see SPECIFYING REFERENCES
 	below), that specifies the specific objects and references
-	to transport.  For example, `master{tilde}10..master` causes the
+	to transport.  For example, `master~10..master` causes the
 	current master reference to be packaged along with all objects
 	added since its 10th ancestor commit.  There is no explicit
 	limit to the number of references and objects that may be
@@ -80,12 +80,12 @@ SPECIFYING REFERENCES
 
 'git bundle' will only package references that are shown by
 'git show-ref': this includes heads, tags, and remote heads.  References
-such as `master{tilde}1` cannot be packaged, but are perfectly suitable for
+such as `master~1` cannot be packaged, but are perfectly suitable for
 defining the basis.  More than one reference may be packaged, and more
 than one basis can be specified.  The objects packaged are those not
 contained in the union of the given bases.  Each basis can be
-specified explicitly (e.g. `^master{tilde}10`), or implicitly (e.g.
-`master{tilde}10..master`, `--since=10.days.ago master`).
+specified explicitly (e.g. `^master~10`), or implicitly (e.g.
+`master~10..master`, `--since=10.days.ago master`).
 
 It is very important that the basis used be held by the destination.
 It is okay to err on the side of caution, causing the bundle file
@@ -112,13 +112,12 @@ machineA$ git bundle create file.bundle master
 machineA$ git tag -f lastR2bundle master
 ----------------
 
-Then you transfer file.bundle to the target machine B. If you are creating
-the repository on machine B, then you can clone from the bundle as if it
-were a remote repository instead of creating an empty repository and then
-pulling or fetching objects from the bundle:
+Then you transfer file.bundle to the target machine B. Because this
+bundle does not require any existing object to be extracted, you can
+create a new repository on machine B by cloning from it:
 
 ----------------
-machineB$ git clone /home/me/tmp/file.bundle R2
+machineB$ git clone -b master /home/me/tmp/file.bundle R2
 ----------------
 
 This will define a remote called "origin" in the resulting repository that
@@ -200,10 +199,6 @@ You can also see what references it offers:
 ----------------
 $ git ls-remote mybundle
 ----------------
-
-Author
-------
-Written by Mark Levedahl <mdl123@verizon.net>
 
 GIT
 ---

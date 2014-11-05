@@ -6,6 +6,7 @@
 test_description='git apply -p handling.'
 
 . ./test-lib.sh
+. "$TEST_DIRECTORY"/lib-prereq-FILEMODE.sh
 
 test_expect_success setup '
 	mkdir sub &&
@@ -31,7 +32,7 @@ test_expect_success 'apply git diff with -p2' '
 test_expect_success 'apply with too large -p' '
 	cp file1.saved file1 &&
 	test_must_fail git apply --stat -p3 patch.file 2>err &&
-	grep "removing 3 leading" err
+	test_i18ngrep "removing 3 leading" err
 '
 
 test_expect_success 'apply (-p2) traditional diff with funny filenames' '
@@ -53,7 +54,37 @@ test_expect_success 'apply (-p2) traditional diff with funny filenames' '
 test_expect_success 'apply with too large -p and fancy filename' '
 	cp file1.saved file1 &&
 	test_must_fail git apply --stat -p3 patch.escaped 2>err &&
-	grep "removing 3 leading" err
+	test_i18ngrep "removing 3 leading" err
+'
+
+test_expect_success 'apply (-p2) diff, mode change only' '
+	cat >patch.chmod <<-\EOF &&
+	diff --git a/sub/file1 b/sub/file1
+	old mode 100644
+	new mode 100755
+	EOF
+	test_chmod -x file1 &&
+	git apply --index -p2 patch.chmod &&
+	case $(git ls-files -s file1) in 100755*) : good;; *) false;; esac
+'
+
+test_expect_success FILEMODE 'file mode was changed' '
+	test -x file1
+'
+
+test_expect_success 'apply (-p2) diff, rename' '
+	cat >patch.rename <<-\EOF &&
+	diff --git a/sub/file1 b/sub/file2
+	similarity index 100%
+	rename from sub/file1
+	rename to sub/file2
+	EOF
+	echo A >expected &&
+
+	cp file1.saved file1 &&
+	rm -f file2 &&
+	git apply -p2 patch.rename &&
+	test_cmp expected file2
 '
 
 test_done

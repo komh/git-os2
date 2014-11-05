@@ -8,14 +8,14 @@ Date: Mon, 29 Aug 2005 21:39:02 -0700
 Content-type: text/asciidoc
 Message-ID: <7voe7g3uop.fsf@assigned-by-dhcp.cox.net>
 
-Reverting an existing commit
-============================
+How to revert an existing commit
+================================
 
 One of the changes I pulled into the 'master' branch turns out to
-break building GIT with GCC 2.95.  While they were well intentioned
+break building Git with GCC 2.95.  While they were well-intentioned
 portability fixes, keeping things working with gcc-2.95 was also
 important.  Here is what I did to revert the change in the 'master'
-branch and to adjust the 'pu' branch, using core GIT tools and
+branch and to adjust the 'pu' branch, using core Git tools and
 barebone Porcelain.
 
 First, prepare a throw-away branch in case I screw things up.
@@ -154,7 +154,7 @@ $ git pull . master
 Packing 0 objects
 Unpacking 0 objects
 
-* committish: e3a693c...	refs/heads/master from .
+* commit-ish: e3a693c...	refs/heads/master from .
 Trying to merge e3a693c... into 8c1f5f0... using 10d781b...
 Committed merge 7fb9b7262a1d1e0a47bbfdcbbcf50ce0635d3f8f
  cache.h        |    8 ++++----

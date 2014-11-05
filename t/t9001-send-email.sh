@@ -100,7 +100,7 @@ test_expect_success $PREREQ \
 
 test_expect_success $PREREQ 'Send patches with --envelope-sender' '
     clean_fake_sendmail &&
-     git send-email --envelope-sender="Patch Contributer <patch@example.com>" --suppress-cc=sob --from="Example <nobody@example.com>" --to=nobody@example.com --smtp-server="$(pwd)/fake.sendmail" $patches 2>errors
+     git send-email --envelope-sender="Patch Contributor <patch@example.com>" --suppress-cc=sob --from="Example <nobody@example.com>" --to=nobody@example.com --smtp-server="$(pwd)/fake.sendmail" $patches 2>errors
 '
 
 test_expect_success $PREREQ 'setup expect' '
@@ -170,6 +170,81 @@ Result: OK
 EOF
 "
 
+test_suppress_self () {
+	test_commit $3 &&
+	test_when_finished "git reset --hard HEAD^" &&
+
+	write_script cccmd-sed <<-EOF &&
+		sed -n -e s/^cccmd--//p "\$1"
+	EOF
+
+	git commit --amend --author="$1 <$2>" -F - &&
+	clean_fake_sendmail &&
+	git format-patch --stdout -1 >"suppress-self-$3.patch" &&
+
+	git send-email --from="$1 <$2>" \
+		--to=nobody@example.com \
+		--cc-cmd=./cccmd-sed \
+		--suppress-cc=self \
+		--smtp-server="$(pwd)/fake.sendmail" \
+		suppress-self-$3.patch &&
+
+	mv msgtxt1 msgtxt1-$3 &&
+	sed -e '/^$/q' msgtxt1-$3 >"msghdr1-$3" &&
+	>"expected-no-cc-$3" &&
+
+	(grep '^Cc:' msghdr1-$3 >"actual-no-cc-$3";
+	 test_cmp expected-no-cc-$3 actual-no-cc-$3)
+}
+
+test_suppress_self_unquoted () {
+	test_suppress_self "$1" "$2" "unquoted-$3" <<-EOF
+		test suppress-cc.self unquoted-$3 with name $1 email $2
+
+		unquoted-$3
+
+		cccmd--$1 <$2>
+
+		Cc: $1 <$2>
+		Signed-off-by: $1 <$2>
+	EOF
+}
+
+test_suppress_self_quoted () {
+	test_suppress_self "$1" "$2" "quoted-$3" <<-EOF
+		test suppress-cc.self quoted-$3 with name $1 email $2
+
+		quoted-$3
+
+		cccmd--"$1" <$2>
+
+		Cc: $1 <$2>
+		Cc: "$1" <$2>
+		Signed-off-by: $1 <$2>
+		Signed-off-by: "$1" <$2>
+	EOF
+}
+
+test_expect_success $PREREQ 'self name is suppressed' "
+	test_suppress_self_unquoted 'A U Thor' 'author@example.com' \
+		'self_name_suppressed'
+"
+
+test_expect_success $PREREQ 'self name with dot is suppressed' "
+	test_suppress_self_quoted 'A U. Thor' 'author@example.com' \
+		'self_name_dot_suppressed'
+"
+
+test_expect_success $PREREQ 'non-ascii self name is suppressed' "
+	test_suppress_self_quoted 'Füñný Nâmé' 'odd_?=mail@example.com' \
+		'non_ascii_self_suppressed'
+"
+
+test_expect_success $PREREQ 'sanitized self name is suppressed' "
+	test_suppress_self_unquoted '\"A U. Thor\"' 'author@example.com' \
+		'self_name_sanitized_suppressed'
+"
+
 test_expect_success $PREREQ 'Show all headers' '
 	git send-email \
 		--dry-run \
@@ -190,21 +265,66 @@ test_expect_success $PREREQ 'Show all headers' '
 
 test_expect_success $PREREQ 'Prompting works' '
 	clean_fake_sendmail &&
-	(echo "Example <from@example.com>"
-	 echo "to@example.com"
+	(echo "to@example.com"
 	 echo ""
 	) | GIT_SEND_EMAIL_NOTTY=1 git send-email \
 		--smtp-server="$(pwd)/fake.sendmail" \
 		$patches \
 		2>errors &&
-		grep "^From: Example <from@example.com>\$" msgtxt1 &&
+		grep "^From: A U Thor <author@example.com>\$" msgtxt1 &&
 		grep "^To: to@example.com\$" msgtxt1
+'
+
+test_expect_success $PREREQ,AUTOIDENT 'implicit ident is allowed' '
+	clean_fake_sendmail &&
+	(sane_unset GIT_AUTHOR_NAME &&
+	sane_unset GIT_AUTHOR_EMAIL &&
+	sane_unset GIT_COMMITTER_NAME &&
+	sane_unset GIT_COMMITTER_EMAIL &&
+	GIT_SEND_EMAIL_NOTTY=1 git send-email \
+		--smtp-server="$(pwd)/fake.sendmail" \
+		--to=to@example.com \
+		$patches </dev/null 2>errors
+	)
+'
+
+test_expect_success $PREREQ,!AUTOIDENT 'broken implicit ident aborts send-email' '
+	clean_fake_sendmail &&
+	(sane_unset GIT_AUTHOR_NAME &&
+	sane_unset GIT_AUTHOR_EMAIL &&
+	sane_unset GIT_COMMITTER_NAME &&
+	sane_unset GIT_COMMITTER_EMAIL &&
+	GIT_SEND_EMAIL_NOTTY=1 && export GIT_SEND_EMAIL_NOTTY &&
+	test_must_fail git send-email \
+		--smtp-server="$(pwd)/fake.sendmail" \
+		--to=to@example.com \
+		$patches </dev/null 2>errors &&
+	test_i18ngrep "tell me who you are" errors
+	)
+'
+
+test_expect_success $PREREQ 'tocmd works' '
+	clean_fake_sendmail &&
+	cp $patches tocmd.patch &&
+	echo tocmd--tocmd@example.com >>tocmd.patch &&
+	{
+	  echo "#!$SHELL_PATH"
+	  echo sed -n -e s/^tocmd--//p \"\$1\"
+	} > tocmd-sed &&
+	chmod +x tocmd-sed &&
+	git send-email \
+		--from="Example <nobody@example.com>" \
+		--to-cmd=./tocmd-sed \
+		--smtp-server="$(pwd)/fake.sendmail" \
+		tocmd.patch \
+		&&
+	grep "^To: tocmd@example.com" msgtxt1
 '
 
 test_expect_success $PREREQ 'cccmd works' '
 	clean_fake_sendmail &&
 	cp $patches cccmd.patch &&
-	echo cccmd--cccmd@example.com >>cccmd.patch &&
+	echo "cccmd--  cccmd@example.com" >>cccmd.patch &&
 	{
 	  echo "#!$SHELL_PATH"
 	  echo sed -n -e s/^cccmd--//p \"\$1\"
@@ -247,7 +367,7 @@ test_expect_success $PREREQ 'Author From: in message body' '
 		--to=nobody@example.com \
 		--smtp-server="$(pwd)/fake.sendmail" \
 		$patches &&
-	sed "1,/^\$/d" < msgtxt1 > msgbody1
+	sed "1,/^\$/d" < msgtxt1 > msgbody1 &&
 	grep "From: A <author@example.com>" msgbody1
 '
 
@@ -258,7 +378,7 @@ test_expect_success $PREREQ 'Author From: not in message body' '
 		--to=nobody@example.com \
 		--smtp-server="$(pwd)/fake.sendmail" \
 		$patches &&
-	sed "1,/^\$/d" < msgtxt1 > msgbody1
+	sed "1,/^\$/d" < msgtxt1 > msgbody1 &&
 	! grep "From: A <author@example.com>" msgbody1
 '
 
@@ -280,7 +400,7 @@ test_expect_success $PREREQ 'Invalid In-Reply-To' '
 		--in-reply-to=" " \
 		--smtp-server="$(pwd)/fake.sendmail" \
 		$patches \
-		2>errors
+		2>errors &&
 	! grep "^In-Reply-To: < *>" msgtxt1
 '
 
@@ -293,6 +413,49 @@ test_expect_success $PREREQ 'Valid In-Reply-To when prompting' '
 		--smtp-server="$(pwd)/fake.sendmail" \
 		$patches 2>errors &&
 	! grep "^In-Reply-To: < *>" msgtxt1
+'
+
+test_expect_success $PREREQ 'In-Reply-To without --chain-reply-to' '
+	clean_fake_sendmail &&
+	echo "<unique-message-id@example.com>" >expect &&
+	git send-email \
+		--from="Example <nobody@example.com>" \
+		--to=nobody@example.com \
+		--nochain-reply-to \
+		--in-reply-to="$(cat expect)" \
+		--smtp-server="$(pwd)/fake.sendmail" \
+		$patches $patches $patches \
+		2>errors &&
+	# The first message is a reply to --in-reply-to
+	sed -n -e "s/^In-Reply-To: *\(.*\)/\1/p" msgtxt1 >actual &&
+	test_cmp expect actual &&
+	# Second and subsequent messages are replies to the first one
+	sed -n -e "s/^Message-Id: *\(.*\)/\1/p" msgtxt1 >expect &&
+	sed -n -e "s/^In-Reply-To: *\(.*\)/\1/p" msgtxt2 >actual &&
+	test_cmp expect actual &&
+	sed -n -e "s/^In-Reply-To: *\(.*\)/\1/p" msgtxt3 >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success $PREREQ 'In-Reply-To with --chain-reply-to' '
+	clean_fake_sendmail &&
+	echo "<unique-message-id@example.com>" >expect &&
+	git send-email \
+		--from="Example <nobody@example.com>" \
+		--to=nobody@example.com \
+		--chain-reply-to \
+		--in-reply-to="$(cat expect)" \
+		--smtp-server="$(pwd)/fake.sendmail" \
+		$patches $patches $patches \
+		2>errors &&
+	sed -n -e "s/^In-Reply-To: *\(.*\)/\1/p" msgtxt1 >actual &&
+	test_cmp expect actual &&
+	sed -n -e "s/^Message-Id: *\(.*\)/\1/p" msgtxt1 >expect &&
+	sed -n -e "s/^In-Reply-To: *\(.*\)/\1/p" msgtxt2 >actual &&
+	test_cmp expect actual &&
+	sed -n -e "s/^Message-Id: *\(.*\)/\1/p" msgtxt2 >expect &&
+	sed -n -e "s/^In-Reply-To: *\(.*\)/\1/p" msgtxt3 >actual &&
+	test_cmp expect actual
 '
 
 test_expect_success $PREREQ 'setup fake editor' '
@@ -556,7 +719,7 @@ EOF
 "
 
 test_expect_success $PREREQ '--suppress-cc=sob' '
-	git config --unset sendemail.cccmd
+	test_might_fail git config --unset sendemail.cccmd &&
 	test_suppression sob
 '
 
@@ -698,7 +861,7 @@ test_expect_success $PREREQ 'confirm detects EOF (auto causes failure)' '
 	test $ret = "0"
 '
 
-test_expect_success $PREREQ 'confirm doesnt loop forever' '
+test_expect_success $PREREQ 'confirm does not loop forever' '
 	CONFIRM=$(git config --get sendemail.confirm) &&
 	git config sendemail.confirm auto &&
 	GIT_SEND_EMAIL_NOTTY=1 &&
@@ -779,6 +942,102 @@ test_expect_success $PREREQ '--compose adds MIME for utf8 subject' '
 	grep "^Subject: =?UTF-8?q?utf8-s=C3=BCbj=C3=ABct?=" msgtxt1
 '
 
+test_expect_success $PREREQ 'utf8 author is correctly passed on' '
+	clean_fake_sendmail &&
+	test_commit weird_author &&
+	test_when_finished "git reset --hard HEAD^" &&
+	git commit --amend --author "Füñný Nâmé <odd_?=mail@example.com>" &&
+	git format-patch --stdout -1 >funny_name.patch &&
+	git send-email --from="Example <nobody@example.com>" \
+	  --to=nobody@example.com \
+	  --smtp-server="$(pwd)/fake.sendmail" \
+	  funny_name.patch &&
+	grep "^From: Füñný Nâmé <odd_?=mail@example.com>" msgtxt1
+'
+
+test_expect_success $PREREQ 'utf8 sender is not duplicated' '
+	clean_fake_sendmail &&
+	test_commit weird_sender &&
+	test_when_finished "git reset --hard HEAD^" &&
+	git commit --amend --author "Füñný Nâmé <odd_?=mail@example.com>" &&
+	git format-patch --stdout -1 >funny_name.patch &&
+	git send-email --from="Füñný Nâmé <odd_?=mail@example.com>" \
+	  --to=nobody@example.com \
+	  --smtp-server="$(pwd)/fake.sendmail" \
+	  funny_name.patch &&
+	grep "^From: " msgtxt1 >msgfrom &&
+	test_line_count = 1 msgfrom
+'
+
+test_expect_success $PREREQ 'sendemail.composeencoding works' '
+	clean_fake_sendmail &&
+	git config sendemail.composeencoding iso-8859-1 &&
+	(echo "#!$SHELL_PATH" &&
+	 echo "echo utf8 body: àéìöú >>\"\$1\""
+	) >fake-editor-utf8 &&
+	chmod +x fake-editor-utf8 &&
+	  GIT_EDITOR="\"$(pwd)/fake-editor-utf8\"" \
+	  git send-email \
+	  --compose --subject foo \
+	  --from="Example <nobody@example.com>" \
+	  --to=nobody@example.com \
+	  --smtp-server="$(pwd)/fake.sendmail" \
+	  $patches &&
+	grep "^utf8 body" msgtxt1 &&
+	grep "^Content-Type: text/plain; charset=iso-8859-1" msgtxt1
+'
+
+test_expect_success $PREREQ '--compose-encoding works' '
+	clean_fake_sendmail &&
+	(echo "#!$SHELL_PATH" &&
+	 echo "echo utf8 body: àéìöú >>\"\$1\""
+	) >fake-editor-utf8 &&
+	chmod +x fake-editor-utf8 &&
+	  GIT_EDITOR="\"$(pwd)/fake-editor-utf8\"" \
+	  git send-email \
+	  --compose-encoding iso-8859-1 \
+	  --compose --subject foo \
+	  --from="Example <nobody@example.com>" \
+	  --to=nobody@example.com \
+	  --smtp-server="$(pwd)/fake.sendmail" \
+	  $patches &&
+	grep "^utf8 body" msgtxt1 &&
+	grep "^Content-Type: text/plain; charset=iso-8859-1" msgtxt1
+'
+
+test_expect_success $PREREQ '--compose-encoding overrides sendemail.composeencoding' '
+	clean_fake_sendmail &&
+	git config sendemail.composeencoding iso-8859-1 &&
+	(echo "#!$SHELL_PATH" &&
+	 echo "echo utf8 body: àéìöú >>\"\$1\""
+	) >fake-editor-utf8 &&
+	chmod +x fake-editor-utf8 &&
+	  GIT_EDITOR="\"$(pwd)/fake-editor-utf8\"" \
+	  git send-email \
+	  --compose-encoding iso-8859-2 \
+	  --compose --subject foo \
+	  --from="Example <nobody@example.com>" \
+	  --to=nobody@example.com \
+	  --smtp-server="$(pwd)/fake.sendmail" \
+	  $patches &&
+	grep "^utf8 body" msgtxt1 &&
+	grep "^Content-Type: text/plain; charset=iso-8859-2" msgtxt1
+'
+
+test_expect_success $PREREQ '--compose-encoding adds correct MIME for subject' '
+	clean_fake_sendmail &&
+	  GIT_EDITOR="\"$(pwd)/fake-editor\"" \
+	  git send-email \
+	  --compose-encoding iso-8859-2 \
+	  --compose --subject utf8-sübjëct \
+	  --from="Example <nobody@example.com>" \
+	  --to=nobody@example.com \
+	  --smtp-server="$(pwd)/fake.sendmail" \
+	  $patches &&
+	grep "^fake edit" msgtxt1 &&
+	grep "^Subject: =?iso-8859-2?q?utf8-s=C3=BCbj=C3=ABct?=" msgtxt1
+'
+
 test_expect_success $PREREQ 'detects ambiguous reference/file conflict' '
 	echo master > master &&
 	git add master &&
@@ -830,55 +1089,6 @@ test_expect_success $PREREQ 'threading but no chain-reply-to' '
 		--nochain-reply-to \
 		$patches $patches >stdout &&
 	grep "In-Reply-To: " stdout
-'
-
-test_expect_success $PREREQ 'warning with an implicit --chain-reply-to' '
-	git send-email \
-	--dry-run \
-	--from="Example <nobody@example.com>" \
-	--to=nobody@example.com \
-	outdir/000?-*.patch 2>errors >out &&
-	grep "no-chain-reply-to" errors
-'
-
-test_expect_success $PREREQ 'no warning with an explicit --chain-reply-to' '
-	git send-email \
-	--dry-run \
-	--from="Example <nobody@example.com>" \
-	--to=nobody@example.com \
-	--chain-reply-to \
-	outdir/000?-*.patch 2>errors >out &&
-	! grep "no-chain-reply-to" errors
-'
-
-test_expect_success $PREREQ 'no warning with an explicit --no-chain-reply-to' '
-	git send-email \
-	--dry-run \
-	--from="Example <nobody@example.com>" \
-	--to=nobody@example.com \
-	--nochain-reply-to \
-	outdir/000?-*.patch 2>errors >out &&
-	! grep "no-chain-reply-to" errors
-'
-
-test_expect_success $PREREQ 'no warning with sendemail.chainreplyto = false' '
-	git config sendemail.chainreplyto false &&
-	git send-email \
-	--dry-run \
-	--from="Example <nobody@example.com>" \
-	--to=nobody@example.com \
-	outdir/000?-*.patch 2>errors >out &&
-	! grep "no-chain-reply-to" errors
-'
-
-test_expect_success $PREREQ 'no warning with sendemail.chainreplyto = true' '
-	git config sendemail.chainreplyto true &&
-	git send-email \
-	--dry-run \
-	--from="Example <nobody@example.com>" \
-	--to=nobody@example.com \
-	outdir/000?-*.patch 2>errors >out &&
-	! grep "no-chain-reply-to" errors
 '
 
 test_expect_success $PREREQ 'sendemail.to works' '
@@ -947,6 +1157,45 @@ test_expect_success $PREREQ '--no-bcc overrides sendemail.bcc' '
 	! grep "RCPT TO:<other@ex.com>" stdout
 '
 
+test_expect_success $PREREQ 'patches To headers are used by default' '
+	patch=`git format-patch -1 --to="bodies@example.com"` &&
+	test_when_finished "rm $patch" &&
+	git send-email \
+		--dry-run \
+		--from="Example <nobody@example.com>" \
+		--smtp-server relay.example.com \
+		$patch >stdout &&
+	grep "RCPT TO:<bodies@example.com>" stdout
+'
+
+test_expect_success $PREREQ 'patches To headers are appended to' '
+	patch=`git format-patch -1 --to="bodies@example.com"` &&
+	test_when_finished "rm $patch" &&
+	git send-email \
+		--dry-run \
+		--from="Example <nobody@example.com>" \
+		--to=nobody@example.com \
+		--smtp-server relay.example.com \
+		$patch >stdout &&
+	grep "RCPT TO:<bodies@example.com>" stdout &&
+	grep "RCPT TO:<nobody@example.com>" stdout
+'
+
+test_expect_success $PREREQ 'To headers from files reset each patch' '
+	patch1=`git format-patch -1 --to="bodies@example.com"` &&
+	patch2=`git format-patch -1 --to="other@example.com" HEAD~` &&
+	test_when_finished "rm $patch1 && rm $patch2" &&
+	git send-email \
+		--dry-run \
+		--from="Example <nobody@example.com>" \
+		--to="nobody@example.com" \
+		--smtp-server relay.example.com \
+		$patch1 $patch2 >stdout &&
+	test $(grep -c "RCPT TO:<bodies@example.com>" stdout) = 1 &&
+	test $(grep -c "RCPT TO:<nobody@example.com>" stdout) = 2 &&
+	test $(grep -c "RCPT TO:<other@example.com>" stdout) = 1
+'
+
 test_expect_success $PREREQ 'setup expect' '
 cat >email-using-8bit <<EOF
 From fe6ecc66ece37198fe5db91fa2fc41d9f4fe5cc4 Mon Sep 17 00:00:00 2001
@@ -957,6 +1206,23 @@ Subject: subject goes here
 
 Dieser deutsche Text enthält einen Umlaut!
 EOF
+'
+
+test_expect_success $PREREQ 'setup expect' '
+cat >expected <<EOF
+Subject: subject goes here
+EOF
+'
+
+test_expect_success $PREREQ 'ASCII subject is not RFC2047 quoted' '
+	clean_fake_sendmail &&
+	echo bogus |
+	git send-email --from=author@example.com --to=nobody@example.com \
+			--smtp-server="$(pwd)/fake.sendmail" \
+			--8bit-encoding=UTF-8 \
+			email-using-8bit >stdout &&
+	grep "Subject" msgtxt1 >actual &&
+	test_cmp expected actual
 '
 
 test_expect_success $PREREQ 'setup expect' '
@@ -1030,6 +1296,70 @@ test_expect_success $PREREQ '--8bit-encoding also treats subject' '
 			email-using-8bit >stdout &&
 	grep "Subject" msgtxt1 >actual &&
 	test_cmp expected actual
+'
+
+# Note that the patches in this test are deliberately out of order; we
+# want to make sure it works even if the cover-letter is not in the
+# first mail.
+test_expect_success $PREREQ 'refusing to send cover letter template' '
+	clean_fake_sendmail &&
+	rm -fr outdir &&
+	git format-patch --cover-letter -2 -o outdir &&
+	test_must_fail git send-email \
+	  --from="Example <nobody@example.com>" \
+	  --to=nobody@example.com \
+	  --smtp-server="$(pwd)/fake.sendmail" \
+	  outdir/0002-*.patch \
+	  outdir/0000-*.patch \
+	  outdir/0001-*.patch \
+	  2>errors >out &&
+	grep "SUBJECT HERE" errors &&
+	test -z "$(ls msgtxt*)"
+'
+
+test_expect_success $PREREQ '--force sends cover letter template anyway' '
+	clean_fake_sendmail &&
+	rm -fr outdir &&
+	git format-patch --cover-letter -2 -o outdir &&
+	git send-email \
+	  --force \
+	  --from="Example <nobody@example.com>" \
+	  --to=nobody@example.com \
+	  --smtp-server="$(pwd)/fake.sendmail" \
+	  outdir/0002-*.patch \
+	  outdir/0000-*.patch \
+	  outdir/0001-*.patch \
+	  2>errors >out &&
+	! grep "SUBJECT HERE" errors &&
+	test -n "$(ls msgtxt*)"
+'
+
+test_expect_success $PREREQ 'sendemail.aliasfiletype=mailrc' '
+	clean_fake_sendmail &&
+	echo "alias sbd  somebody@example.org" >.mailrc &&
+	git config --replace-all sendemail.aliasesfile "$(pwd)/.mailrc" &&
+	git config sendemail.aliasfiletype mailrc &&
+	git send-email \
+	  --from="Example <nobody@example.com>" \
+	  --to=sbd \
+	  --smtp-server="$(pwd)/fake.sendmail" \
+	  outdir/0001-*.patch \
+	  2>errors >out &&
+	grep "^!somebody@example\.org!$" commandline1
+'
+
+test_expect_success $PREREQ 'sendemail.aliasfile=~/.mailrc' '
+	clean_fake_sendmail &&
+	echo "alias sbd  someone@example.org" >~/.mailrc &&
+	git config --replace-all sendemail.aliasesfile "~/.mailrc" &&
+	git config sendemail.aliasfiletype mailrc &&
+	git send-email \
+	  --from="Example <nobody@example.com>" \
+	  --to=sbd \
+	  --smtp-server="$(pwd)/fake.sendmail" \
+	  outdir/0001-*.patch \
+	  2>errors >out &&
+	grep "^!someone@example\.org!$" commandline1
 '
 
 test_done

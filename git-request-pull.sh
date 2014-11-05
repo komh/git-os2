@@ -15,7 +15,6 @@ p    show patch text as well
 '
 
 . git-sh-setup
-. git-parse-remote
 
 GIT_PAGER=
 export GIT_PAGER
@@ -36,44 +35,128 @@ do
 	shift
 done
 
-base=$1
-url=$2
-head=${3-HEAD}
+base=$1 url=$2 head=${3-HEAD} status=0 branch_name=
 
-[ "$base" ] || usage
-[ "$url" ] || usage
+headref=$(git symbolic-ref -q "$head")
+if git show-ref -q --verify "$headref"
+then
+	branch_name=${headref#refs/heads/}
+	if test "z$branch_name" = "z$headref" ||
+		! git config "branch.$branch_name.description" >/dev/null
+	then
+		branch_name=
+	fi
+fi
 
-baserev=`git rev-parse --verify "$base"^0` &&
-headrev=`git rev-parse --verify "$head"^0` || exit
+tag_name=$(git describe --exact "$head^0" 2>/dev/null)
 
-merge_base=`git merge-base $baserev $headrev` ||
+test -n "$base" && test -n "$url" || usage
+
+baserev=$(git rev-parse --verify --quiet "$base"^0)
+if test -z "$baserev"
+then
+    die "fatal: Not a valid revision: $base"
+fi
+
+headrev=$(git rev-parse --verify --quiet "$head"^0)
+if test -z "$headrev"
+then
+    die "fatal: Not a valid revision: $head"
+fi
+
+merge_base=$(git merge-base $baserev $headrev) ||
 die "fatal: No commits in common between $base and $head"
 
-branch=$(git ls-remote "$url" \
-	| sed -n -e "/^$headrev	refs.heads./{
-		s/^.*	refs.heads.//
-		p
-		q
-	}")
-url=$(get_remote_url "$url")
-if [ -z "$branch" ]; then
-	echo "warn: No branch of $url is at:" >&2
-	git log --max-count=1 --pretty='tformat:warn:   %h: %s' $headrev >&2
-	echo "warn: Are you sure you pushed $head there?" >&2
-	echo >&2
-	echo >&2
-	branch=..BRANCH.NOT.VERIFIED..
-	status=1
-fi
+# $head is the token given from the command line, and $tag_name, if
+# exists, is the tag we are going to show the commit information for.
+# If that tag exists at the remote and it points at the commit, use it.
+# Otherwise, if a branch with the same name as $head exists at the remote
+# and their values match, use that instead.
+#
+# Otherwise find a random ref that matches $headrev.
+find_matching_ref='
+	sub abbr {
+		my $ref = shift;
+		if ($ref =~ s|^refs/heads/|| || $ref =~ s|^refs/tags/|tags/|) {
+			return $ref;
+		} else {
+			return $ref;
+		}
+	}
+
+	my ($tagged, $branch, $found);
+	while (<STDIN>) {
+		my ($sha1, $ref, $deref) = /^(\S+)\s+(\S+?)(\^\{\})?$/;
+		next unless ($sha1 eq $ARGV[1]);
+		$found = abbr($ref);
+		if ($deref && $ref eq "tags/$ARGV[2]") {
+			$tagged = $found;
+			last;
+		}
+		if ($ref =~ m|/\Q$ARGV[0]\E$|) {
+			$exact = $found;
+		}
+	}
+	if ($tagged) {
+		print "$tagged\n";
+	} elsif ($exact) {
+		print "$exact\n";
+	} elsif ($found) {
+		print "$found\n";
+	}
+'
+
+ref=$(git ls-remote "$url" | perl -e "$find_matching_ref" "$head" "$headrev" "$tag_name")
+
+url=$(git ls-remote --get-url "$url")
 
 git show -s --format='The following changes since commit %H:
 
   %s (%ci)
 
-are available in the git repository at:' $baserev &&
-echo "  $url $branch" &&
-echo &&
+are available in the git repository at:
+' $merge_base &&
+echo "  $url${ref+ $ref}" &&
+git show -s --format='
+for you to fetch changes up to %H:
+
+  %s (%ci)
+
+----------------------------------------------------------------' $headrev &&
+
+if test -n "$branch_name"
+then
+	echo "(from the branch description for $branch_name local branch)"
+	echo
+	git config "branch.$branch_name.description"
+fi &&
+
+if test -n "$tag_name"
+then
+	if test -z "$ref" || test "$ref" != "tags/$tag_name"
+	then
+		echo >&2 "warn: You locally have $tag_name but it does not (yet)"
+		echo >&2 "warn: appear to be at $url"
+		echo >&2 "warn: Do you want to push it there, perhaps?"
+	fi
+	git cat-file tag "$tag_name" |
+	sed -n -e '1,/^$/d' -e '/^-----BEGIN PGP /q' -e p
+	echo
+fi &&
+
+if test -n "$branch_name" || test -n "$tag_name"
+then
+	echo "----------------------------------------------------------------"
+fi &&
 
 git shortlog ^$baserev $headrev &&
-git diff -M --stat --summary $patch $merge_base..$headrev || exit
+git diff -M --stat --summary $patch $merge_base..$headrev || status=1
+
+if test -z "$ref"
+then
+	echo "warn: No branch of $url is at:" >&2
+	git show -s --format='warn:   %h: %s' $headrev >&2
+	echo "warn: Are you sure you pushed '$head' there?" >&2
+	status=1
+fi
 exit $status
