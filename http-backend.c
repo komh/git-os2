@@ -7,6 +7,7 @@
 #include "run-command.h"
 #include "string-list.h"
 #include "url.h"
+#include "argv-array.h"
 
 static const char content_type[] = "Content-Type";
 static const char content_length[] = "Content-Length";
@@ -69,7 +70,7 @@ static void format_write(int fd, const char *fmt, ...)
 	if (n >= sizeof(buffer))
 		die("protocol error: impossibly long line");
 
-	safe_write(fd, buffer, n);
+	write_or_die(fd, buffer, n);
 }
 
 static void http_status(unsigned code, const char *msg)
@@ -110,7 +111,7 @@ static void hdr_cache_forever(void)
 
 static void end_headers(void)
 {
-	safe_write(1, "\r\n", 2);
+	write_or_die(1, "\r\n", 2);
 }
 
 __attribute__((format (printf, 1, 2)))
@@ -156,7 +157,7 @@ static void send_strbuf(const char *type, struct strbuf *buf)
 	hdr_int(content_length, buf->len);
 	hdr_str(content_type, type);
 	end_headers();
-	safe_write(1, buf->buf, buf->len);
+	write_or_die(1, buf->buf, buf->len);
 }
 
 static void send_local_file(const char *the_type, const char *name)
@@ -184,7 +185,7 @@ static void send_local_file(const char *the_type, const char *name)
 			die_errno("Cannot read '%s'", p);
 		if (!n)
 			break;
-		safe_write(1, buf, n);
+		write_or_die(1, buf, n);
 	}
 	close(fd);
 	free(buf);
@@ -271,16 +272,13 @@ static struct rpc_service *select_service(const char *name)
 
 static void inflate_request(const char *prog_name, int out)
 {
-	z_stream stream;
+	git_zstream stream;
 	unsigned char in_buf[8192];
 	unsigned char out_buf[8192];
 	unsigned long cnt = 0;
-	int ret;
 
 	memset(&stream, 0, sizeof(stream));
-	ret = inflateInit2(&stream, (15 + 16));
-	if (ret != Z_OK)
-		die("cannot start zlib inflater, zlib err %d", ret);
+	git_inflate_init_gzip_only(&stream);
 
 	while (1) {
 		ssize_t n = xread(0, in_buf, sizeof(in_buf));
@@ -296,7 +294,7 @@ static void inflate_request(const char *prog_name, int out)
 			stream.next_out = out_buf;
 			stream.avail_out = sizeof(out_buf);
 
-			ret = inflate(&stream, Z_NO_FLUSH);
+			ret = git_inflate(&stream, Z_NO_FLUSH);
 			if (ret != Z_OK && ret != Z_STREAM_END)
 				die("zlib error inflating request, result %d", ret);
 
@@ -311,7 +309,7 @@ static void inflate_request(const char *prog_name, int out)
 	}
 
 done:
-	inflateEnd(&stream);
+	git_inflate_end(&stream);
 	close(out);
 }
 
@@ -320,8 +318,7 @@ static void run_service(const char **argv)
 	const char *encoding = getenv("HTTP_CONTENT_ENCODING");
 	const char *user = getenv("REMOTE_USER");
 	const char *host = getenv("REMOTE_ADDR");
-	char *env[3];
-	struct strbuf buf = STRBUF_INIT;
+	struct argv_array env = ARGV_ARRAY_INIT;
 	int gzipped_request = 0;
 	struct child_process cld;
 
@@ -335,17 +332,15 @@ static void run_service(const char **argv)
 	if (!host || !*host)
 		host = "(none)";
 
-	memset(&env, 0, sizeof(env));
-	strbuf_addf(&buf, "GIT_COMMITTER_NAME=%s", user);
-	env[0] = strbuf_detach(&buf, NULL);
-
-	strbuf_addf(&buf, "GIT_COMMITTER_EMAIL=%s@http.%s", user, host);
-	env[1] = strbuf_detach(&buf, NULL);
-	env[2] = NULL;
+	if (!getenv("GIT_COMMITTER_NAME"))
+		argv_array_pushf(&env, "GIT_COMMITTER_NAME=%s", user);
+	if (!getenv("GIT_COMMITTER_EMAIL"))
+		argv_array_pushf(&env, "GIT_COMMITTER_EMAIL=%s@http.%s",
+				 user, host);
 
 	memset(&cld, 0, sizeof(cld));
 	cld.argv = argv;
-	cld.env = (const char *const *)env;
+	cld.env = env.argv;
 	if (gzipped_request)
 		cld.in = -1;
 	cld.git_cmd = 1;
@@ -360,25 +355,25 @@ static void run_service(const char **argv)
 
 	if (finish_command(&cld))
 		exit(1);
-	free(env[0]);
-	free(env[1]);
-	strbuf_release(&buf);
+	argv_array_clear(&env);
 }
 
 static int show_text_ref(const char *name, const unsigned char *sha1,
 	int flag, void *cb_data)
 {
+	const char *name_nons = strip_namespace(name);
 	struct strbuf *buf = cb_data;
 	struct object *o = parse_object(sha1);
 	if (!o)
 		return 0;
 
-	strbuf_addf(buf, "%s\t%s\n", sha1_to_hex(sha1), name);
+	strbuf_addf(buf, "%s\t%s\n", sha1_to_hex(sha1), name_nons);
 	if (o->type == OBJ_TAG) {
 		o = deref_tag(o, name, 0);
 		if (!o)
 			return 0;
-		strbuf_addf(buf, "%s\t%s^{}\n", sha1_to_hex(o->sha1), name);
+		strbuf_addf(buf, "%s\t%s^{}\n", sha1_to_hex(o->sha1),
+			    name_nons);
 	}
 	return 0;
 }
@@ -409,9 +404,37 @@ static void get_info_refs(char *arg)
 
 	} else {
 		select_getanyfile();
-		for_each_ref(show_text_ref, &buf);
+		for_each_namespaced_ref(show_text_ref, &buf);
 		send_strbuf("text/plain", &buf);
 	}
+	strbuf_release(&buf);
+}
+
+static int show_head_ref(const char *refname, const unsigned char *sha1,
+	int flag, void *cb_data)
+{
+	struct strbuf *buf = cb_data;
+
+	if (flag & REF_ISSYMREF) {
+		unsigned char unused[20];
+		const char *target = resolve_ref_unsafe(refname, unused, 1, NULL);
+		const char *target_nons = strip_namespace(target);
+
+		strbuf_addf(buf, "ref: %s\n", target_nons);
+	} else {
+		strbuf_addf(buf, "%s\n", sha1_to_hex(sha1));
+	}
+
+	return 0;
+}
+
+static void get_head(char *arg)
+{
+	struct strbuf buf = STRBUF_INIT;
+
+	select_getanyfile();
+	head_ref_namespaced(show_head_ref, &buf);
+	send_strbuf("text/plain", &buf);
 	strbuf_release(&buf);
 }
 
@@ -510,9 +533,7 @@ static char* getdir(void)
 			die("GIT_PROJECT_ROOT is set but PATH_INFO is not");
 		if (daemon_avoid_alias(pathinfo))
 			die("'%s': aliased", pathinfo);
-		strbuf_addstr(&buf, root);
-		if (buf.buf[buf.len - 1] != '/')
-			strbuf_addch(&buf, '/');
+		end_url_with_slash(&buf, root);
 		if (pathinfo[0] == '/')
 			pathinfo++;
 		strbuf_addstr(&buf, pathinfo);
@@ -529,7 +550,7 @@ static struct service_cmd {
 	const char *pattern;
 	void (*imp)(char *);
 } services[] = {
-	{"GET", "/HEAD$", get_text_file},
+	{"GET", "/HEAD$", get_head},
 	{"GET", "/info/refs$", get_info_refs},
 	{"GET", "/objects/info/alternates$", get_text_file},
 	{"GET", "/objects/info/http-alternates$", get_text_file},
@@ -549,6 +570,8 @@ int main(int argc, char **argv)
 	struct service_cmd *cmd = NULL;
 	char *cmd_arg = NULL;
 	int i;
+
+	git_setup_gettext();
 
 	git_extract_argv0_path(argv[0]);
 	set_die_routine(die_webcgi);
@@ -571,9 +594,11 @@ int main(int argc, char **argv)
 
 			if (strcmp(method, c->method)) {
 				const char *proto = getenv("SERVER_PROTOCOL");
-				if (proto && !strcmp(proto, "HTTP/1.1"))
+				if (proto && !strcmp(proto, "HTTP/1.1")) {
 					http_status(405, "Method Not Allowed");
-				else
+					hdr_str("Allow", !strcmp(c->method, "GET") ?
+						"GET, HEAD" : c->method);
+				} else
 					http_status(400, "Bad Request");
 				hdr_nocache();
 				end_headers();

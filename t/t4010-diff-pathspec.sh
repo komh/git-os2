@@ -48,6 +48,14 @@ test_expect_success \
      compare_diff_raw current expected'
 
 cat >expected <<\EOF
+:100644 100644 766498d93a4b06057a8e49d23f4068f1170ff38f 0a41e115ab61be0328a19b29f18cdcb49338d516 M	path1/file1
+EOF
+test_expect_success \
+    '"*file1" should show path1/file1' \
+    'git diff-index --cached $tree -- "*file1" >current &&
+     compare_diff_raw current expected'
+
+cat >expected <<\EOF
 :100644 100644 766498d93a4b06057a8e49d23f4068f1170ff38f 0a41e115ab61be0328a19b29f18cdcb49338d516 M	file0
 EOF
 test_expect_success \
@@ -68,6 +76,38 @@ test_expect_success 'diff-tree pathspec' '
 	git diff-tree -r --name-only $tree $tree2 -- pa path1/a >current &&
 	>expected &&
 	test_cmp expected current
+'
+
+EMPTY_TREE=4b825dc642cb6eb9a060e54bf8d69288fbee4904
+
+test_expect_success 'diff-tree with wildcard shows dir also matches' '
+	git diff-tree --name-only $EMPTY_TREE $tree -- "f*" >result &&
+	echo file0 >expected &&
+	test_cmp expected result
+'
+
+test_expect_success 'diff-tree -r with wildcard' '
+	git diff-tree -r --name-only $EMPTY_TREE $tree -- "*file1" >result &&
+	echo path1/file1 >expected &&
+	test_cmp expected result
+'
+
+test_expect_success 'diff-tree with wildcard shows dir also matches' '
+	git diff-tree --name-only $tree $tree2 -- "path1/f*" >result &&
+	echo path1 >expected &&
+	test_cmp expected result
+'
+
+test_expect_success 'diff-tree -r with wildcard from beginning' '
+	git diff-tree -r --name-only $tree $tree2 -- "path1/*file1" >result &&
+	echo path1/file1 >expected &&
+	test_cmp expected result
+'
+
+test_expect_success 'diff-tree -r with wildcard' '
+	git diff-tree -r --name-only $tree $tree2 -- "path1/f*" >result &&
+	echo path1/file1 >expected &&
+	test_cmp expected result
 '
 
 test_done

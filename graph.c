@@ -59,27 +59,6 @@ enum graph_state {
 	GRAPH_COLLAPSING
 };
 
-/*
- * The list of available column colors.
- */
-static const char *column_colors_ansi[] = {
-	GIT_COLOR_RED,
-	GIT_COLOR_GREEN,
-	GIT_COLOR_YELLOW,
-	GIT_COLOR_BLUE,
-	GIT_COLOR_MAGENTA,
-	GIT_COLOR_CYAN,
-	GIT_COLOR_BOLD_RED,
-	GIT_COLOR_BOLD_GREEN,
-	GIT_COLOR_BOLD_YELLOW,
-	GIT_COLOR_BOLD_BLUE,
-	GIT_COLOR_BOLD_MAGENTA,
-	GIT_COLOR_BOLD_CYAN,
-	GIT_COLOR_RESET,
-};
-
-#define COLUMN_COLORS_ANSI_MAX (ARRAY_SIZE(column_colors_ansi) - 1)
-
 static const char **column_colors;
 static unsigned short column_colors_max;
 
@@ -215,8 +194,10 @@ static struct strbuf *diff_output_prefix_callback(struct diff_options *opt, void
 	struct git_graph *graph = data;
 	static struct strbuf msgbuf = STRBUF_INIT;
 
+	assert(opt);
 	assert(graph);
 
+	opt->output_prefix_length = graph->width;
 	strbuf_reset(&msgbuf);
 	graph_padding_line(graph, &msgbuf);
 	return &msgbuf;
@@ -228,7 +209,7 @@ struct git_graph *graph_init(struct rev_info *opt)
 
 	if (!column_colors)
 		graph_set_column_colors(column_colors_ansi,
-					COLUMN_COLORS_ANSI_MAX);
+					column_colors_ansi_max);
 
 	graph->commit = NULL;
 	graph->revs = opt;
@@ -266,6 +247,7 @@ struct git_graph *graph_init(struct rev_info *opt)
 	 */
 	opt->diffopt.output_prefix = diff_output_prefix_callback;
 	opt->diffopt.output_prefix_data = graph;
+	opt->diffopt.output_prefix_length = 0;
 
 	return graph;
 }
@@ -368,7 +350,7 @@ static struct commit_list *first_interesting_parent(struct git_graph *graph)
 
 static unsigned short graph_get_current_column_color(const struct git_graph *graph)
 {
-	if (!DIFF_OPT_TST(&graph->revs->diffopt, COLOR_DIFF))
+	if (!want_color(graph->revs->diffopt.use_color))
 		return column_colors_max;
 	return graph->default_column_color;
 }
@@ -798,22 +780,9 @@ static void graph_output_commit_char(struct git_graph *graph, struct strbuf *sb)
 	}
 
 	/*
-	 * If revs->left_right is set, print '<' for commits that
-	 * come from the left side, and '>' for commits from the right
-	 * side.
+	 * get_revision_mark() handles all other cases without assert()
 	 */
-	if (graph->revs && graph->revs->left_right) {
-		if (graph->commit->object.flags & SYMMETRIC_LEFT)
-			strbuf_addch(sb, '<');
-		else
-			strbuf_addch(sb, '>');
-		return;
-	}
-
-	/*
-	 * Print '*' in all other cases
-	 */
-	strbuf_addch(sb, '*');
+	strbuf_addstr(sb, get_revision_mark(graph->revs, graph->commit));
 }
 
 /*
@@ -832,10 +801,10 @@ static int graph_draw_octopus_merge(struct git_graph *graph,
 	int num_dashes =
 		((graph->num_parents - dashless_commits) * 2) - 1;
 	for (i = 0; i < num_dashes; i++) {
-		col_num = (i / 2) + dashless_commits;
+		col_num = (i / 2) + dashless_commits + graph->commit_index;
 		strbuf_write_column(sb, &graph->new_columns[col_num], '-');
 	}
-	col_num = (i / 2) + dashless_commits;
+	col_num = (i / 2) + dashless_commits + graph->commit_index;
 	strbuf_write_column(sb, &graph->new_columns[col_num], '.');
 	return num_dashes + 1;
 }
@@ -1230,7 +1199,17 @@ void graph_show_commit(struct git_graph *graph)
 	if (!graph)
 		return;
 
-	while (!shown_commit_line) {
+	/*
+	 * When showing a diff of a merge against each of its parents, we
+	 * are called once for each parent without graph_update having been
+	 * called.  In this case, simply output a single padding line.
+	 */
+	if (graph_is_commit_finished(graph)) {
+		graph_show_padding(graph);
+		shown_commit_line = 1;
+	}
+
+	while (!shown_commit_line && !graph_is_commit_finished(graph)) {
 		shown_commit_line = graph_next_line(graph, &msgbuf);
 		fwrite(msgbuf.buf, sizeof(char), msgbuf.len, stdout);
 		if (!shown_commit_line)

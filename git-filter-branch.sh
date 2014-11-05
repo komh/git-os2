@@ -12,7 +12,7 @@
 
 functions=$(cat << \EOF
 warn () {
-        echo "$*" >&2
+	echo "$*" >&2
 }
 
 map()
@@ -64,53 +64,33 @@ EOF
 
 eval "$functions"
 
-# When piped a commit, output a script to set the ident of either
-# "author" or "committer
+finish_ident() {
+	# Ensure non-empty id name.
+	echo "case \"\$GIT_$1_NAME\" in \"\") GIT_$1_NAME=\"\${GIT_$1_EMAIL%%@*}\" && export GIT_$1_NAME;; esac"
+	# And make sure everything is exported.
+	echo "export GIT_$1_NAME"
+	echo "export GIT_$1_EMAIL"
+	echo "export GIT_$1_DATE"
+}
 
 set_ident () {
-	lid="$(echo "$1" | tr "[A-Z]" "[a-z]")"
-	uid="$(echo "$1" | tr "[a-z]" "[A-Z]")"
-	pick_id_script='
-		/^'$lid' /{
-			s/'\''/'\''\\'\'\''/g
-			h
-			s/^'$lid' \([^<]*\) <[^>]*> .*$/\1/
-			s/'\''/'\''\'\'\''/g
-			s/.*/GIT_'$uid'_NAME='\''&'\''; export GIT_'$uid'_NAME/p
-
-			g
-			s/^'$lid' [^<]* <\([^>]*\)> .*$/\1/
-			s/'\''/'\''\'\'\''/g
-			s/.*/GIT_'$uid'_EMAIL='\''&'\''; export GIT_'$uid'_EMAIL/p
-
-			g
-			s/^'$lid' [^<]* <[^>]*> \(.*\)$/\1/
-			s/'\''/'\''\'\'\''/g
-			s/.*/GIT_'$uid'_DATE='\''&'\''; export GIT_'$uid'_DATE/p
-
-			q
-		}
-	'
-
-	LANG=C LC_ALL=C sed -ne "$pick_id_script"
-	# Ensure non-empty id name.
-	echo "case \"\$GIT_${uid}_NAME\" in \"\") GIT_${uid}_NAME=\"\${GIT_${uid}_EMAIL%%@*}\" && export GIT_${uid}_NAME;; esac"
+	parse_ident_from_commit author AUTHOR committer COMMITTER
+	finish_ident AUTHOR
+	finish_ident COMMITTER
 }
 
 USAGE="[--env-filter <command>] [--tree-filter <command>]
-            [--index-filter <command>] [--parent-filter <command>]
-            [--msg-filter <command>] [--commit-filter <command>]
-            [--tag-name-filter <command>] [--subdirectory-filter <directory>]
-            [--original <namespace>] [-d <directory>] [-f | --force]
-            [<rev-list options>...]"
+	[--index-filter <command>] [--parent-filter <command>]
+	[--msg-filter <command>] [--commit-filter <command>]
+	[--tag-name-filter <command>] [--subdirectory-filter <directory>]
+	[--original <namespace>] [-d <directory>] [-f | --force]
+	[<rev-list options>...]"
 
 OPTIONS_SPEC=
 . git-sh-setup
 
 if [ "$(is_bare_repository)" = false ]; then
-	git diff-files --ignore-submodules --quiet &&
-	git diff-index --cached --quiet HEAD -- ||
-	die "Cannot rewrite branch(es) with a dirty working directory."
+	require_clean_work_tree 'rewrite branches'
 fi
 
 tempdir=.git-rewrite
@@ -219,6 +199,7 @@ t)
 	test -d "$tempdir" &&
 		die "$tempdir already exists, please remove it"
 esac
+orig_dir=$(pwd)
 mkdir -p "$tempdir/t" &&
 tempdir="$(cd "$tempdir"; pwd)" &&
 cd "$tempdir/t" &&
@@ -226,7 +207,7 @@ workdir="$(pwd)" ||
 die ""
 
 # Remove tempdir on exit
-trap 'cd ../..; rm -rf "$tempdir"' 0
+trap 'cd "$orig_dir"; rm -rf "$tempdir"' 0
 
 ORIG_GIT_DIR="$GIT_DIR"
 ORIG_GIT_WORK_TREE="$GIT_WORK_TREE"
@@ -274,7 +255,7 @@ else
 	remap_to_ancestor=t
 fi
 
-rev_args=$(git rev-parse --revs-only "$@")
+git rev-parse --revs-only "$@" >../parse
 
 case "$filter_subdir" in
 "")
@@ -287,7 +268,7 @@ case "$filter_subdir" in
 esac
 
 git rev-list --reverse --topo-order --default HEAD \
-	--parents --simplify-merges $rev_args "$@" > ../revs ||
+	--parents --simplify-merges --stdin "$@" <../parse >../revs ||
 	die "Could not get the commits"
 commits=$(wc -l <../revs | tr -d " ")
 
@@ -302,11 +283,12 @@ while read commit parents; do
 
 	case "$filter_subdir" in
 	"")
-		git read-tree -i -m $commit
+		GIT_ALLOW_NULL_SHA1=1 git read-tree -i -m $commit
 		;;
 	*)
 		# The commit may not have the subdirectory at all
-		err=$(git read-tree -i -m $commit:"$filter_subdir" 2>&1) || {
+		err=$(GIT_ALLOW_NULL_SHA1=1 \
+		      git read-tree -i -m $commit:"$filter_subdir" 2>&1) || {
 			if ! git rev-parse -q --verify $commit:"$filter_subdir"
 			then
 				rm -f "$GIT_INDEX_FILE"
@@ -322,10 +304,8 @@ while read commit parents; do
 	git cat-file commit "$commit" >../commit ||
 		die "Cannot read commit $commit"
 
-	eval "$(set_ident AUTHOR <../commit)" ||
-		die "setting author failed for commit $commit"
-	eval "$(set_ident COMMITTER <../commit)" ||
-		die "setting committer failed for commit $commit"
+	eval "$(set_ident <../commit)" ||
+		die "setting author/committer failed for commit $commit"
 	eval "$filter_env" < /dev/null ||
 		die "env filter failed: $filter_env"
 
@@ -363,7 +343,7 @@ while read commit parents; do
 	sed -e '1,/^$/d' <../commit | \
 		eval "$filter_msg" > ../message ||
 			die "msg filter failed: $filter_msg"
-	@SHELL_PATH@ -c "$filter_commit" "git commit-tree" \
+	workdir=$workdir @SHELL_PATH@ -c "$filter_commit" "git commit-tree" \
 		$(git write-tree) $parentstr < ../message > ../map/$commit ||
 			die "could not write rewritten commit"
 done <../revs
@@ -491,7 +471,7 @@ if [ "$filter_tag_name" ]; then
 	done
 fi
 
-cd ../..
+cd "$orig_dir"
 rm -rf "$tempdir"
 
 trap - 0

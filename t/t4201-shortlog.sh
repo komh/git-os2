@@ -35,7 +35,7 @@ test_expect_success 'setup' '
 		tr 1234 "\370\235\204\236")" a1 &&
 
 	echo 5 >a1 &&
-	git commit --quiet -m "a								12	34	56	78" a1
+	git commit --quiet -m "a								12	34	56	78" a1 &&
 
 	echo 6 >a1 &&
 	git commit --quiet -m "Commit by someone else" \
@@ -120,6 +120,30 @@ test_expect_success 'shortlog from non-git directory' '
 	test_cmp expect out
 '
 
+test_expect_success 'shortlog should add newline when input line matches wraplen' '
+	cat >expect <<\EOF &&
+A U Thor (2):
+      bbbbbbbbbbbbbbbbbb: bbbbbbbb bbb bbbb bbbbbbb bb bbbb bbb bbbbb bbbbbb
+      aaaaaaaaaaaaaaaaaaaaaa: aaaaaa aaaaaaaaaa aaaa aaaaaaaa aa aaaa aa aaa
+
+EOF
+	git shortlog -w >out <<\EOF &&
+commit 0000000000000000000000000000000000000001
+Author: A U Thor <author@example.com>
+Date:   Thu Apr 7 15:14:13 2005 -0700
+
+    aaaaaaaaaaaaaaaaaaaaaa: aaaaaa aaaaaaaaaa aaaa aaaaaaaa aa aaaa aa aaa
+
+commit 0000000000000000000000000000000000000002
+Author: A U Thor <author@example.com>
+Date:   Thu Apr 7 15:14:13 2005 -0700
+
+    bbbbbbbbbbbbbbbbbb: bbbbbbbb bbb bbbb bbbbbbb bb bbbb bbb bbbbb bbbbbb
+
+EOF
+	test_cmp expect out
+'
+
 iconvfromutf8toiso88591() {
 	printf "%s" "$*" | iconv -f UTF-8 -t ISO8859-1
 }
@@ -147,5 +171,21 @@ test_expect_success 'shortlog encoding' '
 	git config --unset i18n.commitencoding &&
 	git shortlog HEAD~2.. > out &&
 test_cmp expect out'
+
+test_expect_success 'shortlog ignores commits with missing authors' '
+	git commit --allow-empty -m normal &&
+	git commit --allow-empty -m soon-to-be-broken &&
+	git cat-file commit HEAD >commit.tmp &&
+	sed "/^author/d" commit.tmp >broken.tmp &&
+	commit=$(git hash-object -w -t commit --stdin <broken.tmp) &&
+	git update-ref HEAD $commit &&
+	cat >expect <<-\EOF &&
+	A U Thor (1):
+	      normal
+
+	EOF
+	git shortlog HEAD~2.. >actual &&
+	test_cmp expect actual
+'
 
 test_done

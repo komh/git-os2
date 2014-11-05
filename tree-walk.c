@@ -1,7 +1,9 @@
 #include "cache.h"
 #include "tree-walk.h"
 #include "unpack-trees.h"
+#include "dir.h"
 #include "tree.h"
+#include "pathspec.h"
 
 static const char *get_mode(const char *str, unsigned int *modep)
 {
@@ -115,7 +117,7 @@ void setup_traverse_info(struct traverse_info *info, const char *base)
 
 char *make_traverse_path(char *path, const struct traverse_info *info, const struct name_entry *n)
 {
-	int len = tree_entry_len(n->path, n->sha1);
+	int len = tree_entry_len(n);
 	int pathlen = info->pathlen;
 
 	path[pathlen + len] = 0;
@@ -125,7 +127,7 @@ char *make_traverse_path(char *path, const struct traverse_info *info, const str
 			break;
 		path[--pathlen] = '/';
 		n = &info->name;
-		len = tree_entry_len(n->path, n->sha1);
+		len = tree_entry_len(n);
 		info = info->prev;
 		pathlen -= len;
 	}
@@ -252,7 +254,7 @@ static void extended_entry_extract(struct tree_desc_x *t,
 	 * The caller wants "first" from this tree, or nothing.
 	 */
 	path = a->path;
-	len = tree_entry_len(a->path, a->sha1);
+	len = tree_entry_len(a);
 	switch (check_entry_match(first, first_len, path, len)) {
 	case -1:
 		entry_clear(a);
@@ -270,7 +272,7 @@ static void extended_entry_extract(struct tree_desc_x *t,
 	while (probe.size) {
 		entry_extract(&probe, a);
 		path = a->path;
-		len = tree_entry_len(a->path, a->sha1);
+		len = tree_entry_len(a);
 		switch (check_entry_match(first, first_len, path, len)) {
 		case -1:
 			entry_clear(a);
@@ -308,22 +310,42 @@ static void free_extended_entry(struct tree_desc_x *t)
 	}
 }
 
+static inline int prune_traversal(struct name_entry *e,
+				  struct traverse_info *info,
+				  struct strbuf *base,
+				  int still_interesting)
+{
+	if (!info->pathspec || still_interesting == 2)
+		return 2;
+	if (still_interesting < 0)
+		return still_interesting;
+	return tree_entry_interesting(e, base, 0, info->pathspec);
+}
+
 int traverse_trees(int n, struct tree_desc *t, struct traverse_info *info)
 {
-	int ret = 0;
 	int error = 0;
 	struct name_entry *entry = xmalloc(n*sizeof(*entry));
 	int i;
 	struct tree_desc_x *tx = xcalloc(n, sizeof(*tx));
+	struct strbuf base = STRBUF_INIT;
+	int interesting = 1;
 
 	for (i = 0; i < n; i++)
 		tx[i].d = t[i];
 
+	if (info->prev) {
+		strbuf_grow(&base, info->pathlen);
+		make_traverse_path(base.buf, info->prev, &info->name);
+		base.buf[info->pathlen-1] = '/';
+		strbuf_setlen(&base, info->pathlen);
+	}
 	for (;;) {
+		int trees_used;
 		unsigned long mask, dirmask;
 		const char *first = NULL;
 		int first_len = 0;
-		struct name_entry *e;
+		struct name_entry *e = NULL;
 		int len;
 
 		for (i = 0; i < n; i++) {
@@ -341,7 +363,7 @@ int traverse_trees(int n, struct tree_desc *t, struct traverse_info *info)
 			e = entry + i;
 			if (!e->path)
 				continue;
-			len = tree_entry_len(e->path, e->sha1);
+			len = tree_entry_len(e);
 			if (!first) {
 				first = e->path;
 				first_len = len;
@@ -360,7 +382,7 @@ int traverse_trees(int n, struct tree_desc *t, struct traverse_info *info)
 				/* Cull the ones that are not the earliest */
 				if (!e->path)
 					continue;
-				len = tree_entry_len(e->path, e->sha1);
+				len = tree_entry_len(e);
 				if (name_compare(e->path, len, first, first_len))
 					entry_clear(e);
 			}
@@ -375,17 +397,22 @@ int traverse_trees(int n, struct tree_desc *t, struct traverse_info *info)
 			mask |= 1ul << i;
 			if (S_ISDIR(entry[i].mode))
 				dirmask |= 1ul << i;
+			e = &entry[i];
 		}
 		if (!mask)
 			break;
-		ret = info->fn(n, mask, dirmask, entry, info);
-		if (ret < 0) {
-			error = ret;
-			if (!info->show_all_errors)
-				break;
+		interesting = prune_traversal(e, info, &base, interesting);
+		if (interesting < 0)
+			break;
+		if (interesting) {
+			trees_used = info->fn(n, mask, dirmask, entry, info);
+			if (trees_used < 0) {
+				error = trees_used;
+				if (!info->show_all_errors)
+					break;
+			}
+			mask &= trees_used;
 		}
-		mask &= ret;
-		ret = 0;
 		for (i = 0; i < n; i++)
 			if (mask & (1ul << i))
 				update_extended_entry(tx + i, entry + i);
@@ -394,6 +421,7 @@ int traverse_trees(int n, struct tree_desc *t, struct traverse_info *info)
 	for (i = 0; i < n; i++)
 		free_extended_entry(tx + i);
 	free(tx);
+	strbuf_release(&base);
 	return error;
 }
 
@@ -406,8 +434,8 @@ static int find_tree_entry(struct tree_desc *t, const char *name, unsigned char 
 		int entrylen, cmp;
 
 		sha1 = tree_entry_extract(t, &entry, mode);
+		entrylen = tree_entry_len(&t->entry);
 		update_tree_entry(t);
-		entrylen = tree_entry_len(entry, sha1);
 		if (entrylen > namelen)
 			continue;
 		cmp = memcmp(name, entry, entrylen);
@@ -437,7 +465,6 @@ int get_tree_entry(const unsigned char *tree_sha1, const char *name, unsigned ch
 	int retval;
 	void *tree;
 	unsigned long size;
-	struct tree_desc t;
 	unsigned char root[20];
 
 	tree = read_object_with_reference(tree_sha1, tree_type, &size, root);
@@ -450,8 +477,308 @@ int get_tree_entry(const unsigned char *tree_sha1, const char *name, unsigned ch
 		return 0;
 	}
 
-	init_tree_desc(&t, tree, size);
-	retval = find_tree_entry(&t, name, sha1, mode);
+	if (!size) {
+		retval = -1;
+	} else {
+		struct tree_desc t;
+		init_tree_desc(&t, tree, size);
+		retval = find_tree_entry(&t, name, sha1, mode);
+	}
 	free(tree);
 	return retval;
+}
+
+static int match_entry(const struct pathspec_item *item,
+		       const struct name_entry *entry, int pathlen,
+		       const char *match, int matchlen,
+		       enum interesting *never_interesting)
+{
+	int m = -1; /* signals that we haven't called strncmp() */
+
+	if (item->magic & PATHSPEC_ICASE)
+		/*
+		 * "Never interesting" trick requires exact
+		 * matching. We could do something clever with inexact
+		 * matching, but it's trickier (and not to forget that
+		 * strcasecmp is locale-dependent, at least in
+		 * glibc). Just disable it for now. It can't be worse
+		 * than the wildcard's codepath of '[Tt][Hi][Is][Ss]'
+		 * pattern.
+		 */
+		*never_interesting = entry_not_interesting;
+	else if (*never_interesting != entry_not_interesting) {
+		/*
+		 * We have not seen any match that sorts later
+		 * than the current path.
+		 */
+
+		/*
+		 * Does match sort strictly earlier than path
+		 * with their common parts?
+		 */
+		m = strncmp(match, entry->path,
+			    (matchlen < pathlen) ? matchlen : pathlen);
+		if (m < 0)
+			return 0;
+
+		/*
+		 * If we come here even once, that means there is at
+		 * least one pathspec that would sort equal to or
+		 * later than the path we are currently looking at.
+		 * In other words, if we have never reached this point
+		 * after iterating all pathspecs, it means all
+		 * pathspecs are either outside of base, or inside the
+		 * base but sorts strictly earlier than the current
+		 * one.  In either case, they will never match the
+		 * subsequent entries.  In such a case, we initialized
+		 * the variable to -1 and that is what will be
+		 * returned, allowing the caller to terminate early.
+		 */
+		*never_interesting = entry_not_interesting;
+	}
+
+	if (pathlen > matchlen)
+		return 0;
+
+	if (matchlen > pathlen) {
+		if (match[pathlen] != '/')
+			return 0;
+		if (!S_ISDIR(entry->mode))
+			return 0;
+	}
+
+	if (m == -1)
+		/*
+		 * we cheated and did not do strncmp(), so we do
+		 * that here.
+		 */
+		m = ps_strncmp(item, match, entry->path, pathlen);
+
+	/*
+	 * If common part matched earlier then it is a hit,
+	 * because we rejected the case where path is not a
+	 * leading directory and is shorter than match.
+	 */
+	if (!m)
+		/*
+		 * match_entry does not check if the prefix part is
+		 * matched case-sensitively. If the entry is a
+		 * directory and part of prefix, it'll be rematched
+		 * eventually by basecmp with special treatment for
+		 * the prefix.
+		 */
+		return 1;
+
+	return 0;
+}
+
+/* :(icase)-aware string compare */
+static int basecmp(const struct pathspec_item *item,
+		   const char *base, const char *match, int len)
+{
+	if (item->magic & PATHSPEC_ICASE) {
+		int ret, n = len > item->prefix ? item->prefix : len;
+		ret = strncmp(base, match, n);
+		if (ret)
+			return ret;
+		base += n;
+		match += n;
+		len -= n;
+	}
+	return ps_strncmp(item, base, match, len);
+}
+
+static int match_dir_prefix(const struct pathspec_item *item,
+			    const char *base,
+			    const char *match, int matchlen)
+{
+	if (basecmp(item, base, match, matchlen))
+		return 0;
+
+	/*
+	 * If the base is a subdirectory of a path which
+	 * was specified, all of them are interesting.
+	 */
+	if (!matchlen ||
+	    base[matchlen] == '/' ||
+	    match[matchlen - 1] == '/')
+		return 1;
+
+	/* Just a random prefix match */
+	return 0;
+}
+
+/*
+ * Perform matching on the leading non-wildcard part of
+ * pathspec. item->nowildcard_len must be greater than zero. Return
+ * non-zero if base is matched.
+ */
+static int match_wildcard_base(const struct pathspec_item *item,
+			       const char *base, int baselen,
+			       int *matched)
+{
+	const char *match = item->match;
+	/* the wildcard part is not considered in this function */
+	int matchlen = item->nowildcard_len;
+
+	if (baselen) {
+		int dirlen;
+		/*
+		 * Return early if base is longer than the
+		 * non-wildcard part but it does not match.
+		 */
+		if (baselen >= matchlen) {
+			*matched = matchlen;
+			return !basecmp(item, base, match, matchlen);
+		}
+
+		dirlen = matchlen;
+		while (dirlen && match[dirlen - 1] != '/')
+			dirlen--;
+
+		/*
+		 * Return early if base is shorter than the
+		 * non-wildcard part but it does not match. Note that
+		 * base ends with '/' so we are sure it really matches
+		 * directory
+		 */
+		if (basecmp(item, base, match, baselen))
+			return 0;
+		*matched = baselen;
+	} else
+		*matched = 0;
+	/*
+	 * we could have checked entry against the non-wildcard part
+	 * that is not in base and does similar never_interesting
+	 * optimization as in match_entry. For now just be happy with
+	 * base comparison.
+	 */
+	return entry_interesting;
+}
+
+/*
+ * Is a tree entry interesting given the pathspec we have?
+ *
+ * Pre-condition: either baselen == base_offset (i.e. empty path)
+ * or base[baselen-1] == '/' (i.e. with trailing slash).
+ */
+enum interesting tree_entry_interesting(const struct name_entry *entry,
+					struct strbuf *base, int base_offset,
+					const struct pathspec *ps)
+{
+	int i;
+	int pathlen, baselen = base->len - base_offset;
+	enum interesting never_interesting = ps->has_wildcard ?
+		entry_not_interesting : all_entries_not_interesting;
+
+	GUARD_PATHSPEC(ps,
+		       PATHSPEC_FROMTOP |
+		       PATHSPEC_MAXDEPTH |
+		       PATHSPEC_LITERAL |
+		       PATHSPEC_GLOB |
+		       PATHSPEC_ICASE);
+
+	if (!ps->nr) {
+		if (!ps->recursive ||
+		    !(ps->magic & PATHSPEC_MAXDEPTH) ||
+		    ps->max_depth == -1)
+			return all_entries_interesting;
+		return within_depth(base->buf + base_offset, baselen,
+				    !!S_ISDIR(entry->mode),
+				    ps->max_depth) ?
+			entry_interesting : entry_not_interesting;
+	}
+
+	pathlen = tree_entry_len(entry);
+
+	for (i = ps->nr - 1; i >= 0; i--) {
+		const struct pathspec_item *item = ps->items+i;
+		const char *match = item->match;
+		const char *base_str = base->buf + base_offset;
+		int matchlen = item->len, matched = 0;
+
+		if (baselen >= matchlen) {
+			/* If it doesn't match, move along... */
+			if (!match_dir_prefix(item, base_str, match, matchlen))
+				goto match_wildcards;
+
+			if (!ps->recursive ||
+			    !(ps->magic & PATHSPEC_MAXDEPTH) ||
+			    ps->max_depth == -1)
+				return all_entries_interesting;
+
+			return within_depth(base_str + matchlen + 1,
+					    baselen - matchlen - 1,
+					    !!S_ISDIR(entry->mode),
+					    ps->max_depth) ?
+				entry_interesting : entry_not_interesting;
+		}
+
+		/* Either there must be no base, or the base must match. */
+		if (baselen == 0 || !basecmp(item, base_str, match, baselen)) {
+			if (match_entry(item, entry, pathlen,
+					match + baselen, matchlen - baselen,
+					&never_interesting))
+				return entry_interesting;
+
+			if (item->nowildcard_len < item->len) {
+				if (!git_fnmatch(item, match + baselen, entry->path,
+						 item->nowildcard_len - baselen))
+					return entry_interesting;
+
+				/*
+				 * Match all directories. We'll try to
+				 * match files later on.
+				 */
+				if (ps->recursive && S_ISDIR(entry->mode))
+					return entry_interesting;
+			}
+
+			continue;
+		}
+
+match_wildcards:
+		if (item->nowildcard_len == item->len)
+			continue;
+
+		if (item->nowildcard_len &&
+		    !match_wildcard_base(item, base_str, baselen, &matched))
+			return entry_not_interesting;
+
+		/*
+		 * Concatenate base and entry->path into one and do
+		 * fnmatch() on it.
+		 *
+		 * While we could avoid concatenation in certain cases
+		 * [1], which saves a memcpy and potentially a
+		 * realloc, it turns out not worth it. Measurement on
+		 * linux-2.6 does not show any clear improvements,
+		 * partly because of the nowildcard_len optimization
+		 * in git_fnmatch(). Avoid micro-optimizations here.
+		 *
+		 * [1] if match_wildcard_base() says the base
+		 * directory is already matched, we only need to match
+		 * the rest, which is shorter so _in theory_ faster.
+		 */
+
+		strbuf_add(base, entry->path, pathlen);
+
+		if (!git_fnmatch(item, match, base->buf + base_offset,
+				 item->nowildcard_len)) {
+			strbuf_setlen(base, base_offset + baselen);
+			return entry_interesting;
+		}
+		strbuf_setlen(base, base_offset + baselen);
+
+		/*
+		 * Match all directories. We'll try to match files
+		 * later on.
+		 * max_depth is ignored but we may consider support it
+		 * in future, see
+		 * http://thread.gmane.org/gmane.comp.version-control.git/163757/focus=163840
+		 */
+		if (ps->recursive && S_ISDIR(entry->mode))
+			return entry_interesting;
+	}
+	return never_interesting; /* No matches */
 }

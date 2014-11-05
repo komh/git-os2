@@ -28,7 +28,7 @@ git prune'
 
 cd "$base_dir"
 
-test_expect_success 'preparing supermodule' \
+test_expect_success 'preparing superproject' \
 'test_create_repo super && cd super &&
 echo file > file &&
 git add file &&
@@ -43,7 +43,7 @@ git commit -m B-super-added'
 cd "$base_dir"
 
 test_expect_success 'after add: existence of info/alternates' \
-'test `wc -l <super/sub/.git/objects/info/alternates` = 1'
+'test_line_count = 1 super/.git/modules/sub/objects/info/alternates'
 
 cd "$base_dir"
 
@@ -55,7 +55,7 @@ diff expected current'
 
 cd "$base_dir"
 
-test_expect_success 'cloning supermodule' \
+test_expect_success 'cloning superproject' \
 'git clone super super-clone'
 
 cd "$base_dir"
@@ -66,7 +66,7 @@ test_expect_success 'update with reference' \
 cd "$base_dir"
 
 test_expect_success 'after update: existence of info/alternates' \
-'test `wc -l <super-clone/sub/.git/objects/info/alternates` = 1'
+'test_line_count = 1 super-clone/.git/modules/sub/objects/info/alternates'
 
 cd "$base_dir"
 

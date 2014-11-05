@@ -3,11 +3,12 @@ git-send-pack(1)
 
 NAME
 ----
-git-send-pack - Push objects over git protocol to another repository
+git-send-pack - Push objects over Git protocol to another repository
 
 
 SYNOPSIS
 --------
+[verse]
 'git send-pack' [--all] [--dry-run] [--force] [--receive-pack=<git-receive-pack>] [--verbose] [--thin] [<host>:]<directory> [<ref>...]
 
 DESCRIPTION
@@ -113,15 +114,6 @@ With '--force', the fast-forward check is disabled for all refs.
 
 Optionally, a <ref> parameter can be prefixed with a plus '+' sign
 to disable the fast-forward check only on that ref.
-
-
-Author
-------
-Written by Linus Torvalds <torvalds@osdl.org>
-
-Documentation
---------------
-Documentation by Junio C Hamano.
 
 GIT
 ---

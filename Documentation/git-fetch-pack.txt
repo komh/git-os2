@@ -8,7 +8,11 @@ git-fetch-pack - Receive missing objects from another repository
 
 SYNOPSIS
 --------
-'git fetch-pack' [--all] [--quiet|-q] [--keep|-k] [--thin] [--include-tag] [--upload-pack=<git-upload-pack>] [--depth=<n>] [--no-progress] [-v] [<host>:]<directory> [<refs>...]
+[verse]
+'git fetch-pack' [--all] [--quiet|-q] [--keep|-k] [--thin] [--include-tag]
+	[--upload-pack=<git-upload-pack>]
+	[--depth=<n>] [--no-progress]
+	[-v] <repository> [<refs>...]
 
 DESCRIPTION
 -----------
@@ -30,6 +34,16 @@ OPTIONS
 -------
 --all::
 	Fetch all remote refs.
+
+--stdin::
+	Take the list of refs from stdin, one per line. If there
+	are refs specified on the command line in addition to this
+	option, then the refs from stdin are processed after those
+	on the command line.
++
+If '--stateless-rpc' is specified together with this option then
+the list of refs must be in packet format (pkt-line). Each ref must
+be in a separate packet, and the list must end with a flush packet.
 
 -q::
 --quiet::
@@ -70,34 +84,30 @@ OPTIONS
 
 --depth=<n>::
 	Limit fetching to ancestor-chains not longer than n.
+	'git-upload-pack' treats the special depth 2147483647 as
+	infinite even if there is an ancestor-chain that long.
 
 --no-progress::
 	Do not show the progress.
 
+--check-self-contained-and-connected::
+	Output "connectivity-ok" if the received pack is
+	self-contained and connected.
+
 -v::
 	Run verbosely.
 
-<host>::
-	A remote host that houses the repository.  When this
-	part is specified, 'git-upload-pack' is invoked via
-	ssh.
-
-<directory>::
-	The repository to sync from.
+<repository>::
+	The URL to the remote repository.
 
 <refs>...::
 	The remote heads to update from. This is relative to
 	$GIT_DIR (e.g. "HEAD", "refs/heads/master").  When
 	unspecified, update from all heads the remote side has.
 
-
-Author
-------
-Written by Linus Torvalds <torvalds@osdl.org>
-
-Documentation
---------------
-Documentation by Junio C Hamano.
+SEE ALSO
+--------
+linkgit:git-fetch[1]
 
 GIT
 ---

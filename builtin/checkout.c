@@ -19,22 +19,23 @@
 #include "ll-merge.h"
 #include "resolve-undo.h"
 #include "submodule.h"
+#include "argv-array.h"
 
 static const char * const checkout_usage[] = {
-	"git checkout [options] <branch>",
-	"git checkout [options] [<branch>] -- <file>...",
+	N_("git checkout [options] <branch>"),
+	N_("git checkout [options] [<branch>] -- <file>..."),
 	NULL,
 };
 
 struct checkout_opts {
+	int patch_mode;
 	int quiet;
 	int merge;
 	int force;
+	int force_detach;
 	int writeout_stage;
-	int writeout_error;
-
-	/* not set by parse_options */
-	int branch_exists;
+	int overwrite_ignore;
+	int ignore_skipworktree;
 
 	const char *new_branch;
 	const char *new_branch_force;
@@ -42,6 +43,11 @@ struct checkout_opts {
 	int new_branch_log;
 	enum branch_track track;
 	struct diff_options diff_options;
+
+	int branch_exists;
+	const char *prefix;
+	struct pathspec pathspec;
+	struct tree *source_tree;
 };
 
 static int post_checkout_hook(struct commit *old, struct commit *new,
@@ -70,13 +76,14 @@ static int update_some(const unsigned char *sha1, const char *base, int baselen,
 	hashcpy(ce->sha1, sha1);
 	memcpy(ce->name, base, baselen);
 	memcpy(ce->name + baselen, pathname, len - baselen);
-	ce->ce_flags = create_ce_flags(len, 0);
+	ce->ce_flags = create_ce_flags(0) | CE_UPDATE;
+	ce->ce_namelen = len;
 	ce->ce_mode = create_ce_mode(mode);
 	add_cache_entry(ce, ADD_CACHE_OK_TO_ADD | ADD_CACHE_OK_TO_REPLACE);
 	return 0;
 }
 
-static int read_tree_some(struct tree *tree, const char **pathspec)
+static int read_tree_some(struct tree *tree, const struct pathspec *pathspec)
 {
 	read_tree_recursive(tree, "", 0, 0, pathspec, update_some, NULL);
 
@@ -87,7 +94,7 @@ static int read_tree_some(struct tree *tree, const char **pathspec)
 	return 0;
 }
 
-static int skip_same_name(struct cache_entry *ce, int pos)
+static int skip_same_name(const struct cache_entry *ce, int pos)
 {
 	while (++pos < active_nr &&
 	       !strcmp(active_cache[pos]->name, ce->name))
@@ -95,7 +102,7 @@ static int skip_same_name(struct cache_entry *ce, int pos)
 	return pos;
 }
 
-static int check_stage(int stage, struct cache_entry *ce, int pos)
+static int check_stage(int stage, const struct cache_entry *ce, int pos)
 {
 	while (pos < active_nr &&
 	       !strcmp(active_cache[pos]->name, ce->name)) {
@@ -103,21 +110,27 @@ static int check_stage(int stage, struct cache_entry *ce, int pos)
 			return 0;
 		pos++;
 	}
-	return error("path '%s' does not have %s version",
-		     ce->name,
-		     (stage == 2) ? "our" : "their");
+	if (stage == 2)
+		return error(_("path '%s' does not have our version"), ce->name);
+	else
+		return error(_("path '%s' does not have their version"), ce->name);
 }
 
-static int check_all_stages(struct cache_entry *ce, int pos)
+static int check_stages(unsigned stages, const struct cache_entry *ce, int pos)
 {
-	if (ce_stage(ce) != 1 ||
-	    active_nr <= pos + 2 ||
-	    strcmp(active_cache[pos+1]->name, ce->name) ||
-	    ce_stage(active_cache[pos+1]) != 2 ||
-	    strcmp(active_cache[pos+2]->name, ce->name) ||
-	    ce_stage(active_cache[pos+2]) != 3)
-		return error("path '%s' does not have all three versions",
-			     ce->name);
+	unsigned seen = 0;
+	const char *name = ce->name;
+
+	while (pos < active_nr) {
+		ce = active_cache[pos];
+		if (strcmp(name, ce->name))
+			break;
+		seen |= (1 << ce_stage(ce));
+		pos++;
+	}
+	if ((stages & seen) != stages)
+		return error(_("path '%s' does not have all necessary versions"),
+			     name);
 	return 0;
 }
 
@@ -130,9 +143,10 @@ static int checkout_stage(int stage, struct cache_entry *ce, int pos,
 			return checkout_entry(active_cache[pos], state, NULL);
 		pos++;
 	}
-	return error("path '%s' does not have %s version",
-		     ce->name,
-		     (stage == 2) ? "our" : "their");
+	if (stage == 2)
+		return error(_("path '%s' does not have our version"), ce->name);
+	else
+		return error(_("path '%s' does not have their version"), ce->name);
 }
 
 static int checkout_merged(int pos, struct checkout *state)
@@ -143,31 +157,40 @@ static int checkout_merged(int pos, struct checkout *state)
 	int status;
 	unsigned char sha1[20];
 	mmbuffer_t result_buf;
+	unsigned char threeway[3][20];
+	unsigned mode = 0;
 
-	if (ce_stage(ce) != 1 ||
-	    active_nr <= pos + 2 ||
-	    strcmp(active_cache[pos+1]->name, path) ||
-	    ce_stage(active_cache[pos+1]) != 2 ||
-	    strcmp(active_cache[pos+2]->name, path) ||
-	    ce_stage(active_cache[pos+2]) != 3)
-		return error("path '%s' does not have all 3 versions", path);
+	memset(threeway, 0, sizeof(threeway));
+	while (pos < active_nr) {
+		int stage;
+		stage = ce_stage(ce);
+		if (!stage || strcmp(path, ce->name))
+			break;
+		hashcpy(threeway[stage - 1], ce->sha1);
+		if (stage == 2)
+			mode = create_ce_mode(ce->ce_mode);
+		pos++;
+		ce = active_cache[pos];
+	}
+	if (is_null_sha1(threeway[1]) || is_null_sha1(threeway[2]))
+		return error(_("path '%s' does not have necessary versions"), path);
 
-	read_mmblob(&ancestor, active_cache[pos]->sha1);
-	read_mmblob(&ours, active_cache[pos+1]->sha1);
-	read_mmblob(&theirs, active_cache[pos+2]->sha1);
+	read_mmblob(&ancestor, threeway[0]);
+	read_mmblob(&ours, threeway[1]);
+	read_mmblob(&theirs, threeway[2]);
 
 	/*
 	 * NEEDSWORK: re-create conflicts from merges with
 	 * merge.renormalize set, too
 	 */
 	status = ll_merge(&result_buf, path, &ancestor, "base",
-			  &ours, "ours", &theirs, "theirs", 0);
+			  &ours, "ours", &theirs, "theirs", NULL);
 	free(ancestor.ptr);
 	free(ours.ptr);
 	free(theirs.ptr);
 	if (status < 0 || !result_buf.ptr) {
 		free(result_buf.ptr);
-		return error("path '%s': cannot merge", path);
+		return error(_("path '%s': cannot merge"), path);
 	}
 
 	/*
@@ -184,18 +207,16 @@ static int checkout_merged(int pos, struct checkout *state)
 	 */
 	if (write_sha1_file(result_buf.ptr, result_buf.size,
 			    blob_type, sha1))
-		die("Unable to add merge result for '%s'", path);
-	ce = make_cache_entry(create_ce_mode(active_cache[pos+1]->ce_mode),
-			      sha1,
-			      path, 2, 0);
+		die(_("Unable to add merge result for '%s'"), path);
+	ce = make_cache_entry(mode, sha1, path, 2, 0);
 	if (!ce)
-		die("make_cache_entry failed for path '%s'", path);
+		die(_("make_cache_entry failed for path '%s'"), path);
 	status = checkout_entry(ce, state, NULL);
 	return status;
 }
 
-static int checkout_paths(struct tree *source_tree, const char **pathspec,
-			  struct checkout_opts *opts)
+static int checkout_paths(const struct checkout_opts *opts,
+			  const char *revision)
 {
 	int pos;
 	struct checkout state;
@@ -204,49 +225,108 @@ static int checkout_paths(struct tree *source_tree, const char **pathspec,
 	int flag;
 	struct commit *head;
 	int errs = 0;
-	int stage = opts->writeout_stage;
-	int merge = opts->merge;
 	int newfd;
-	struct lock_file *lock_file = xcalloc(1, sizeof(struct lock_file));
+	struct lock_file *lock_file;
+
+	if (opts->track != BRANCH_TRACK_UNSPECIFIED)
+		die(_("'%s' cannot be used with updating paths"), "--track");
+
+	if (opts->new_branch_log)
+		die(_("'%s' cannot be used with updating paths"), "-l");
+
+	if (opts->force && opts->patch_mode)
+		die(_("'%s' cannot be used with updating paths"), "-f");
+
+	if (opts->force_detach)
+		die(_("'%s' cannot be used with updating paths"), "--detach");
+
+	if (opts->merge && opts->patch_mode)
+		die(_("'%s' cannot be used with %s"), "--merge", "--patch");
+
+	if (opts->force && opts->merge)
+		die(_("'%s' cannot be used with %s"), "-f", "-m");
+
+	if (opts->new_branch)
+		die(_("Cannot update paths and switch to branch '%s' at the same time."),
+		    opts->new_branch);
+
+	if (opts->patch_mode)
+		return run_add_interactive(revision, "--patch=checkout",
+					   &opts->pathspec);
+
+	lock_file = xcalloc(1, sizeof(struct lock_file));
 
 	newfd = hold_locked_index(lock_file, 1);
-	if (read_cache_preload(pathspec) < 0)
-		return error("corrupt index file");
+	if (read_cache_preload(&opts->pathspec) < 0)
+		return error(_("corrupt index file"));
 
-	if (source_tree)
-		read_tree_some(source_tree, pathspec);
+	if (opts->source_tree)
+		read_tree_some(opts->source_tree, &opts->pathspec);
 
-	for (pos = 0; pathspec[pos]; pos++)
-		;
-	ps_matched = xcalloc(1, pos);
+	ps_matched = xcalloc(1, opts->pathspec.nr);
 
+	/*
+	 * Make sure all pathspecs participated in locating the paths
+	 * to be checked out.
+	 */
 	for (pos = 0; pos < active_nr; pos++) {
 		struct cache_entry *ce = active_cache[pos];
-		match_pathspec(pathspec, ce->name, ce_namelen(ce), 0, ps_matched);
+		ce->ce_flags &= ~CE_MATCHED;
+		if (!opts->ignore_skipworktree && ce_skip_worktree(ce))
+			continue;
+		if (opts->source_tree && !(ce->ce_flags & CE_UPDATE))
+			/*
+			 * "git checkout tree-ish -- path", but this entry
+			 * is in the original index; it will not be checked
+			 * out to the working tree and it does not matter
+			 * if pathspec matched this entry.  We will not do
+			 * anything to this entry at all.
+			 */
+			continue;
+		/*
+		 * Either this entry came from the tree-ish we are
+		 * checking the paths out of, or we are checking out
+		 * of the index.
+		 *
+		 * If it comes from the tree-ish, we already know it
+		 * matches the pathspec and could just stamp
+		 * CE_MATCHED to it from update_some(). But we still
+		 * need ps_matched and read_tree_recursive (and
+		 * eventually tree_entry_interesting) cannot fill
+		 * ps_matched yet. Once it can, we can avoid calling
+		 * match_pathspec() for _all_ entries when
+		 * opts->source_tree != NULL.
+		 */
+		if (match_pathspec_depth(&opts->pathspec, ce->name, ce_namelen(ce),
+				   0, ps_matched))
+			ce->ce_flags |= CE_MATCHED;
 	}
 
-	if (report_path_error(ps_matched, pathspec, 0))
+	if (report_path_error(ps_matched, &opts->pathspec, opts->prefix)) {
+		free(ps_matched);
 		return 1;
+	}
+	free(ps_matched);
 
 	/* "checkout -m path" to recreate conflicted state */
 	if (opts->merge)
-		unmerge_cache(pathspec);
+		unmerge_marked_index(&the_index);
 
 	/* Any unmerged paths? */
 	for (pos = 0; pos < active_nr; pos++) {
-		struct cache_entry *ce = active_cache[pos];
-		if (match_pathspec(pathspec, ce->name, ce_namelen(ce), 0, NULL)) {
+		const struct cache_entry *ce = active_cache[pos];
+		if (ce->ce_flags & CE_MATCHED) {
 			if (!ce_stage(ce))
 				continue;
 			if (opts->force) {
-				warning("path '%s' is unmerged", ce->name);
-			} else if (stage) {
-				errs |= check_stage(stage, ce, pos);
+				warning(_("path '%s' is unmerged"), ce->name);
+			} else if (opts->writeout_stage) {
+				errs |= check_stage(opts->writeout_stage, ce, pos);
 			} else if (opts->merge) {
-				errs |= check_all_stages(ce, pos);
+				errs |= check_stages((1<<2) | (1<<3), ce, pos);
 			} else {
 				errs = 1;
-				error("path '%s' is unmerged", ce->name);
+				error(_("path '%s' is unmerged"), ce->name);
 			}
 			pos = skip_same_name(ce, pos) - 1;
 		}
@@ -260,14 +340,14 @@ static int checkout_paths(struct tree *source_tree, const char **pathspec,
 	state.refresh_cache = 1;
 	for (pos = 0; pos < active_nr; pos++) {
 		struct cache_entry *ce = active_cache[pos];
-		if (match_pathspec(pathspec, ce->name, ce_namelen(ce), 0, NULL)) {
+		if (ce->ce_flags & CE_MATCHED) {
 			if (!ce_stage(ce)) {
 				errs |= checkout_entry(ce, &state, NULL);
 				continue;
 			}
-			if (stage)
-				errs |= checkout_stage(stage, ce, pos, &state);
-			else if (merge)
+			if (opts->writeout_stage)
+				errs |= checkout_stage(opts->writeout_stage, ce, pos, &state);
+			else if (opts->merge)
 				errs |= checkout_merged(pos, &state);
 			pos = skip_same_name(ce, pos) - 1;
 		}
@@ -275,40 +355,40 @@ static int checkout_paths(struct tree *source_tree, const char **pathspec,
 
 	if (write_cache(newfd, active_cache, active_nr) ||
 	    commit_locked_index(lock_file))
-		die("unable to write new index file");
+		die(_("unable to write new index file"));
 
-	resolve_ref("HEAD", rev, 0, &flag);
+	read_ref_full("HEAD", rev, 0, &flag);
 	head = lookup_commit_reference_gently(rev, 1);
 
 	errs |= post_checkout_hook(head, head, 0);
 	return errs;
 }
 
-static void show_local_changes(struct object *head, struct diff_options *opts)
+static void show_local_changes(struct object *head,
+			       const struct diff_options *opts)
 {
 	struct rev_info rev;
 	/* I think we want full paths, even if we're in a subdirectory. */
 	init_revisions(&rev, NULL);
 	rev.diffopt.flags = opts->flags;
 	rev.diffopt.output_format |= DIFF_FORMAT_NAME_STATUS;
-	if (diff_setup_done(&rev.diffopt) < 0)
-		die("diff_setup_done failed");
+	diff_setup_done(&rev.diffopt);
 	add_pending_object(&rev, head, NULL);
 	run_diff_index(&rev, 0);
 }
 
-static void describe_detached_head(char *msg, struct commit *commit)
+static void describe_detached_head(const char *msg, struct commit *commit)
 {
 	struct strbuf sb = STRBUF_INIT;
-	struct pretty_print_context ctx = {0};
 	parse_commit(commit);
-	pretty_print_commit(CMIT_FMT_ONELINE, commit, &sb, &ctx);
+	pp_commit_easy(CMIT_FMT_ONELINE, commit, &sb);
 	fprintf(stderr, "%s %s... %s\n", msg,
 		find_unique_abbrev(commit->object.sha1, DEFAULT_ABBREV), sb.buf);
 	strbuf_release(&sb);
 }
 
-static int reset_tree(struct tree *tree, struct checkout_opts *o, int worktree)
+static int reset_tree(struct tree *tree, const struct checkout_opts *o,
+		      int worktree, int *writeout_error)
 {
 	struct unpack_trees_options opts;
 	struct tree_desc tree_desc;
@@ -320,14 +400,14 @@ static int reset_tree(struct tree *tree, struct checkout_opts *o, int worktree)
 	opts.reset = 1;
 	opts.merge = 1;
 	opts.fn = oneway_merge;
-	opts.verbose_update = !o->quiet;
+	opts.verbose_update = !o->quiet && isatty(2);
 	opts.src_index = &the_index;
 	opts.dst_index = &the_index;
 	parse_tree(tree);
 	init_tree_desc(&tree_desc, tree->buffer, tree->size);
 	switch (unpack_trees(1, &tree_desc, &opts)) {
 	case -2:
-		o->writeout_error = 1;
+		*writeout_error = 1;
 		/*
 		 * We return 0 nevertheless, as the index is all right
 		 * and more importantly we have made best efforts to
@@ -358,19 +438,21 @@ static void setup_branch_path(struct branch_info *branch)
 	branch->path = strbuf_detach(&buf, NULL);
 }
 
-static int merge_working_tree(struct checkout_opts *opts,
-			      struct branch_info *old, struct branch_info *new)
+static int merge_working_tree(const struct checkout_opts *opts,
+			      struct branch_info *old,
+			      struct branch_info *new,
+			      int *writeout_error)
 {
 	int ret;
 	struct lock_file *lock_file = xcalloc(1, sizeof(struct lock_file));
 	int newfd = hold_locked_index(lock_file, 1);
 
 	if (read_cache_preload(NULL) < 0)
-		return error("corrupt index file");
+		return error(_("corrupt index file"));
 
 	resolve_undo_clear();
 	if (opts->force) {
-		ret = reset_tree(new->commit->tree, opts, 1);
+		ret = reset_tree(new->commit->tree, opts, 1, writeout_error);
 		if (ret)
 			return ret;
 	} else {
@@ -388,7 +470,7 @@ static int merge_working_tree(struct checkout_opts *opts,
 		refresh_cache(REFRESH_QUIET);
 
 		if (unmerged_cache()) {
-			error("you need to resolve your current index first");
+			error(_("you need to resolve your current index first"));
 			return 1;
 		}
 
@@ -397,14 +479,16 @@ static int merge_working_tree(struct checkout_opts *opts,
 		topts.update = 1;
 		topts.merge = 1;
 		topts.gently = opts->merge && old->commit;
-		topts.verbose_update = !opts->quiet;
+		topts.verbose_update = !opts->quiet && isatty(2);
 		topts.fn = twoway_merge;
-		topts.dir = xcalloc(1, sizeof(*topts.dir));
-		topts.dir->flags |= DIR_SHOW_IGNORED;
-		topts.dir->exclude_per_dir = ".gitignore";
+		if (opts->overwrite_ignore) {
+			topts.dir = xcalloc(1, sizeof(*topts.dir));
+			topts.dir->flags |= DIR_SHOW_IGNORED;
+			setup_standard_excludes(topts.dir);
+		}
 		tree = parse_tree_indirect(old->commit ?
 					   old->commit->object.sha1 :
-					   (unsigned char *)EMPTY_TREE_SHA1_BIN);
+					   EMPTY_TREE_SHA1_BIN);
 		init_tree_desc(&trees[0], tree->buffer, tree->size);
 		tree = parse_tree_indirect(new->commit->object.sha1);
 		init_tree_desc(&trees[1], tree->buffer, tree->size);
@@ -454,7 +538,8 @@ static int merge_working_tree(struct checkout_opts *opts,
 			o.verbosity = 0;
 			work = write_tree_from_memory(&o);
 
-			ret = reset_tree(new->commit->tree, opts, 1);
+			ret = reset_tree(new->commit->tree, opts, 1,
+					 writeout_error);
 			if (ret)
 				return ret;
 			o.ancestor = old->name;
@@ -462,7 +547,8 @@ static int merge_working_tree(struct checkout_opts *opts,
 			o.branch2 = "local";
 			merge_trees(&o, new->commit->tree, work,
 				old->commit->tree, &result);
-			ret = reset_tree(new->commit->tree, opts, 0);
+			ret = reset_tree(new->commit->tree, opts, 0,
+					 writeout_error);
 			if (ret)
 				return ret;
 		}
@@ -470,7 +556,7 @@ static int merge_working_tree(struct checkout_opts *opts,
 
 	if (write_cache(newfd, active_cache, active_nr) ||
 	    commit_locked_index(lock_file))
-		die("unable to write new index file");
+		die(_("unable to write new index file"));
 
 	if (!opts->force && !opts->quiet)
 		show_local_changes(&new->commit->object, &opts->diff_options);
@@ -489,26 +575,12 @@ static void report_tracking(struct branch_info *new)
 	strbuf_release(&sb);
 }
 
-static void detach_advice(const char *old_path, const char *new_name)
-{
-	const char fmt[] =
-	"Note: checking out '%s'.\n\n"
-	"You are in 'detached HEAD' state. You can look around, make experimental\n"
-	"changes and commit them, and you can discard any commits you make in this\n"
-	"state without impacting any branches by performing another checkout.\n\n"
-	"If you want to create a new branch to retain commits you create, you may\n"
-	"do so (now or later) by using -b with the checkout command again. Example:\n\n"
-	"  git checkout -b new_branch_name\n\n";
-
-	fprintf(stderr, fmt, new_name);
-}
-
-static void update_refs_for_switch(struct checkout_opts *opts,
+static void update_refs_for_switch(const struct checkout_opts *opts,
 				   struct branch_info *old,
 				   struct branch_info *new)
 {
 	struct strbuf msg = STRBUF_INIT;
-	const char *old_desc;
+	const char *old_desc, *reflog_msg;
 	if (opts->new_branch) {
 		if (opts->new_orphan_branch) {
 			if (opts->new_branch_log && !log_all_ref_updates) {
@@ -519,7 +591,7 @@ static void update_refs_for_switch(struct checkout_opts *opts,
 				temp = log_all_ref_updates;
 				log_all_ref_updates = 1;
 				if (log_ref_setup(ref_name, log_file, sizeof(log_file))) {
-					fprintf(stderr, "Can not do reflog for '%s'\n",
+					fprintf(stderr, _("Can not do reflog for '%s'\n"),
 					    opts->new_orphan_branch);
 					log_all_ref_updates = temp;
 					return;
@@ -530,7 +602,10 @@ static void update_refs_for_switch(struct checkout_opts *opts,
 		else
 			create_branch(old->name, opts->new_branch, new->name,
 				      opts->new_branch_force ? 1 : 0,
-				      opts->new_branch_log, opts->track);
+				      opts->new_branch_log,
+				      opts->new_branch_force ? 1 : 0,
+				      opts->quiet,
+				      opts->track);
 		new->name = opts->new_branch;
 		setup_branch_path(new);
 	}
@@ -538,22 +613,43 @@ static void update_refs_for_switch(struct checkout_opts *opts,
 	old_desc = old->name;
 	if (!old_desc && old->commit)
 		old_desc = sha1_to_hex(old->commit->object.sha1);
-	strbuf_addf(&msg, "checkout: moving from %s to %s",
-		    old_desc ? old_desc : "(invalid)", new->name);
 
-	if (new->path) {
+	reflog_msg = getenv("GIT_REFLOG_ACTION");
+	if (!reflog_msg)
+		strbuf_addf(&msg, "checkout: moving from %s to %s",
+			old_desc ? old_desc : "(invalid)", new->name);
+	else
+		strbuf_insert(&msg, 0, reflog_msg, strlen(reflog_msg));
+
+	if (!strcmp(new->name, "HEAD") && !new->path && !opts->force_detach) {
+		/* Nothing to do. */
+	} else if (opts->force_detach || !new->path) {	/* No longer on any branch. */
+		update_ref(msg.buf, "HEAD", new->commit->object.sha1, NULL,
+			   REF_NODEREF, DIE_ON_ERR);
+		if (!opts->quiet) {
+			if (old->path && advice_detached_head)
+				detach_advice(new->name);
+			describe_detached_head(_("HEAD is now at"), new->commit);
+		}
+	} else if (new->path) {	/* Switch branches. */
 		create_symref("HEAD", new->path, msg.buf);
 		if (!opts->quiet) {
-			if (old->path && !strcmp(new->path, old->path))
-				fprintf(stderr, "Already on '%s'\n",
+			if (old->path && !strcmp(new->path, old->path)) {
+				if (opts->new_branch_force)
+					fprintf(stderr, _("Reset branch '%s'\n"),
+						new->name);
+				else
+					fprintf(stderr, _("Already on '%s'\n"),
+						new->name);
+			} else if (opts->new_branch) {
+				if (opts->branch_exists)
+					fprintf(stderr, _("Switched to and reset branch '%s'\n"), new->name);
+				else
+					fprintf(stderr, _("Switched to a new branch '%s'\n"), new->name);
+			} else {
+				fprintf(stderr, _("Switched to branch '%s'\n"),
 					new->name);
-			else if (opts->new_branch)
-				fprintf(stderr, "Switched to%s branch '%s'\n",
-					opts->branch_exists ? " and reset" : " a new",
-					new->name);
-			else
-				fprintf(stderr, "Switched to branch '%s'\n",
-					new->name);
+			}
 		}
 		if (old->path && old->name) {
 			char log_file[PATH_MAX], ref_file[PATH_MAX];
@@ -563,29 +659,124 @@ static void update_refs_for_switch(struct checkout_opts *opts,
 			if (!file_exists(ref_file) && file_exists(log_file))
 				remove_path(log_file);
 		}
-	} else if (strcmp(new->name, "HEAD")) {
-		update_ref(msg.buf, "HEAD", new->commit->object.sha1, NULL,
-			   REF_NODEREF, DIE_ON_ERR);
-		if (!opts->quiet) {
-			if (old->path && advice_detached_head)
-				detach_advice(old->path, new->name);
-			describe_detached_head("HEAD is now at", new->commit);
-		}
 	}
 	remove_branch_state();
 	strbuf_release(&msg);
-	if (!opts->quiet && (new->path || !strcmp(new->name, "HEAD")))
+	if (!opts->quiet &&
+	    (new->path || (!opts->force_detach && !strcmp(new->name, "HEAD"))))
 		report_tracking(new);
 }
 
-static int switch_branches(struct checkout_opts *opts, struct branch_info *new)
+static int add_pending_uninteresting_ref(const char *refname,
+					 const unsigned char *sha1,
+					 int flags, void *cb_data)
+{
+	add_pending_sha1(cb_data, refname, sha1, UNINTERESTING);
+	return 0;
+}
+
+static void describe_one_orphan(struct strbuf *sb, struct commit *commit)
+{
+	parse_commit(commit);
+	strbuf_addstr(sb, "  ");
+	strbuf_addstr(sb,
+		find_unique_abbrev(commit->object.sha1, DEFAULT_ABBREV));
+	strbuf_addch(sb, ' ');
+	pp_commit_easy(CMIT_FMT_ONELINE, commit, sb);
+	strbuf_addch(sb, '\n');
+}
+
+#define ORPHAN_CUTOFF 4
+static void suggest_reattach(struct commit *commit, struct rev_info *revs)
+{
+	struct commit *c, *last = NULL;
+	struct strbuf sb = STRBUF_INIT;
+	int lost = 0;
+	while ((c = get_revision(revs)) != NULL) {
+		if (lost < ORPHAN_CUTOFF)
+			describe_one_orphan(&sb, c);
+		last = c;
+		lost++;
+	}
+	if (ORPHAN_CUTOFF < lost) {
+		int more = lost - ORPHAN_CUTOFF;
+		if (more == 1)
+			describe_one_orphan(&sb, last);
+		else
+			strbuf_addf(&sb, _(" ... and %d more.\n"), more);
+	}
+
+	fprintf(stderr,
+		Q_(
+		/* The singular version */
+		"Warning: you are leaving %d commit behind, "
+		"not connected to\n"
+		"any of your branches:\n\n"
+		"%s\n",
+		/* The plural version */
+		"Warning: you are leaving %d commits behind, "
+		"not connected to\n"
+		"any of your branches:\n\n"
+		"%s\n",
+		/* Give ngettext() the count */
+		lost),
+		lost,
+		sb.buf);
+	strbuf_release(&sb);
+
+	if (advice_detached_head)
+		fprintf(stderr,
+			_(
+			"If you want to keep them by creating a new branch, "
+			"this may be a good time\nto do so with:\n\n"
+			" git branch new_branch_name %s\n\n"),
+			find_unique_abbrev(commit->object.sha1, DEFAULT_ABBREV));
+}
+
+/*
+ * We are about to leave commit that was at the tip of a detached
+ * HEAD.  If it is not reachable from any ref, this is the last chance
+ * for the user to do so without resorting to reflog.
+ */
+static void orphaned_commit_warning(struct commit *old, struct commit *new)
+{
+	struct rev_info revs;
+	struct object *object = &old->object;
+	struct object_array refs;
+
+	init_revisions(&revs, NULL);
+	setup_revisions(0, NULL, &revs, NULL);
+
+	object->flags &= ~UNINTERESTING;
+	add_pending_object(&revs, object, sha1_to_hex(object->sha1));
+
+	for_each_ref(add_pending_uninteresting_ref, &revs);
+	add_pending_sha1(&revs, "HEAD", new->object.sha1, UNINTERESTING);
+
+	refs = revs.pending;
+	revs.leak_pending = 1;
+
+	if (prepare_revision_walk(&revs))
+		die(_("internal error in revision walk"));
+	if (!(old->object.flags & UNINTERESTING))
+		suggest_reattach(old, &revs);
+	else
+		describe_detached_head(_("Previous HEAD position was"), old);
+
+	clear_commit_marks_for_object_array(&refs, ALL_REV_FLAGS);
+	free(refs.objects);
+}
+
+static int switch_branches(const struct checkout_opts *opts,
+			   struct branch_info *new)
 {
 	int ret = 0;
 	struct branch_info old;
+	void *path_to_free;
 	unsigned char rev[20];
-	int flag;
+	int flag, writeout_error = 0;
 	memset(&old, 0, sizeof(old));
-	old.path = resolve_ref("HEAD", rev, 0, &flag);
+	old.path = path_to_free = resolve_refdup("HEAD", rev, 0, &flag);
 	old.commit = lookup_commit_reference_gently(rev, 1);
 	if (!(flag & REF_ISSYMREF))
 		old.path = NULL;
@@ -597,26 +788,24 @@ static int switch_branches(struct checkout_opts *opts, struct branch_info *new)
 		new->name = "HEAD";
 		new->commit = old.commit;
 		if (!new->commit)
-			die("You are on a branch yet to be born");
+			die(_("You are on a branch yet to be born"));
 		parse_commit(new->commit);
 	}
 
-	ret = merge_working_tree(opts, &old, new);
-	if (ret)
+	ret = merge_working_tree(opts, &old, new, &writeout_error);
+	if (ret) {
+		free(path_to_free);
 		return ret;
+	}
 
-	/*
-	 * If we were on a detached HEAD, but have now moved to
-	 * a new commit, we want to mention the old commit once more
-	 * to remind the user that it might be lost.
-	 */
 	if (!opts->quiet && !old.path && old.commit && new->commit != old.commit)
-		describe_detached_head("Previous HEAD position was", old.commit);
+		orphaned_commit_warning(old.commit, new->commit);
 
 	update_refs_for_switch(opts, &old, new);
 
 	ret = post_checkout_hook(old.commit, new->commit, 1);
-	return ret || opts->writeout_error;
+	free(path_to_free);
+	return ret || writeout_error;
 }
 
 static int git_checkout_config(const char *var, const char *value, void *cb)
@@ -633,137 +822,60 @@ static int git_checkout_config(const char *var, const char *value, void *cb)
 	return git_xmerge_config(var, value, NULL);
 }
 
-static int interactive_checkout(const char *revision, const char **pathspec,
-				struct checkout_opts *opts)
-{
-	return run_add_interactive(revision, "--patch=checkout", pathspec);
-}
-
 struct tracking_name_data {
-	const char *name;
-	char *remote;
+	/* const */ char *src_ref;
+	char *dst_ref;
+	unsigned char *dst_sha1;
 	int unique;
 };
 
-static int check_tracking_name(const char *refname, const unsigned char *sha1,
-			       int flags, void *cb_data)
+static int check_tracking_name(struct remote *remote, void *cb_data)
 {
 	struct tracking_name_data *cb = cb_data;
-	const char *slash;
-
-	if (prefixcmp(refname, "refs/remotes/"))
+	struct refspec query;
+	memset(&query, 0, sizeof(struct refspec));
+	query.src = cb->src_ref;
+	if (remote_find_tracking(remote, &query) ||
+	    get_sha1(query.dst, cb->dst_sha1)) {
+		free(query.dst);
 		return 0;
-	slash = strchr(refname + 13, '/');
-	if (!slash || strcmp(slash + 1, cb->name))
-		return 0;
-	if (cb->remote) {
+	}
+	if (cb->dst_ref) {
+		free(query.dst);
 		cb->unique = 0;
 		return 0;
 	}
-	cb->remote = xstrdup(refname);
+	cb->dst_ref = query.dst;
 	return 0;
 }
 
-static const char *unique_tracking_name(const char *name)
+static const char *unique_tracking_name(const char *name, unsigned char *sha1)
 {
-	struct tracking_name_data cb_data = { NULL, NULL, 1 };
-	cb_data.name = name;
-	for_each_ref(check_tracking_name, &cb_data);
+	struct tracking_name_data cb_data = { NULL, NULL, NULL, 1 };
+	char src_ref[PATH_MAX];
+	snprintf(src_ref, PATH_MAX, "refs/heads/%s", name);
+	cb_data.src_ref = src_ref;
+	cb_data.dst_sha1 = sha1;
+	for_each_remote(check_tracking_name, &cb_data);
 	if (cb_data.unique)
-		return cb_data.remote;
-	free(cb_data.remote);
+		return cb_data.dst_ref;
+	free(cb_data.dst_ref);
 	return NULL;
 }
 
-int cmd_checkout(int argc, const char **argv, const char *prefix)
+static int parse_branchname_arg(int argc, const char **argv,
+				int dwim_new_local_branch_ok,
+				struct branch_info *new,
+				struct tree **source_tree,
+				unsigned char rev[20],
+				const char **new_branch)
 {
-	struct checkout_opts opts;
-	unsigned char rev[20];
+	int argcount = 0;
+	unsigned char branch_rev[20];
 	const char *arg;
-	struct branch_info new;
-	struct tree *source_tree = NULL;
-	char *conflict_style = NULL;
-	int patch_mode = 0;
-	int dwim_new_local_branch = 1;
-	struct option options[] = {
-		OPT__QUIET(&opts.quiet),
-		OPT_STRING('b', NULL, &opts.new_branch, "branch",
-			   "create and checkout a new branch"),
-		OPT_STRING('B', NULL, &opts.new_branch_force, "branch",
-			   "create/reset and checkout a branch"),
-		OPT_BOOLEAN('l', NULL, &opts.new_branch_log, "create reflog for new branch"),
-		OPT_SET_INT('t', "track",  &opts.track, "set upstream info for new branch",
-			BRANCH_TRACK_EXPLICIT),
-		OPT_STRING(0, "orphan", &opts.new_orphan_branch, "new branch", "new unparented branch"),
-		OPT_SET_INT('2', "ours", &opts.writeout_stage, "checkout our version for unmerged files",
-			    2),
-		OPT_SET_INT('3', "theirs", &opts.writeout_stage, "checkout their version for unmerged files",
-			    3),
-		OPT_BOOLEAN('f', "force", &opts.force, "force checkout (throw away local modifications)"),
-		OPT_BOOLEAN('m', "merge", &opts.merge, "perform a 3-way merge with the new branch"),
-		OPT_STRING(0, "conflict", &conflict_style, "style",
-			   "conflict style (merge or diff3)"),
-		OPT_BOOLEAN('p', "patch", &patch_mode, "select hunks interactively"),
-		{ OPTION_BOOLEAN, 0, "guess", &dwim_new_local_branch, NULL,
-		  "second guess 'git checkout no-such-branch'",
-		  PARSE_OPT_NOARG | PARSE_OPT_HIDDEN },
-		OPT_END(),
-	};
-	int has_dash_dash;
-
-	memset(&opts, 0, sizeof(opts));
-	memset(&new, 0, sizeof(new));
-
-	gitmodules_config();
-	git_config(git_checkout_config, &opts);
-
-	opts.track = BRANCH_TRACK_UNSPECIFIED;
-
-	argc = parse_options(argc, argv, prefix, options, checkout_usage,
-			     PARSE_OPT_KEEP_DASHDASH);
-
-	/* we can assume from now on new_branch = !new_branch_force */
-	if (opts.new_branch && opts.new_branch_force)
-		die("-B cannot be used with -b");
-
-	/* copy -B over to -b, so that we can just check the latter */
-	if (opts.new_branch_force)
-		opts.new_branch = opts.new_branch_force;
-
-	if (patch_mode && (opts.track > 0 || opts.new_branch
-			   || opts.new_branch_log || opts.merge || opts.force))
-		die ("--patch is incompatible with all other options");
-
-	/* --track without -b should DWIM */
-	if (0 < opts.track && !opts.new_branch) {
-		const char *argv0 = argv[0];
-		if (!argc || !strcmp(argv0, "--"))
-			die ("--track needs a branch name");
-		if (!prefixcmp(argv0, "refs/"))
-			argv0 += 5;
-		if (!prefixcmp(argv0, "remotes/"))
-			argv0 += 8;
-		argv0 = strchr(argv0, '/');
-		if (!argv0 || !argv0[1])
-			die ("Missing branch name; try -b");
-		opts.new_branch = argv0 + 1;
-	}
-
-	if (opts.new_orphan_branch) {
-		if (opts.new_branch)
-			die("--orphan and -b|-B are mutually exclusive");
-		if (opts.track > 0)
-			die("--orphan cannot be used with -t");
-		opts.new_branch = opts.new_orphan_branch;
-	}
-
-	if (conflict_style) {
-		opts.merge = 1; /* implied */
-		git_xmerge_config("merge.conflictstyle", conflict_style, NULL);
-	}
-
-	if (opts.force && opts.merge)
-		die("git checkout: -f and -m are incompatible");
+	int dash_dash_pos;
+	int has_dash_dash = 0;
+	int i;
 
 	/*
 	 * case 1: git checkout <ref> -- [<paths>]
@@ -775,145 +887,346 @@ int cmd_checkout(int argc, const char **argv, const char *prefix)
 	 *
 	 *   everything after the '--' must be paths.
 	 *
-	 * case 3: git checkout <something> [<paths>]
+	 * case 3: git checkout <something> [--]
 	 *
-	 *   With no paths, if <something> is a commit, that is to
-	 *   switch to the branch or detach HEAD at it.  As a special case,
-	 *   if <something> is A...B (missing A or B means HEAD but you can
-	 *   omit at most one side), and if there is a unique merge base
-	 *   between A and B, A...B names that merge base.
+	 *   (a) If <something> is a commit, that is to
+	 *       switch to the branch or detach HEAD at it.  As a special case,
+	 *       if <something> is A...B (missing A or B means HEAD but you can
+	 *       omit at most one side), and if there is a unique merge base
+	 *       between A and B, A...B names that merge base.
 	 *
-	 *   With no paths, if <something> is _not_ a commit, no -t nor -b
-	 *   was given, and there is a tracking branch whose name is
-	 *   <something> in one and only one remote, then this is a short-hand
-	 *   to fork local <something> from that remote tracking branch.
+	 *   (b) If <something> is _not_ a commit, either "--" is present
+	 *       or <something> is not a path, no -t nor -b was given, and
+	 *       and there is a tracking branch whose name is <something>
+	 *       in one and only one remote, then this is a short-hand to
+	 *       fork local <something> from that remote-tracking branch.
 	 *
-	 *   Otherwise <something> shall not be ambiguous.
+	 *   (c) Otherwise, if "--" is present, treat it like case (1).
+	 *
+	 *   (d) Otherwise :
+	 *       - if it's a reference, treat it like case (1)
+	 *       - else if it's a path, treat it like case (2)
+	 *       - else: fail.
+	 *
+	 * case 4: git checkout <something> <paths>
+	 *
+	 *   The first argument must not be ambiguous.
 	 *   - If it's *only* a reference, treat it like case (1).
 	 *   - If it's only a path, treat it like case (2).
 	 *   - else: fail.
 	 *
 	 */
-	if (argc) {
-		if (!strcmp(argv[0], "--")) {       /* case (2) */
-			argv++;
-			argc--;
-			goto no_reference;
+	if (!argc)
+		return 0;
+
+	arg = argv[0];
+	dash_dash_pos = -1;
+	for (i = 0; i < argc; i++) {
+		if (!strcmp(argv[i], "--")) {
+			dash_dash_pos = i;
+			break;
 		}
+	}
+	if (dash_dash_pos == 0)
+		return 1; /* case (2) */
+	else if (dash_dash_pos == 1)
+		has_dash_dash = 1; /* case (3) or (1) */
+	else if (dash_dash_pos >= 2)
+		die(_("only one reference expected, %d given."), dash_dash_pos);
 
-		arg = argv[0];
-		has_dash_dash = (argc > 1) && !strcmp(argv[1], "--");
+	if (!strcmp(arg, "-"))
+		arg = "@{-1}";
 
-		if (!strcmp(arg, "-"))
-			arg = "@{-1}";
+	if (get_sha1_mb(arg, rev)) {
+		/*
+		 * Either case (3) or (4), with <something> not being
+		 * a commit, or an attempt to use case (1) with an
+		 * invalid ref.
+		 *
+		 * It's likely an error, but we need to find out if
+		 * we should auto-create the branch, case (3).(b).
+		 */
+		int recover_with_dwim = dwim_new_local_branch_ok;
 
-		if (get_sha1_mb(arg, rev)) {
-			if (has_dash_dash)          /* case (1) */
-				die("invalid reference: %s", arg);
-			if (!patch_mode &&
-			    dwim_new_local_branch &&
-			    opts.track == BRANCH_TRACK_UNSPECIFIED &&
-			    !opts.new_branch &&
-			    !check_filename(NULL, arg) &&
-			    argc == 1) {
-				const char *remote = unique_tracking_name(arg);
-				if (!remote || get_sha1(remote, rev))
-					goto no_reference;
-				opts.new_branch = arg;
+		if (check_filename(NULL, arg) && !has_dash_dash)
+			recover_with_dwim = 0;
+		/*
+		 * Accept "git checkout foo" and "git checkout foo --"
+		 * as candidates for dwim.
+		 */
+		if (!(argc == 1 && !has_dash_dash) &&
+		    !(argc == 2 && has_dash_dash))
+			recover_with_dwim = 0;
+
+		if (recover_with_dwim) {
+			const char *remote = unique_tracking_name(arg, rev);
+			if (remote) {
+				*new_branch = arg;
 				arg = remote;
-				/* DWIMmed to create local branch */
+				/* DWIMmed to create local branch, case (3).(b) */
+			} else {
+				recover_with_dwim = 0;
 			}
-			else
-				goto no_reference;
 		}
 
-		/* we can't end up being in (2) anymore, eat the argument */
+		if (!recover_with_dwim) {
+			if (has_dash_dash)
+				die(_("invalid reference: %s"), arg);
+			return argcount;
+		}
+	}
+
+	/* we can't end up being in (2) anymore, eat the argument */
+	argcount++;
+	argv++;
+	argc--;
+
+	new->name = arg;
+	setup_branch_path(new);
+
+	if (!check_refname_format(new->path, 0) &&
+	    !read_ref(new->path, branch_rev))
+		hashcpy(rev, branch_rev);
+	else
+		new->path = NULL; /* not an existing branch */
+
+	new->commit = lookup_commit_reference_gently(rev, 1);
+	if (!new->commit) {
+		/* not a commit */
+		*source_tree = parse_tree_indirect(rev);
+	} else {
+		parse_commit(new->commit);
+		*source_tree = new->commit->tree;
+	}
+
+	if (!*source_tree)                   /* case (1): want a tree */
+		die(_("reference is not a tree: %s"), arg);
+	if (!has_dash_dash) {/* case (3).(d) -> (1) */
+		/*
+		 * Do not complain the most common case
+		 *	git checkout branch
+		 * even if there happen to be a file called 'branch';
+		 * it would be extremely annoying.
+		 */
+		if (argc)
+			verify_non_filename(NULL, arg);
+	} else {
+		argcount++;
 		argv++;
 		argc--;
-
-		new.name = arg;
-		if ((new.commit = lookup_commit_reference_gently(rev, 1))) {
-			setup_branch_path(&new);
-
-			if ((check_ref_format(new.path) == CHECK_REF_FORMAT_OK) &&
-			    resolve_ref(new.path, rev, 1, NULL))
-				;
-			else
-				new.path = NULL;
-			parse_commit(new.commit);
-			source_tree = new.commit->tree;
-		} else
-			source_tree = parse_tree_indirect(rev);
-
-		if (!source_tree)                   /* case (1): want a tree */
-			die("reference is not a tree: %s", arg);
-		if (!has_dash_dash) {/* case (3 -> 1) */
-			/*
-			 * Do not complain the most common case
-			 *	git checkout branch
-			 * even if there happen to be a file called 'branch';
-			 * it would be extremely annoying.
-			 */
-			if (argc)
-				verify_non_filename(NULL, arg);
-		}
-		else {
-			argv++;
-			argc--;
-		}
 	}
 
-no_reference:
+	return argcount;
+}
 
-	if (opts.track == BRANCH_TRACK_UNSPECIFIED)
-		opts.track = git_branch_track;
+static int switch_unborn_to_new_branch(const struct checkout_opts *opts)
+{
+	int status;
+	struct strbuf branch_ref = STRBUF_INIT;
+
+	if (!opts->new_branch)
+		die(_("You are on a branch yet to be born"));
+	strbuf_addf(&branch_ref, "refs/heads/%s", opts->new_branch);
+	status = create_symref("HEAD", branch_ref.buf, "checkout -b");
+	strbuf_release(&branch_ref);
+	if (!opts->quiet)
+		fprintf(stderr, _("Switched to a new branch '%s'\n"),
+			opts->new_branch);
+	return status;
+}
+
+static int checkout_branch(struct checkout_opts *opts,
+			   struct branch_info *new)
+{
+	if (opts->pathspec.nr)
+		die(_("paths cannot be used with switching branches"));
+
+	if (opts->patch_mode)
+		die(_("'%s' cannot be used with switching branches"),
+		    "--patch");
+
+	if (opts->writeout_stage)
+		die(_("'%s' cannot be used with switching branches"),
+		    "--ours/--theirs");
+
+	if (opts->force && opts->merge)
+		die(_("'%s' cannot be used with '%s'"), "-f", "-m");
+
+	if (opts->force_detach && opts->new_branch)
+		die(_("'%s' cannot be used with '%s'"),
+		    "--detach", "-b/-B/--orphan");
+
+	if (opts->new_orphan_branch) {
+		if (opts->track != BRANCH_TRACK_UNSPECIFIED)
+			die(_("'%s' cannot be used with '%s'"), "--orphan", "-t");
+	} else if (opts->force_detach) {
+		if (opts->track != BRANCH_TRACK_UNSPECIFIED)
+			die(_("'%s' cannot be used with '%s'"), "--detach", "-t");
+	} else if (opts->track == BRANCH_TRACK_UNSPECIFIED)
+		opts->track = git_branch_track;
+
+	if (new->name && !new->commit)
+		die(_("Cannot switch branch to a non-commit '%s'"),
+		    new->name);
+
+	if (!new->commit && opts->new_branch) {
+		unsigned char rev[20];
+		int flag;
+
+		if (!read_ref_full("HEAD", rev, 0, &flag) &&
+		    (flag & REF_ISSYMREF) && is_null_sha1(rev))
+			return switch_unborn_to_new_branch(opts);
+	}
+	return switch_branches(opts, new);
+}
+
+int cmd_checkout(int argc, const char **argv, const char *prefix)
+{
+	struct checkout_opts opts;
+	struct branch_info new;
+	char *conflict_style = NULL;
+	int dwim_new_local_branch = 1;
+	struct option options[] = {
+		OPT__QUIET(&opts.quiet, N_("suppress progress reporting")),
+		OPT_STRING('b', NULL, &opts.new_branch, N_("branch"),
+			   N_("create and checkout a new branch")),
+		OPT_STRING('B', NULL, &opts.new_branch_force, N_("branch"),
+			   N_("create/reset and checkout a branch")),
+		OPT_BOOL('l', NULL, &opts.new_branch_log, N_("create reflog for new branch")),
+		OPT_BOOL(0, "detach", &opts.force_detach, N_("detach the HEAD at named commit")),
+		OPT_SET_INT('t', "track",  &opts.track, N_("set upstream info for new branch"),
+			BRANCH_TRACK_EXPLICIT),
+		OPT_STRING(0, "orphan", &opts.new_orphan_branch, N_("new branch"), N_("new unparented branch")),
+		OPT_SET_INT('2', "ours", &opts.writeout_stage, N_("checkout our version for unmerged files"),
+			    2),
+		OPT_SET_INT('3', "theirs", &opts.writeout_stage, N_("checkout their version for unmerged files"),
+			    3),
+		OPT__FORCE(&opts.force, N_("force checkout (throw away local modifications)")),
+		OPT_BOOL('m', "merge", &opts.merge, N_("perform a 3-way merge with the new branch")),
+		OPT_BOOL(0, "overwrite-ignore", &opts.overwrite_ignore, N_("update ignored files (default)")),
+		OPT_STRING(0, "conflict", &conflict_style, N_("style"),
+			   N_("conflict style (merge or diff3)")),
+		OPT_BOOL('p', "patch", &opts.patch_mode, N_("select hunks interactively")),
+		OPT_BOOL(0, "ignore-skip-worktree-bits", &opts.ignore_skipworktree,
+			 N_("do not limit pathspecs to sparse entries only")),
+		OPT_HIDDEN_BOOL(0, "guess", &dwim_new_local_branch,
+				N_("second guess 'git checkout no-such-branch'")),
+		OPT_END(),
+	};
+
+	memset(&opts, 0, sizeof(opts));
+	memset(&new, 0, sizeof(new));
+	opts.overwrite_ignore = 1;
+	opts.prefix = prefix;
+
+	gitmodules_config();
+	git_config(git_checkout_config, &opts);
+
+	opts.track = BRANCH_TRACK_UNSPECIFIED;
+
+	argc = parse_options(argc, argv, prefix, options, checkout_usage,
+			     PARSE_OPT_KEEP_DASHDASH);
+
+	if (conflict_style) {
+		opts.merge = 1; /* implied */
+		git_xmerge_config("merge.conflictstyle", conflict_style, NULL);
+	}
+
+	if ((!!opts.new_branch + !!opts.new_branch_force + !!opts.new_orphan_branch) > 1)
+		die(_("-b, -B and --orphan are mutually exclusive"));
+
+	/*
+	 * From here on, new_branch will contain the branch to be checked out,
+	 * and new_branch_force and new_orphan_branch will tell us which one of
+	 * -b/-B/--orphan is being used.
+	 */
+	if (opts.new_branch_force)
+		opts.new_branch = opts.new_branch_force;
+
+	if (opts.new_orphan_branch)
+		opts.new_branch = opts.new_orphan_branch;
+
+	/* --track without -b/-B/--orphan should DWIM */
+	if (opts.track != BRANCH_TRACK_UNSPECIFIED && !opts.new_branch) {
+		const char *argv0 = argv[0];
+		if (!argc || !strcmp(argv0, "--"))
+			die (_("--track needs a branch name"));
+		if (!prefixcmp(argv0, "refs/"))
+			argv0 += 5;
+		if (!prefixcmp(argv0, "remotes/"))
+			argv0 += 8;
+		argv0 = strchr(argv0, '/');
+		if (!argv0 || !argv0[1])
+			die (_("Missing branch name; try -b"));
+		opts.new_branch = argv0 + 1;
+	}
+
+	/*
+	 * Extract branch name from command line arguments, so
+	 * all that is left is pathspecs.
+	 *
+	 * Handle
+	 *
+	 *  1) git checkout <tree> -- [<paths>]
+	 *  2) git checkout -- [<paths>]
+	 *  3) git checkout <something> [<paths>]
+	 *
+	 * including "last branch" syntax and DWIM-ery for names of
+	 * remote branches, erroring out for invalid or ambiguous cases.
+	 */
+	if (argc) {
+		unsigned char rev[20];
+		int dwim_ok =
+			!opts.patch_mode &&
+			dwim_new_local_branch &&
+			opts.track == BRANCH_TRACK_UNSPECIFIED &&
+			!opts.new_branch;
+		int n = parse_branchname_arg(argc, argv, dwim_ok,
+					     &new, &opts.source_tree,
+					     rev, &opts.new_branch);
+		argv += n;
+		argc -= n;
+	}
 
 	if (argc) {
-		const char **pathspec = get_pathspec(prefix, argv);
+		parse_pathspec(&opts.pathspec, 0,
+			       opts.patch_mode ? PATHSPEC_PREFIX_ORIGIN : 0,
+			       prefix, argv);
 
-		if (!pathspec)
-			die("invalid path specification");
+		if (!opts.pathspec.nr)
+			die(_("invalid path specification"));
 
-		if (patch_mode)
-			return interactive_checkout(new.name, pathspec, &opts);
+		/*
+		 * Try to give more helpful suggestion.
+		 * new_branch && argc > 1 will be caught later.
+		 */
+		if (opts.new_branch && argc == 1)
+			die(_("Cannot update paths and switch to branch '%s' at the same time.\n"
+			      "Did you intend to checkout '%s' which can not be resolved as commit?"),
+			    opts.new_branch, argv[0]);
 
-		/* Checkout paths */
-		if (opts.new_branch) {
-			if (argc == 1) {
-				die("git checkout: updating paths is incompatible with switching branches.\nDid you intend to checkout '%s' which can not be resolved as commit?", argv[0]);
-			} else {
-				die("git checkout: updating paths is incompatible with switching branches.");
-			}
-		}
+		if (opts.force_detach)
+			die(_("git checkout: --detach does not take a path argument '%s'"),
+			    argv[0]);
 
 		if (1 < !!opts.writeout_stage + !!opts.force + !!opts.merge)
-			die("git checkout: --ours/--theirs, --force and --merge are incompatible when\nchecking out of the index.");
-
-		return checkout_paths(source_tree, pathspec, &opts);
+			die(_("git checkout: --ours/--theirs, --force and --merge are incompatible when\n"
+			      "checking out of the index."));
 	}
-
-	if (patch_mode)
-		return interactive_checkout(new.name, NULL, &opts);
 
 	if (opts.new_branch) {
 		struct strbuf buf = STRBUF_INIT;
-		if (strbuf_check_branch_ref(&buf, opts.new_branch))
-			die("git checkout: we do not like '%s' as a branch name.",
-			    opts.new_branch);
-		if (!get_sha1(buf.buf, rev)) {
-			opts.branch_exists = 1;
-			if (!opts.new_branch_force)
-				die("git checkout: branch %s already exists",
-				    opts.new_branch);
-		}
+
+		opts.branch_exists =
+			validate_new_branchname(opts.new_branch, &buf,
+						!!opts.new_branch_force,
+						!!opts.new_branch_force);
+
 		strbuf_release(&buf);
 	}
 
-	if (new.name && !new.commit) {
-		die("Cannot switch branch to a non-commit.");
-	}
-	if (opts.writeout_stage)
-		die("--ours/--theirs is incompatible with switching branches.");
-
-	return switch_branches(&opts, &new);
+	if (opts.patch_mode || opts.pathspec.nr)
+		return checkout_paths(&opts, new.name);
+	else
+		return checkout_branch(&opts, &new);
 }

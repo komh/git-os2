@@ -67,9 +67,11 @@ test_expect_success 'setup: two scripts for reading pull requests' '
 
 	cat <<-\EOT >read-request.sed &&
 	#!/bin/sed -nf
+	# Note that a request could ask for "tag $tagname"
 	/ in the git repository at:$/!d
 	n
 	/^$/ n
+	s/ tag \([^ ]*\)$/ tag--\1/
 	s/^[ 	]*\(.*\) \([^ ]*\)/please pull\
 	\1\
 	\2/p
@@ -78,21 +80,22 @@ test_expect_success 'setup: two scripts for reading pull requests' '
 
 	cat <<-EOT >fuzz.sed
 	#!/bin/sed -nf
+	s/$downstream_url_for_sed/URL/g
 	s/$_x40/OBJECT_NAME/g
 	s/A U Thor/AUTHOR/g
 	s/[-0-9]\{10\} [:0-9]\{8\} [-+][0-9]\{4\}/DATE/g
 	s/        [^ ].*/        SUBJECT/g
 	s/  [^ ].* (DATE)/  SUBJECT (DATE)/g
-	s/$downstream_url_for_sed/URL/g
 	s/for-upstream/BRANCH/g
 	s/mnemonic.txt/FILENAME/g
+	s/^version [0-9]/VERSION/
 	/^ FILENAME | *[0-9]* [-+]*\$/ b diffstat
 	/^AUTHOR ([0-9]*):\$/ b shortlog
 	p
 	b
 	: diffstat
 	n
-	/ [0-9]* files changed/ {
+	/ [0-9]* files* changed/ {
 		a\\
 	DIFFSTAT
 		b
@@ -176,10 +179,7 @@ test_expect_success 'request names an appropriate branch' '
 		read repository &&
 		read branch
 	} <digest &&
-	{
-		test "$branch" = master ||
-		test "$branch" = for-upstream
-	}
+	test "$branch" = tags/full
 
 '
 
@@ -193,8 +193,17 @@ test_expect_success 'pull request format' '
 	  SUBJECT (DATE)
 
 	are available in the git repository at:
+
 	  URL BRANCH
 
+	for you to fetch changes up to OBJECT_NAME:
+
+	  SUBJECT (DATE)
+
+	----------------------------------------------------------------
+	VERSION
+
+	----------------------------------------------------------------
 	SHORTLOG
 
 	DIFFSTAT
@@ -207,7 +216,7 @@ test_expect_success 'pull request format' '
 		git request-pull initial "$downstream_url" >../request
 	) &&
 	<request sed -nf fuzz.sed >request.fuzzy &&
-	test_cmp expect request.fuzzy
+	test_i18ncmp expect request.fuzzy
 
 '
 

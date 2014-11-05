@@ -1,5 +1,5 @@
 #include "cache.h"
-#include <pthread.h>
+#include "thread-utils.h"
 
 #if defined(hpux) || defined(__hpux) || defined(_hpux)
 #  include <sys/pstat.h>
@@ -24,7 +24,7 @@ int online_cpus(void)
 	long ncpus;
 #endif
 
-#ifdef _WIN32
+#ifdef GIT_WINDOWS_NATIVE
 	SYSTEM_INFO info;
 	GetSystemInfo(&info);
 

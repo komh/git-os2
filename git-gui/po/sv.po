@@ -1714,7 +1714,7 @@ msgstr ""
 
 #: lib/index.tcl:30
 msgid "Continue"
-msgstr "Forstätt"
+msgstr "Fortsätt"
 
 #: lib/index.tcl:33
 msgid "Unlock Index"
@@ -2382,7 +2382,7 @@ msgid "Generation failed."
 msgstr "Misslyckades med att skapa."
 
 #: lib/sshkey.tcl:120
-msgid "Generation succeded, but no keys found."
+msgid "Generation succeeded, but no keys found."
 msgstr "Lyckades skapa nyckeln, men hittar inte någon nyckel."
 
 #: lib/sshkey.tcl:123

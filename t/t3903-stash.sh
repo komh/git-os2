@@ -37,14 +37,32 @@ test_expect_success 'parents of stash' '
 	test_cmp output expect
 '
 
-test_expect_success 'apply needs clean working directory' '
-	echo 4 > other-file &&
+test_expect_success 'applying bogus stash does nothing' '
+	test_must_fail git stash apply stash@{1} &&
+	echo 1 >expect &&
+	test_cmp expect file
+'
+
+test_expect_success 'apply does not need clean working directory' '
+	echo 4 >other-file &&
 	git add other-file &&
-	echo 5 > other-file &&
-	test_must_fail git stash apply
+	echo 5 >other-file &&
+	git stash apply &&
+	echo 3 >expect &&
+	test_cmp expect file
+'
+
+test_expect_success 'apply does not clobber working directory changes' '
+	git reset --hard &&
+	echo 4 >file &&
+	test_must_fail git stash apply &&
+	echo 4 >expect &&
+	test_cmp expect file
 '
 
 test_expect_success 'apply stashed changes' '
+	git reset --hard &&
+	echo 5 >other-file &&
 	git add other-file &&
 	test_tick &&
 	git commit -m other-file &&
@@ -157,7 +175,7 @@ EOF
 
 test_expect_success 'stash branch' '
 	echo foo > file &&
-	git commit file -m first
+	git commit file -m first &&
 	echo bar > file &&
 	echo bar2 > file2 &&
 	git add file2 &&
@@ -182,17 +200,17 @@ test_expect_success 'apply -q is quiet' '
 	echo foo > file &&
 	git stash &&
 	git stash apply -q > output.out 2>&1 &&
-	test ! -s output.out
+	test_must_be_empty output.out
 '
 
 test_expect_success 'save -q is quiet' '
 	git stash save --quiet > output.out 2>&1 &&
-	test ! -s output.out
+	test_must_be_empty output.out
 '
 
 test_expect_success 'pop -q is quiet' '
 	git stash pop -q > output.out 2>&1 &&
-	test ! -s output.out
+	test_must_be_empty output.out
 '
 
 test_expect_success 'pop -q --index works and is quiet' '
@@ -201,13 +219,13 @@ test_expect_success 'pop -q --index works and is quiet' '
 	git stash save --quiet &&
 	git stash pop -q --index > output.out 2>&1 &&
 	test foo = "$(git show :file)" &&
-	test ! -s output.out
+	test_must_be_empty output.out
 '
 
 test_expect_success 'drop -q is quiet' '
 	git stash &&
 	git stash drop -q > output.out 2>&1 &&
-	test ! -s output.out
+	test_must_be_empty output.out
 '
 
 test_expect_success 'stash -k' '
@@ -216,6 +234,14 @@ test_expect_success 'stash -k' '
 	git add file2 &&
 	git stash -k &&
 	test bar,bar4 = $(cat file),$(cat file2)
+'
+
+test_expect_success 'stash --no-keep-index' '
+	echo bar33 > file &&
+	echo bar44 > file2 &&
+	git add file2 &&
+	git stash --no-keep-index &&
+	test bar,bar2 = $(cat file),$(cat file2)
 '
 
 test_expect_success 'stash --invalid-option' '
@@ -255,7 +281,7 @@ test_expect_success 'stash rm and ignore' '
 	echo file >.gitignore &&
 	git stash save "rm and ignore" &&
 	test bar = "$(cat file)" &&
-	test file = "$(cat .gitignore)"
+	test file = "$(cat .gitignore)" &&
 	git stash apply &&
 	! test -r file &&
 	test file = "$(cat .gitignore)"
@@ -268,7 +294,7 @@ test_expect_success 'stash rm and ignore (stage .gitignore)' '
 	git add .gitignore &&
 	git stash save "rm and ignore (stage .gitignore)" &&
 	test bar = "$(cat file)" &&
-	! test -r .gitignore
+	! test -r .gitignore &&
 	git stash apply &&
 	! test -r file &&
 	test file = "$(cat .gitignore)"
@@ -310,41 +336,58 @@ test_expect_success SYMLINKS 'stash file to symlink (full stage)' '
 
 # This test creates a commit with a symlink used for the following tests
 
-test_expect_success SYMLINKS 'stash symlink to file' '
+test_expect_success 'stash symlink to file' '
 	git reset --hard &&
-	ln -s file filelink &&
-	git add filelink &&
+	test_ln_s_add file filelink &&
 	git commit -m "Add symlink" &&
 	rm filelink &&
 	cp file filelink &&
-	git stash save "symlink to file" &&
+	git stash save "symlink to file"
+'
+
+test_expect_success SYMLINKS 'this must have re-created the symlink' '
 	test -h filelink &&
-	case "$(ls -l filelink)" in *" filelink -> file") :;; *) false;; esac &&
+	case "$(ls -l filelink)" in *" filelink -> file") :;; *) false;; esac
+'
+
+test_expect_success 'unstash must re-create the file' '
 	git stash apply &&
 	! test -h filelink &&
 	test bar = "$(cat file)"
 '
 
-test_expect_success SYMLINKS 'stash symlink to file (stage rm)' '
+test_expect_success 'stash symlink to file (stage rm)' '
 	git reset --hard &&
 	git rm filelink &&
 	cp file filelink &&
-	git stash save "symlink to file (stage rm)" &&
+	git stash save "symlink to file (stage rm)"
+'
+
+test_expect_success SYMLINKS 'this must have re-created the symlink' '
 	test -h filelink &&
-	case "$(ls -l filelink)" in *" filelink -> file") :;; *) false;; esac &&
+	case "$(ls -l filelink)" in *" filelink -> file") :;; *) false;; esac
+'
+
+test_expect_success 'unstash must re-create the file' '
 	git stash apply &&
 	! test -h filelink &&
 	test bar = "$(cat file)"
 '
 
-test_expect_success SYMLINKS 'stash symlink to file (full stage)' '
+test_expect_success 'stash symlink to file (full stage)' '
 	git reset --hard &&
 	rm filelink &&
 	cp file filelink &&
 	git add filelink &&
-	git stash save "symlink to file (full stage)" &&
+	git stash save "symlink to file (full stage)"
+'
+
+test_expect_success SYMLINKS 'this must have re-created the symlink' '
 	test -h filelink &&
-	case "$(ls -l filelink)" in *" filelink -> file") :;; *) false;; esac &&
+	case "$(ls -l filelink)" in *" filelink -> file") :;; *) false;; esac
+'
+
+test_expect_success 'unstash must re-create the file' '
 	git stash apply &&
 	! test -h filelink &&
 	test bar = "$(cat file)"
@@ -406,7 +449,7 @@ test_expect_success 'stash branch - stashes on stack, stash-like argument' '
 	test $(git ls-files --modified | wc -l) -eq 1
 '
 
-test_expect_success 'stash show - stashes on stack, stash-like argument' '
+test_expect_success 'stash show format defaults to --stat' '
 	git stash clear &&
 	test_when_finished "git reset --hard HEAD" &&
 	git reset --hard &&
@@ -417,10 +460,25 @@ test_expect_success 'stash show - stashes on stack, stash-like argument' '
 	STASH_ID=$(git stash create) &&
 	git reset --hard &&
 	cat >expected <<-EOF &&
-	 file |    1 +
-	 1 files changed, 1 insertions(+), 0 deletions(-)
+	 file | 1 +
+	 1 file changed, 1 insertion(+)
 	EOF
 	git stash show ${STASH_ID} >actual &&
+	test_i18ncmp expected actual
+'
+
+test_expect_success 'stash show - stashes on stack, stash-like argument' '
+	git stash clear &&
+	test_when_finished "git reset --hard HEAD" &&
+	git reset --hard &&
+	echo foo >> file &&
+	git stash &&
+	test_when_finished "git stash drop" &&
+	echo bar >> file &&
+	STASH_ID=$(git stash create) &&
+	git reset --hard &&
+	echo "1	0	file" >expected &&
+	git stash show --numstat ${STASH_ID} >actual &&
 	test_cmp expected actual
 '
 
@@ -454,11 +512,8 @@ test_expect_success 'stash show - no stashes on stack, stash-like argument' '
 	echo foo >> file &&
 	STASH_ID=$(git stash create) &&
 	git reset --hard &&
-	cat >expected <<-EOF &&
-	 file |    1 +
-	 1 files changed, 1 insertions(+), 0 deletions(-)
-	EOF
-	git stash show ${STASH_ID} >actual &&
+	echo "1	0	file" >expected &&
+	git stash show --numstat ${STASH_ID} >actual &&
 	test_cmp expected actual
 '
 
@@ -510,13 +565,13 @@ test_expect_success 'stash pop - fail early if specified stash is not a stash re
 	git reset --hard HEAD
 '
 
-test_expect_success 'ref with non-existant reflog' '
+test_expect_success 'ref with non-existent reflog' '
 	git stash clear &&
 	echo bar5 > file &&
 	echo bar6 > file2 &&
 	git add file2 &&
 	git stash &&
-	! "git rev-parse --quiet --verify does-not-exist" &&
+	test_must_fail git rev-parse --quiet --verify does-not-exist &&
 	test_must_fail git stash drop does-not-exist &&
 	test_must_fail git stash drop does-not-exist@{0} &&
 	test_must_fail git stash pop does-not-exist &&
@@ -537,11 +592,11 @@ test_expect_success 'invalid ref of the form stash@{n}, n >= N' '
 	echo bar6 > file2 &&
 	git add file2 &&
 	git stash &&
-	test_must_fail git drop stash@{1} &&
-	test_must_fail git pop stash@{1} &&
-	test_must_fail git apply stash@{1} &&
-	test_must_fail git show stash@{1} &&
-	test_must_fail git branch tmp stash@{1} &&
+	test_must_fail git stash drop stash@{1} &&
+	test_must_fail git stash pop stash@{1} &&
+	test_must_fail git stash apply stash@{1} &&
+	test_must_fail git stash show stash@{1} &&
+	test_must_fail git stash branch tmp stash@{1} &&
 	git stash drop
 '
 
@@ -554,6 +609,68 @@ test_expect_success 'stash branch should not drop the stash if the branch exists
 	git stash &&
 	test_must_fail git stash branch master stash@{0} &&
 	git rev-parse stash@{0} --
+'
+
+test_expect_success 'stash apply shows status same as git status (relative to current directory)' '
+	git stash clear &&
+	echo 1 >subdir/subfile1 &&
+	echo 2 >subdir/subfile2 &&
+	git add subdir/subfile1 &&
+	git commit -m subdir &&
+	(
+		cd subdir &&
+		echo x >subfile1 &&
+		echo x >../file &&
+		git status >../expect &&
+		git stash &&
+		sane_unset GIT_MERGE_VERBOSITY &&
+		git stash apply
+	) |
+	sed -e 1,2d >actual && # drop "Saved..." and "HEAD is now..."
+	test_i18ncmp expect actual
+'
+
+cat > expect << EOF
+diff --git a/HEAD b/HEAD
+new file mode 100644
+index 0000000..fe0cbee
+--- /dev/null
++++ b/HEAD
+@@ -0,0 +1 @@
++file-not-a-ref
+EOF
+
+test_expect_success 'stash where working directory contains "HEAD" file' '
+	git stash clear &&
+	git reset --hard &&
+	echo file-not-a-ref > HEAD &&
+	git add HEAD &&
+	test_tick &&
+	git stash &&
+	git diff-files --quiet &&
+	git diff-index --cached --quiet HEAD &&
+	test "$(git rev-parse stash^)" = "$(git rev-parse HEAD)" &&
+	git diff stash^..stash > output &&
+	test_cmp output expect
+'
+
+test_expect_success 'store called with invalid commit' '
+	test_must_fail git stash store foo
+'
+
+test_expect_success 'store updates stash ref and reflog' '
+	git stash clear &&
+	git reset --hard &&
+	echo quux >bazzy &&
+	git add bazzy &&
+	STASH_ID=$(git stash create) &&
+	git reset --hard &&
+	! grep quux bazzy &&
+	git stash store -m quuxery $STASH_ID &&
+	test $(cat .git/refs/stash) = $STASH_ID &&
+	grep $STASH_ID .git/logs/refs/stash &&
+	git stash pop &&
+	grep quux bazzy
 '
 
 test_done

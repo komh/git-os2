@@ -1,44 +1,7 @@
 #ifndef STRBUF_H
 #define STRBUF_H
 
-/*
- * Strbuf's can be use in many ways: as a byte array, or to store arbitrary
- * long, overflow safe strings.
- *
- * Strbufs has some invariants that are very important to keep in mind:
- *
- * 1. the ->buf member is always malloc-ed, hence strbuf's can be used to
- *    build complex strings/buffers whose final size isn't easily known.
- *
- *    It is NOT legal to copy the ->buf pointer away.
- *    `strbuf_detach' is the operation that detaches a buffer from its shell
- *    while keeping the shell valid wrt its invariants.
- *
- * 2. the ->buf member is a byte array that has at least ->len + 1 bytes
- *    allocated. The extra byte is used to store a '\0', allowing the ->buf
- *    member to be a valid C-string. Every strbuf function ensures this
- *    invariant is preserved.
- *
- *    Note that it is OK to "play" with the buffer directly if you work it
- *    that way:
- *
- *    strbuf_grow(sb, SOME_SIZE);
- *       ... Here, the memory array starting at sb->buf, and of length
- *       ... strbuf_avail(sb) is all yours, and you are sure that
- *       ... strbuf_avail(sb) is at least SOME_SIZE.
- *    strbuf_setlen(sb, sb->len + SOME_OTHER_SIZE);
- *
- *    Of course, SOME_OTHER_SIZE must be smaller or equal to strbuf_avail(sb).
- *
- *    Doing so is safe, though if it has to be done in many places, adding the
- *    missing API to the strbuf module is the way to go.
- *
- *    XXX: do _not_ assume that the area that is yours is of size ->alloc - 1
- *         even if it's true in the current implementation. Alloc is somehow a
- *         "private" member that should not be messed with.
- */
-
-#include <assert.h>
+/* See Documentation/technical/api-strbuf.txt */
 
 extern char strbuf_slopbuf[];
 struct strbuf {
@@ -68,9 +31,8 @@ static inline size_t strbuf_avail(const struct strbuf *sb) {
 extern void strbuf_grow(struct strbuf *, size_t);
 
 static inline void strbuf_setlen(struct strbuf *sb, size_t len) {
-	if (!sb->alloc)
-		strbuf_grow(sb, 0);
-	assert(len < sb->alloc);
+	if (len > (sb->alloc ? sb->alloc - 1 : 0))
+		die("BUG: strbuf_setlen() beyond buffer");
 	sb->len = len;
 	sb->buf[len] = '\0';
 }
@@ -82,7 +44,56 @@ extern void strbuf_rtrim(struct strbuf *);
 extern void strbuf_ltrim(struct strbuf *);
 extern int strbuf_cmp(const struct strbuf *, const struct strbuf *);
 
-extern struct strbuf **strbuf_split(const struct strbuf *, int delim);
+/*
+ * Split str (of length slen) at the specified terminator character.
+ * Return a null-terminated array of pointers to strbuf objects
+ * holding the substrings.  The substrings include the terminator,
+ * except for the last substring, which might be unterminated if the
+ * original string did not end with a terminator.  If max is positive,
+ * then split the string into at most max substrings (with the last
+ * substring containing everything following the (max-1)th terminator
+ * character).
+ *
+ * For lighter-weight alternatives, see string_list_split() and
+ * string_list_split_in_place().
+ */
+extern struct strbuf **strbuf_split_buf(const char *, size_t,
+					int terminator, int max);
+
+/*
+ * Split a NUL-terminated string at the specified terminator
+ * character.  See strbuf_split_buf() for more information.
+ */
+static inline struct strbuf **strbuf_split_str(const char *str,
+					       int terminator, int max)
+{
+	return strbuf_split_buf(str, strlen(str), terminator, max);
+}
+
+/*
+ * Split a strbuf at the specified terminator character.  See
+ * strbuf_split_buf() for more information.
+ */
+static inline struct strbuf **strbuf_split_max(const struct strbuf *sb,
+						int terminator, int max)
+{
+	return strbuf_split_buf(sb->buf, sb->len, terminator, max);
+}
+
+/*
+ * Split a strbuf at the specified terminator character.  See
+ * strbuf_split_buf() for more information.
+ */
+static inline struct strbuf **strbuf_split(const struct strbuf *sb,
+					   int terminator)
+{
+	return strbuf_split_max(sb, terminator, 0);
+}
+
+/*
+ * Free a NULL-terminated list of strbufs (for example, the return
+ * values of the strbuf_split*() functions).
+ */
 extern void strbuf_list_free(struct strbuf **);
 
 /*----- add data in your buffer -----*/
@@ -98,6 +109,8 @@ extern void strbuf_remove(struct strbuf *, size_t pos, size_t len);
 /* splice pos..pos+len with given data */
 extern void strbuf_splice(struct strbuf *, size_t pos, size_t len,
                           const void *, size_t);
+
+extern void strbuf_add_commented_lines(struct strbuf *out, const char *buf, size_t size);
 
 extern void strbuf_add(struct strbuf *, const void *, size_t);
 static inline void strbuf_addstr(struct strbuf *sb, const char *s) {
@@ -120,6 +133,24 @@ extern void strbuf_addbuf_percentquote(struct strbuf *dst, const struct strbuf *
 
 __attribute__((format (printf,2,3)))
 extern void strbuf_addf(struct strbuf *sb, const char *fmt, ...);
+__attribute__((format (printf, 2, 3)))
+extern void strbuf_commented_addf(struct strbuf *sb, const char *fmt, ...);
+__attribute__((format (printf,2,0)))
+extern void strbuf_vaddf(struct strbuf *sb, const char *fmt, va_list ap);
+
+extern void strbuf_add_lines(struct strbuf *sb, const char *prefix, const char *buf, size_t size);
+
+/*
+ * Append s to sb, with the characters '<', '>', '&' and '"' converted
+ * into XML entities.
+ */
+extern void strbuf_addstr_xml_quoted(struct strbuf *sb, const char *s);
+
+static inline void strbuf_complete_line(struct strbuf *sb)
+{
+	if (sb->len && sb->buf[sb->len - 1] != '\n')
+		strbuf_addch(sb, '\n');
+}
 
 extern size_t strbuf_fread(struct strbuf *, size_t, FILE *);
 /* XXX: if read fails, any partial read is undone */
@@ -129,11 +160,21 @@ extern int strbuf_readlink(struct strbuf *sb, const char *path, size_t hint);
 
 extern int strbuf_getwholeline(struct strbuf *, FILE *, int);
 extern int strbuf_getline(struct strbuf *, FILE *, int);
+extern int strbuf_getwholeline_fd(struct strbuf *, int, int);
 
 extern void stripspace(struct strbuf *buf, int skip_comments);
 extern int launch_editor(const char *path, struct strbuf *buffer, const char *const *env);
 
 extern int strbuf_branchname(struct strbuf *sb, const char *name);
 extern int strbuf_check_branch_ref(struct strbuf *sb, const char *name);
+
+extern void strbuf_addstr_urlencode(struct strbuf *, const char *,
+				    int reserved);
+extern void strbuf_humanise_bytes(struct strbuf *buf, off_t bytes);
+
+__attribute__((format (printf,1,2)))
+extern int printf_ln(const char *fmt, ...);
+__attribute__((format (printf,2,3)))
+extern int fprintf_ln(FILE *fp, const char *fmt, ...);
 
 #endif /* STRBUF_H */

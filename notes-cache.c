@@ -48,6 +48,7 @@ int notes_cache_write(struct notes_cache *c)
 {
 	unsigned char tree_sha1[20];
 	unsigned char commit_sha1[20];
+	struct strbuf msg = STRBUF_INIT;
 
 	if (!c || !c->tree.initialized || !c->tree.ref || !*c->tree.ref)
 		return -1;
@@ -56,7 +57,9 @@ int notes_cache_write(struct notes_cache *c)
 
 	if (write_notes_tree(&c->tree, tree_sha1))
 		return -1;
-	if (commit_tree(c->validity, tree_sha1, NULL, commit_sha1, NULL) < 0)
+	strbuf_attach(&msg, c->validity,
+		      strlen(c->validity), strlen(c->validity) + 1);
+	if (commit_tree(&msg, tree_sha1, NULL, commit_sha1, NULL, NULL) < 0)
 		return -1;
 	if (update_ref("update notes cache", c->tree.ref, commit_sha1, NULL,
 		       0, QUIET_ON_ERR) < 0)
@@ -89,6 +92,5 @@ int notes_cache_put(struct notes_cache *c, unsigned char key_sha1[20],
 
 	if (write_sha1_file(data, size, "blob", value_sha1) < 0)
 		return -1;
-	add_note(&c->tree, key_sha1, value_sha1, NULL);
-	return 0;
+	return add_note(&c->tree, key_sha1, value_sha1, NULL);
 }

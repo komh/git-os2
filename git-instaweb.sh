@@ -27,6 +27,7 @@ httpd="$(git config --get instaweb.httpd)"
 root="$(git config --get instaweb.gitwebdir)"
 port=$(git config --get instaweb.port)
 module_path="$(git config --get instaweb.modulepath)"
+action="browse"
 
 conf="$GIT_DIR/gitweb/httpd.conf"
 
@@ -98,12 +99,18 @@ start_httpd () {
 
 	# here $httpd should have a meaningful value
 	resolve_full_httpd
+	mkdir -p "$fqgitdir/gitweb/$httpd_only"
+	conf="$fqgitdir/gitweb/$httpd_only.conf"
+
+	# generate correct config file if it doesn't exist
+	test -f "$conf" || configure_httpd
+	test -f "$fqgitdir/gitweb/gitweb_config.perl" || gitweb_conf
 
 	# don't quote $full_httpd, there can be arguments to it (-f)
 	case "$httpd" in
 	*mongoose*|*plackup*)
 		#These servers don't have a daemon mode so we'll have to fork it
-		$full_httpd "$fqgitdir/gitweb/httpd.conf" &
+		$full_httpd "$conf" &
 		#Save the pid before doing anything else (we'll print it later)
 		pid=$!
 
@@ -117,7 +124,7 @@ $pid
 EOF
 		;;
 	*)
-		$full_httpd "$fqgitdir/gitweb/httpd.conf"
+		$full_httpd "$conf"
 		if test $? != 0; then
 			echo "Could not execute http daemon $httpd."
 			exit 1
@@ -148,17 +155,13 @@ while test $# != 0
 do
 	case "$1" in
 	--stop|stop)
-		stop_httpd
-		exit 0
+		action="stop"
 		;;
 	--start|start)
-		start_httpd
-		exit 0
+		action="start"
 		;;
 	--restart|restart)
-		stop_httpd
-		start_httpd
-		exit 0
+		action="restart"
 		;;
 	-l|--local)
 		local=true
@@ -558,12 +561,14 @@ my \$app = builder {
 
 # make it runnable as standalone app,
 # like it would be run via 'plackup' utility
-if (__FILE__ eq \$0) {
+if (caller) {
+	return \$app;
+} else {
 	require Plack::Runner;
 
 	my \$runner = Plack::Runner->new();
 	\$runner->parse_options(qw(--env deployment --port $port),
-			       "$local" ? qw(--host 127.0.0.1) : ());
+				"$local" ? qw(--host 127.0.0.1) : ());
 	\$runner->run(\$app);
 }
 __END__
@@ -580,35 +585,58 @@ gitweb_conf() {
 our \$projectroot = "$(dirname "$fqgitdir")";
 our \$git_temp = "$fqgitdir/gitweb/tmp";
 our \$projects_list = \$projectroot;
+
+\$feature{'remote_heads'}{'default'} = [1];
 EOF
 }
+
+configure_httpd() {
+	case "$httpd" in
+	*lighttpd*)
+		lighttpd_conf
+		;;
+	*apache2*|*httpd*)
+		apache2_conf
+		;;
+	webrick)
+		webrick_conf
+		;;
+	*mongoose*)
+		mongoose_conf
+		;;
+	*plackup*)
+		plackup_conf
+		;;
+	*)
+		echo "Unknown httpd specified: $httpd"
+		exit 1
+		;;
+	esac
+}
+
+case "$action" in
+stop)
+	stop_httpd
+	exit 0
+	;;
+start)
+	start_httpd
+	exit 0
+	;;
+restart)
+	stop_httpd
+	start_httpd
+	exit 0
+	;;
+esac
 
 gitweb_conf
 
 resolve_full_httpd
 mkdir -p "$fqgitdir/gitweb/$httpd_only"
+conf="$fqgitdir/gitweb/$httpd_only.conf"
 
-case "$httpd" in
-*lighttpd*)
-	lighttpd_conf
-	;;
-*apache2*|*httpd*)
-	apache2_conf
-	;;
-webrick)
-	webrick_conf
-	;;
-*mongoose*)
-	mongoose_conf
-	;;
-*plackup*)
-	plackup_conf
-	;;
-*)
-	echo "Unknown httpd specified: $httpd"
-	exit 1
-	;;
-esac
+configure_httpd
 
 start_httpd
 url=http://127.0.0.1:$port

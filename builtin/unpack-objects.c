@@ -90,7 +90,7 @@ static void use(int bytes)
 
 static void *get_data(unsigned long size)
 {
-	z_stream stream;
+	git_zstream stream;
 	void *buf = xmalloc(size);
 
 	memset(&stream, 0, sizeof(stream));
@@ -107,7 +107,7 @@ static void *get_data(unsigned long size)
 		if (stream.total_out == size && ret == Z_STREAM_END)
 			break;
 		if (ret != Z_OK) {
-			error("inflate returned %d\n", ret);
+			error("inflate returned %d", ret);
 			free(buf);
 			buf = NULL;
 			if (!recover)

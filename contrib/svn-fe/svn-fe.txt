@@ -7,7 +7,11 @@ svn-fe - convert an SVN "dumpfile" to a fast-import stream
 
 SYNOPSIS
 --------
-svnadmin dump --incremental REPO | svn-fe [url] | git fast-import
+[verse]
+mkfifo backchannel &&
+svnadmin dump --deltas REPO |
+	svn-fe [url] 3<backchannel |
+	git fast-import --cat-blob-fd=3 3>backchannel
 
 DESCRIPTION
 -----------
@@ -18,15 +22,15 @@ Subversion repository mirrored on the local disk. Remote Subversion
 repositories can be mirrored on local disk using the `svnsync`
 command.
 
+Note: this tool is very young.  The details of its commandline
+interface may change in backward incompatible ways.
+
 INPUT FORMAT
 ------------
 Subversion's repository dump format is documented in full in
 `notes/dump-load-format.txt` from the Subversion source tree.
 Files in this format can be generated using the 'svnadmin dump' or
 'svk admin dump' command.
-
-Dumps produced with 'svnadmin dump --deltas' (dumpfile format v3)
-are not supported.
 
 OUTPUT FORMAT
 -------------
@@ -47,7 +51,7 @@ as committer, where 'user' is the value of the `svn:author` property
 and 'UUID' the repository's identifier.
 
 To support incremental imports, 'svn-fe' puts a `git-svn-id` line at
-the end of each commit log message if passed an url on the command
+the end of each commit log message if passed a URL on the command
 line.  This line has the form `git-svn-id: URL@REVNO UUID`.
 
 The resulting repository will generally require further processing

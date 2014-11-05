@@ -9,10 +9,13 @@ test_expect_success setup '
 	rm -fr .git &&
 	test_create_repo src &&
 	(
-		cd src
-		>file
-		git add file
-		git commit -m initial
+		cd src &&
+		>file &&
+		git add file &&
+		git commit -m initial &&
+		echo 1 >file &&
+		git add file &&
+		git commit -m updated
 	)
 
 '
@@ -31,9 +34,9 @@ test_expect_success 'clone with excess parameters (2)' '
 
 '
 
-test_expect_success 'output from clone' '
+test_expect_success C_LOCALE_OUTPUT 'output from clone' '
 	rm -fr dst &&
-	git clone -n "file://$(pwd)/src" dst >output &&
+	git clone -n "file://$(pwd)/src" dst >output 2>&1 &&
 	test $(grep Clon output | wc -l) = 1
 '
 
@@ -85,6 +88,26 @@ test_expect_success 'clone --mirror' '
 	test "+refs/*:refs/*" = "$FETCH" &&
 	MIRROR="$(cd mirror && git config --bool remote.origin.mirror)" &&
 	test "$MIRROR" = true
+
+'
+
+test_expect_success 'clone --mirror with detached HEAD' '
+
+	( cd src && git checkout HEAD^ && git rev-parse HEAD >../expected ) &&
+	git clone --mirror src mirror.detached &&
+	( cd src && git checkout - ) &&
+	GIT_DIR=mirror.detached git rev-parse HEAD >actual &&
+	test_cmp expected actual
+
+'
+
+test_expect_success 'clone --bare with detached HEAD' '
+
+	( cd src && git checkout HEAD^ && git rev-parse HEAD >../expected ) &&
+	git clone --bare src bare.detached &&
+	( cd src && git checkout - ) &&
+	GIT_DIR=bare.detached git rev-parse HEAD >actual &&
+	test_cmp expected actual
 
 '
 
@@ -164,7 +187,6 @@ test_expect_success 'clone a void' '
 test_expect_success 'clone respects global branch.autosetuprebase' '
 	(
 		test_config="$HOME/.gitconfig" &&
-		unset GIT_CONFIG_NOGLOBAL &&
 		git config -f "$test_config" branch.autosetuprebase remote &&
 		rm -fr dst &&
 		git clone src dst &&
@@ -190,6 +212,132 @@ test_expect_success 'do not respect url-encoding of non-url path' '
 	git init x+y &&
 	test_must_fail git clone x%2By xy-regular &&
 	git clone x+y xy-regular
+'
+
+test_expect_success 'clone separate gitdir' '
+	rm -rf dst &&
+	git clone --separate-git-dir realgitdir src dst &&
+	test -d realgitdir/refs
+'
+
+test_expect_success 'clone separate gitdir: output' '
+	echo "gitdir: `pwd`/realgitdir" >expected &&
+	test_cmp expected dst/.git
+'
+
+test_expect_success 'clone from .git file' '
+	git clone dst/.git dst2
+'
+
+test_expect_success 'fetch from .git gitfile' '
+	(
+		cd dst2 &&
+		git fetch ../dst/.git
+	)
+'
+
+test_expect_success 'fetch from gitfile parent' '
+	(
+		cd dst2 &&
+		git fetch ../dst
+	)
+'
+
+test_expect_success 'clone separate gitdir where target already exists' '
+	rm -rf dst &&
+	test_must_fail git clone --separate-git-dir realgitdir src dst
+'
+
+test_expect_success 'clone --reference from original' '
+	git clone --shared --bare src src-1 &&
+	git clone --bare src src-2 &&
+	git clone --reference=src-2 --bare src-1 target-8 &&
+	grep /src-2/ target-8/objects/info/alternates
+'
+
+test_expect_success 'clone with more than one --reference' '
+	git clone --bare src src-3 &&
+	git clone --bare src src-4 &&
+	git clone --reference=src-3 --reference=src-4 src target-9 &&
+	grep /src-3/ target-9/.git/objects/info/alternates &&
+	grep /src-4/ target-9/.git/objects/info/alternates
+'
+
+test_expect_success 'clone from original with relative alternate' '
+	mkdir nest &&
+	git clone --bare src nest/src-5 &&
+	echo ../../../src/.git/objects >nest/src-5/objects/info/alternates &&
+	git clone --bare nest/src-5 target-10 &&
+	grep /src/\\.git/objects target-10/objects/info/alternates
+'
+
+test_expect_success 'clone checking out a tag' '
+	git clone --branch=some-tag src dst.tag &&
+	GIT_DIR=src/.git git rev-parse some-tag >expected &&
+	test_cmp expected dst.tag/.git/HEAD &&
+	GIT_DIR=dst.tag/.git git config remote.origin.fetch >fetch.actual &&
+	echo "+refs/heads/*:refs/remotes/origin/*" >fetch.expected &&
+	test_cmp fetch.expected fetch.actual
+'
+
+test_expect_success 'setup ssh wrapper' '
+	write_script "$TRASH_DIRECTORY/ssh-wrapper" <<-\EOF &&
+	echo >>"$TRASH_DIRECTORY/ssh-output" "ssh: $*" &&
+	# throw away all but the last argument, which should be the
+	# command
+	while test $# -gt 1; do shift; done
+	eval "$1"
+	EOF
+
+	GIT_SSH="$TRASH_DIRECTORY/ssh-wrapper" &&
+	export GIT_SSH &&
+	export TRASH_DIRECTORY
+'
+
+clear_ssh () {
+	>"$TRASH_DIRECTORY/ssh-output"
+}
+
+expect_ssh () {
+	{
+		case "$1" in
+		none)
+			;;
+		*)
+			echo "ssh: $1 git-upload-pack '$2'"
+		esac
+	} >"$TRASH_DIRECTORY/ssh-expect" &&
+	(cd "$TRASH_DIRECTORY" && test_cmp ssh-expect ssh-output)
+}
+
+test_expect_success 'cloning myhost:src uses ssh' '
+	clear_ssh &&
+	git clone myhost:src ssh-clone &&
+	expect_ssh myhost src
+'
+
+test_expect_success NOT_MINGW,NOT_CYGWIN 'clone local path foo:bar' '
+	clear_ssh &&
+	cp -R src "foo:bar" &&
+	git clone "./foo:bar" foobar &&
+	expect_ssh none
+'
+
+test_expect_success 'bracketed hostnames are still ssh' '
+	clear_ssh &&
+	git clone "[myhost:123]:src" ssh-bracket-clone &&
+	expect_ssh myhost:123 src
+'
+
+test_expect_success 'clone from a repository with two identical branches' '
+
+	(
+		cd src &&
+		git checkout -b another master
+	) &&
+	git clone src target-11 &&
+	test "z$( cd target-11 && git symbolic-ref HEAD )" = zrefs/heads/another
+
 '
 
 test_done

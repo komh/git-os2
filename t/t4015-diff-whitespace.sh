@@ -103,7 +103,7 @@ test_expect_success 'another test, with -w --ignore-space-at-eol' 'test_cmp expe
 git diff -w -b --ignore-space-at-eol > out
 test_expect_success 'another test, with -w -b --ignore-space-at-eol' 'test_cmp expect out'
 
-tr 'Q' '\015' << EOF > expect
+tr 'Q_' '\015 ' << EOF > expect
 diff --git a/x b/x
 index d99af23..8b32fb5 100644
 --- a/x
@@ -111,19 +111,19 @@ index d99af23..8b32fb5 100644
 @@ -1,6 +1,6 @@
 -whitespace at beginning
 +	whitespace at beginning
- whitespace change
+ whitespace 	 change
 -whitespace in the middle
 +white space in the middle
- whitespace at end
+ whitespace at end__
  unchanged line
- CR at endQ
+ CR at end
 EOF
 git diff -b > out
 test_expect_success 'another test, with -b' 'test_cmp expect out'
 git diff -b --ignore-space-at-eol > out
 test_expect_success 'another test, with -b --ignore-space-at-eol' 'test_cmp expect out'
 
-tr 'Q' '\015' << EOF > expect
+tr 'Q_' '\015 ' << EOF > expect
 diff --git a/x b/x
 index d99af23..8b32fb5 100644
 --- a/x
@@ -135,12 +135,358 @@ index d99af23..8b32fb5 100644
 +	whitespace at beginning
 +whitespace 	 change
 +white space in the middle
- whitespace at end
+ whitespace at end__
  unchanged line
- CR at endQ
+ CR at end
 EOF
 git diff --ignore-space-at-eol > out
 test_expect_success 'another test, with --ignore-space-at-eol' 'test_cmp expect out'
+
+test_expect_success 'ignore-blank-lines: only new lines' '
+	test_seq 5 >x &&
+	git update-index x &&
+	test_seq 5 | sed "/3/i\\
+" >x &&
+	git diff --ignore-blank-lines >out &&
+	>expect &&
+	test_cmp out expect
+'
+
+test_expect_success 'ignore-blank-lines: only new lines with space' '
+	test_seq 5 >x &&
+	git update-index x &&
+	test_seq 5 | sed "/3/i\\
+ " >x &&
+	git diff -w --ignore-blank-lines >out &&
+	>expect &&
+	test_cmp out expect
+'
+
+test_expect_success 'ignore-blank-lines: after change' '
+	cat <<-\EOF >x &&
+	1
+	2
+
+	3
+	4
+	5
+
+	6
+	7
+	EOF
+	git update-index x &&
+	cat <<-\EOF >x &&
+	change
+
+	1
+	2
+	3
+	4
+	5
+	6
+
+	7
+	EOF
+	git diff --inter-hunk-context=100 --ignore-blank-lines >out.tmp &&
+	cat <<-\EOF >expected &&
+	diff --git a/x b/x
+	--- a/x
+	+++ b/x
+	@@ -1,6 +1,7 @@
+	+change
+	+
+	 1
+	 2
+	-
+	 3
+	 4
+	 5
+	EOF
+	compare_diff_patch expected out.tmp
+'
+
+test_expect_success 'ignore-blank-lines: before change' '
+	cat <<-\EOF >x &&
+	1
+	2
+
+	3
+	4
+	5
+	6
+	7
+	EOF
+	git update-index x &&
+	cat <<-\EOF >x &&
+
+	1
+	2
+	3
+	4
+	5
+
+	6
+	7
+	change
+	EOF
+	git diff --inter-hunk-context=100 --ignore-blank-lines >out.tmp &&
+	cat <<-\EOF >expected &&
+	diff --git a/x b/x
+	--- a/x
+	+++ b/x
+	@@ -4,5 +4,7 @@
+	 3
+	 4
+	 5
+	+
+	 6
+	 7
+	+change
+	EOF
+	compare_diff_patch expected out.tmp
+'
+
+test_expect_success 'ignore-blank-lines: between changes' '
+	cat <<-\EOF >x &&
+	1
+	2
+	3
+	4
+	5
+
+
+	6
+	7
+	8
+	9
+	10
+	EOF
+	git update-index x &&
+	cat <<-\EOF >x &&
+	change
+	1
+	2
+
+	3
+	4
+	5
+	6
+	7
+	8
+
+	9
+	10
+	change
+	EOF
+	git diff --ignore-blank-lines >out.tmp &&
+	cat <<-\EOF >expected &&
+	diff --git a/x b/x
+	--- a/x
+	+++ b/x
+	@@ -1,5 +1,7 @@
+	+change
+	 1
+	 2
+	+
+	 3
+	 4
+	 5
+	@@ -8,5 +8,7 @@
+	 6
+	 7
+	 8
+	+
+	 9
+	 10
+	+change
+	EOF
+	compare_diff_patch expected out.tmp
+'
+
+test_expect_success 'ignore-blank-lines: between changes (with interhunkctx)' '
+	test_seq 10 >x &&
+	git update-index x &&
+	cat <<-\EOF >x &&
+	change
+	1
+	2
+
+	3
+	4
+	5
+
+	6
+	7
+	8
+	9
+
+	10
+	change
+	EOF
+	git diff --inter-hunk-context=2 --ignore-blank-lines >out.tmp &&
+	cat <<-\EOF >expected &&
+	diff --git a/x b/x
+	--- a/x
+	+++ b/x
+	@@ -1,10 +1,15 @@
+	+change
+	 1
+	 2
+	+
+	 3
+	 4
+	 5
+	+
+	 6
+	 7
+	 8
+	 9
+	+
+	 10
+	+change
+	EOF
+	compare_diff_patch expected out.tmp
+'
+
+test_expect_success 'ignore-blank-lines: scattered spaces' '
+	test_seq 10 >x &&
+	git update-index x &&
+	cat <<-\EOF >x &&
+	change
+	1
+	2
+	3
+
+	4
+
+	5
+
+	6
+
+
+	7
+
+	8
+	9
+	10
+	change
+	EOF
+	git diff --inter-hunk-context=4 --ignore-blank-lines >out.tmp &&
+	cat <<-\EOF >expected &&
+	diff --git a/x b/x
+	--- a/x
+	+++ b/x
+	@@ -1,3 +1,4 @@
+	+change
+	 1
+	 2
+	 3
+	@@ -8,3 +15,4 @@
+	 8
+	 9
+	 10
+	+change
+	EOF
+	compare_diff_patch expected out.tmp
+'
+
+test_expect_success 'ignore-blank-lines: spaces coalesce' '
+	test_seq 6 >x &&
+	git update-index x &&
+	cat <<-\EOF >x &&
+	change
+	1
+	2
+	3
+
+	4
+
+	5
+
+	6
+	change
+	EOF
+	git diff --inter-hunk-context=4 --ignore-blank-lines >out.tmp &&
+	cat <<-\EOF >expected &&
+	diff --git a/x b/x
+	--- a/x
+	+++ b/x
+	@@ -1,6 +1,11 @@
+	+change
+	 1
+	 2
+	 3
+	+
+	 4
+	+
+	 5
+	+
+	 6
+	+change
+	EOF
+	compare_diff_patch expected out.tmp
+'
+
+test_expect_success 'ignore-blank-lines: mix changes and blank lines' '
+	test_seq 16 >x &&
+	git update-index x &&
+	cat <<-\EOF >x &&
+	change
+	1
+	2
+
+	3
+	4
+	5
+	change
+	6
+	7
+	8
+
+	9
+	10
+	11
+	change
+	12
+	13
+	14
+
+	15
+	16
+	change
+	EOF
+	git diff --ignore-blank-lines >out.tmp &&
+	cat <<-\EOF >expected &&
+	diff --git a/x b/x
+	--- a/x
+	+++ b/x
+	@@ -1,8 +1,11 @@
+	+change
+	 1
+	 2
+	+
+	 3
+	 4
+	 5
+	+change
+	 6
+	 7
+	 8
+	@@ -9,8 +13,11 @@
+	 9
+	 10
+	 11
+	+change
+	 12
+	 13
+	 14
+	+
+	 15
+	 16
+	+change
+	EOF
+	compare_diff_patch expected out.tmp
+'
 
 test_expect_success 'check mixed spaces and tabs in indent' '
 
@@ -330,7 +676,7 @@ test_expect_success 'check space before tab in indent (space-before-tab: on)' '
 
 test_expect_success 'check spaces as indentation (indent-with-non-tab: off)' '
 
-	git config core.whitespace "-indent-with-non-tab"
+	git config core.whitespace "-indent-with-non-tab" &&
 	echo "        foo ();" > x &&
 	git diff --check
 
@@ -344,11 +690,32 @@ test_expect_success 'check spaces as indentation (indent-with-non-tab: on)' '
 
 '
 
+test_expect_success 'ditto, but tabwidth=9' '
+
+	git config core.whitespace "indent-with-non-tab,tabwidth=9" &&
+	git diff --check
+
+'
+
 test_expect_success 'check tabs and spaces as indentation (indent-with-non-tab: on)' '
 
 	git config core.whitespace "indent-with-non-tab" &&
 	echo "	                foo ();" > x &&
 	test_must_fail git diff --check
+
+'
+
+test_expect_success 'ditto, but tabwidth=10' '
+
+	git config core.whitespace "indent-with-non-tab,tabwidth=10" &&
+	test_must_fail git diff --check
+
+'
+
+test_expect_success 'ditto, but tabwidth=20' '
+
+	git config core.whitespace "indent-with-non-tab,tabwidth=20" &&
+	git diff --check
 
 '
 
@@ -372,6 +739,13 @@ test_expect_success 'check tabs and spaces as indentation (tab-in-indent: on)' '
 
 	git config core.whitespace "tab-in-indent" &&
 	echo "	                foo ();" > x &&
+	test_must_fail git diff --check
+
+'
+
+test_expect_success 'ditto, but tabwidth=1 (must be irrelevant)' '
+
+	git config core.whitespace "tab-in-indent,tabwidth=1" &&
 	test_must_fail git diff --check
 
 '
@@ -489,6 +863,43 @@ test_expect_success 'combined diff with autocrlf conversion' '
 	git diff | sed -e "1,/^@@@/d" >actual &&
 	! grep "^-" actual
 
+'
+
+# Start testing the colored format for whitespace checks
+
+test_expect_success 'setup diff colors' '
+	git config color.diff always &&
+	git config color.diff.plain normal &&
+	git config color.diff.meta bold &&
+	git config color.diff.frag cyan &&
+	git config color.diff.func normal &&
+	git config color.diff.old red &&
+	git config color.diff.new green &&
+	git config color.diff.commit yellow &&
+	git config color.diff.whitespace "normal red" &&
+
+	git config core.autocrlf false
+'
+cat >expected <<\EOF
+<BOLD>diff --git a/x b/x<RESET>
+<BOLD>index 9daeafb..2874b91 100644<RESET>
+<BOLD>--- a/x<RESET>
+<BOLD>+++ b/x<RESET>
+<CYAN>@@ -1 +1,4 @@<RESET>
+ test<RESET>
+<GREEN>+<RESET><GREEN>{<RESET>
+<GREEN>+<RESET><BRED>	<RESET>
+<GREEN>+<RESET><GREEN>}<RESET>
+EOF
+
+test_expect_success 'diff that introduces a line with only tabs' '
+	git config core.whitespace blank-at-eol &&
+	git reset --hard &&
+	echo "test" > x &&
+	git commit -m "initial" x &&
+	echo "{NTN}" | tr "NT" "\n\t" >> x &&
+	git -c color.diff=always diff | test_decode_color >current &&
+	test_cmp expected current
 '
 
 test_done

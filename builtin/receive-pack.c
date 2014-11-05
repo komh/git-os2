@@ -1,4 +1,4 @@
-#include "cache.h"
+#include "builtin.h"
 #include "pack.h"
 #include "refs.h"
 #include "pkt-line.h"
@@ -8,8 +8,12 @@
 #include "commit.h"
 #include "object.h"
 #include "remote.h"
+#include "connect.h"
 #include "transport.h"
 #include "string-list.h"
+#include "sha1-array.h"
+#include "connected.h"
+#include "version.h"
 
 static const char receive_pack_usage[] = "git receive-pack <git-dir>";
 
@@ -24,16 +28,20 @@ static int deny_deletes;
 static int deny_non_fast_forwards;
 static enum deny_action deny_current_branch = DENY_UNCONFIGURED;
 static enum deny_action deny_delete_current = DENY_UNCONFIGURED;
-static int receive_fsck_objects;
+static int receive_fsck_objects = -1;
+static int transfer_fsck_objects = -1;
 static int receive_unpack_limit = -1;
 static int transfer_unpack_limit = -1;
 static int unpack_limit = 100;
 static int report_status;
 static int use_sideband;
+static int quiet;
 static int prefer_ofs_delta = 1;
 static int auto_update_server_info;
 static int auto_gc = 1;
+static int fix_thin = 1;
 static const char *head_name;
+static void *head_name_to_free;
 static int sent_capabilities;
 
 static enum deny_action parse_deny_action(const char *var, const char *value)
@@ -53,6 +61,11 @@ static enum deny_action parse_deny_action(const char *var, const char *value)
 
 static int receive_pack_config(const char *var, const char *value, void *cb)
 {
+	int status = parse_hide_refs_config(var, value, "receive");
+
+	if (status)
+		return status;
+
 	if (strcmp(var, "receive.denydeletes") == 0) {
 		deny_deletes = git_config_bool(var, value);
 		return 0;
@@ -75,6 +88,11 @@ static int receive_pack_config(const char *var, const char *value, void *cb)
 
 	if (strcmp(var, "receive.fsckobjects") == 0) {
 		receive_fsck_objects = git_config_bool(var, value);
+		return 0;
+	}
+
+	if (strcmp(var, "transfer.fsckobjects") == 0) {
+		transfer_fsck_objects = git_config_bool(var, value);
 		return 0;
 	}
 
@@ -106,38 +124,73 @@ static int receive_pack_config(const char *var, const char *value, void *cb)
 	return git_default_config(var, value, cb);
 }
 
-static int show_ref(const char *path, const unsigned char *sha1, int flag, void *cb_data)
+static void show_ref(const char *path, const unsigned char *sha1)
 {
+	if (ref_is_hidden(path))
+		return;
+
 	if (sent_capabilities)
 		packet_write(1, "%s %s\n", sha1_to_hex(sha1), path);
 	else
-		packet_write(1, "%s %s%c%s%s\n",
+		packet_write(1, "%s %s%c%s%s agent=%s\n",
 			     sha1_to_hex(sha1), path, 0,
-			     " report-status delete-refs side-band-64k",
-			     prefer_ofs_delta ? " ofs-delta" : "");
+			     " report-status delete-refs side-band-64k quiet",
+			     prefer_ofs_delta ? " ofs-delta" : "",
+			     git_user_agent_sanitized());
 	sent_capabilities = 1;
+}
+
+static int show_ref_cb(const char *path, const unsigned char *sha1, int flag, void *unused)
+{
+	path = strip_namespace(path);
+	/*
+	 * Advertise refs outside our current namespace as ".have"
+	 * refs, so that the client can use them to minimize data
+	 * transfer but will otherwise ignore them. This happens to
+	 * cover ".have" that are thrown in by add_one_alternate_ref()
+	 * to mark histories that are complete in our alternates as
+	 * well.
+	 */
+	if (!path)
+		path = ".have";
+	show_ref(path, sha1);
 	return 0;
+}
+
+static void show_one_alternate_sha1(const unsigned char sha1[20], void *unused)
+{
+	show_ref(".have", sha1);
+}
+
+static void collect_one_alternate_ref(const struct ref *ref, void *data)
+{
+	struct sha1_array *sa = data;
+	sha1_array_append(sa, ref->old_sha1);
 }
 
 static void write_head_info(void)
 {
-	for_each_ref(show_ref, NULL);
+	struct sha1_array sa = SHA1_ARRAY_INIT;
+	for_each_alternate_ref(collect_one_alternate_ref, &sa);
+	sha1_array_for_each_unique(&sa, show_one_alternate_sha1, NULL);
+	sha1_array_clear(&sa);
+	for_each_ref(show_ref_cb, NULL);
 	if (!sent_capabilities)
-		show_ref("capabilities^{}", null_sha1, 0, NULL);
+		show_ref("capabilities^{}", null_sha1);
 
+	/* EOF */
+	packet_flush(1);
 }
 
 struct command {
 	struct command *next;
 	const char *error_string;
-	unsigned int skip_update;
+	unsigned int skip_update:1,
+		     did_not_exist:1;
 	unsigned char old_sha1[20];
 	unsigned char new_sha1[20];
 	char ref_name[FLEX_ARRAY]; /* more */
 };
-
-static const char pre_receive_hook[] = "hooks/pre-receive";
-static const char post_receive_hook[] = "hooks/post-receive";
 
 static void rp_error(const char *err, ...) __attribute__((format (printf, 1, 2)));
 static void rp_warning(const char *err, ...) __attribute__((format (printf, 1, 2)));
@@ -188,24 +241,18 @@ static int copy_to_sideband(int in, int out, void *arg)
 	return 0;
 }
 
-static int run_receive_hook(struct command *commands, const char *hook_name)
+typedef int (*feed_fn)(void *, const char **, size_t *);
+static int run_and_feed_hook(const char *hook_name, feed_fn feed, void *feed_state)
 {
-	static char buf[sizeof(commands->old_sha1) * 2 + PATH_MAX + 4];
-	struct command *cmd;
 	struct child_process proc;
 	struct async muxer;
 	const char *argv[2];
-	int have_input = 0, code;
+	int code;
 
-	for (cmd = commands; !have_input && cmd; cmd = cmd->next) {
-		if (!cmd->error_string)
-			have_input = 1;
-	}
-
-	if (!have_input || access(hook_name, X_OK) < 0)
+	argv[0] = find_hook(hook_name);
+	if (!argv[0])
 		return 0;
 
-	argv[0] = hook_name;
 	argv[1] = NULL;
 
 	memset(&proc, 0, sizeof(proc));
@@ -230,15 +277,13 @@ static int run_receive_hook(struct command *commands, const char *hook_name)
 		return code;
 	}
 
-	for (cmd = commands; cmd; cmd = cmd->next) {
-		if (!cmd->error_string) {
-			size_t n = snprintf(buf, sizeof(buf), "%s %s %s\n",
-				sha1_to_hex(cmd->old_sha1),
-				sha1_to_hex(cmd->new_sha1),
-				cmd->ref_name);
-			if (write_in_full(proc.in, buf, n) != n)
-				break;
-		}
+	while (1) {
+		const char *buf;
+		size_t n;
+		if (feed(feed_state, &buf, &n))
+			break;
+		if (write_in_full(proc.in, buf, n) != n)
+			break;
 	}
 	close(proc.in);
 	if (use_sideband)
@@ -246,17 +291,61 @@ static int run_receive_hook(struct command *commands, const char *hook_name)
 	return finish_command(&proc);
 }
 
+struct receive_hook_feed_state {
+	struct command *cmd;
+	int skip_broken;
+	struct strbuf buf;
+};
+
+static int feed_receive_hook(void *state_, const char **bufp, size_t *sizep)
+{
+	struct receive_hook_feed_state *state = state_;
+	struct command *cmd = state->cmd;
+
+	while (cmd &&
+	       state->skip_broken && (cmd->error_string || cmd->did_not_exist))
+		cmd = cmd->next;
+	if (!cmd)
+		return -1; /* EOF */
+	strbuf_reset(&state->buf);
+	strbuf_addf(&state->buf, "%s %s %s\n",
+		    sha1_to_hex(cmd->old_sha1), sha1_to_hex(cmd->new_sha1),
+		    cmd->ref_name);
+	state->cmd = cmd->next;
+	if (bufp) {
+		*bufp = state->buf.buf;
+		*sizep = state->buf.len;
+	}
+	return 0;
+}
+
+static int run_receive_hook(struct command *commands, const char *hook_name,
+			    int skip_broken)
+{
+	struct receive_hook_feed_state state;
+	int status;
+
+	strbuf_init(&state.buf, 0);
+	state.cmd = commands;
+	state.skip_broken = skip_broken;
+	if (feed_receive_hook(&state, NULL, NULL))
+		return 0;
+	state.cmd = commands;
+	status = run_and_feed_hook(hook_name, feed_receive_hook, &state);
+	strbuf_release(&state.buf);
+	return status;
+}
+
 static int run_update_hook(struct command *cmd)
 {
-	static const char update_hook[] = "hooks/update";
 	const char *argv[5];
 	struct child_process proc;
 	int code;
 
-	if (access(update_hook, X_OK) < 0)
+	argv[0] = find_hook("update");
+	if (!argv[0])
 		return 0;
 
-	argv[0] = update_hook;
 	argv[1] = cmd->ref_name;
 	argv[2] = sha1_to_hex(cmd->old_sha1);
 	argv[3] = sha1_to_hex(cmd->new_sha1);
@@ -332,17 +421,22 @@ static void refuse_unconfigured_deny_delete_current(void)
 static const char *update(struct command *cmd)
 {
 	const char *name = cmd->ref_name;
+	struct strbuf namespaced_name_buf = STRBUF_INIT;
+	const char *namespaced_name;
 	unsigned char *old_sha1 = cmd->old_sha1;
 	unsigned char *new_sha1 = cmd->new_sha1;
 	struct ref_lock *lock;
 
 	/* only refs/... are allowed */
-	if (prefixcmp(name, "refs/") || check_ref_format(name + 5)) {
+	if (prefixcmp(name, "refs/") || check_refname_format(name + 5, 0)) {
 		rp_error("refusing to create funny ref '%s' remotely", name);
 		return "funny refname";
 	}
 
-	if (is_ref_checked_out(name)) {
+	strbuf_addf(&namespaced_name_buf, "%s%s", get_git_namespace(), name);
+	namespaced_name = strbuf_detach(&namespaced_name_buf, NULL);
+
+	if (is_ref_checked_out(namespaced_name)) {
 		switch (deny_current_branch) {
 		case DENY_IGNORE:
 			break;
@@ -370,7 +464,7 @@ static const char *update(struct command *cmd)
 			return "deletion prohibited";
 		}
 
-		if (!strcmp(name, head_name)) {
+		if (!strcmp(namespaced_name, head_name)) {
 			switch (deny_delete_current) {
 			case DENY_IGNORE:
 				break;
@@ -392,7 +486,6 @@ static const char *update(struct command *cmd)
 	    !prefixcmp(name, "refs/heads/")) {
 		struct object *old_object, *new_object;
 		struct commit *old_commit, *new_commit;
-		struct commit_list *bases, *ent;
 
 		old_object = parse_object(old_sha1);
 		new_object = parse_object(new_sha1);
@@ -405,12 +498,7 @@ static const char *update(struct command *cmd)
 		}
 		old_commit = (struct commit *)old_object;
 		new_commit = (struct commit *)new_object;
-		bases = get_merge_bases(old_commit, new_commit, 1);
-		for (ent = bases; ent; ent = ent->next)
-			if (!hashcmp(old_sha1, ent->item->object.sha1))
-				break;
-		free_commit_list(bases);
-		if (!ent) {
+		if (!in_merge_bases(old_commit, new_commit)) {
 			rp_error("denying non-fast-forward %s"
 				 " (you should pull first)", name);
 			return "non-fast-forward";
@@ -423,17 +511,23 @@ static const char *update(struct command *cmd)
 
 	if (is_null_sha1(new_sha1)) {
 		if (!parse_object(old_sha1)) {
-			rp_warning("Allowing deletion of corrupt ref.");
 			old_sha1 = NULL;
+			if (ref_exists(name)) {
+				rp_warning("Allowing deletion of corrupt ref.");
+			} else {
+				rp_warning("Deleting a non-existent ref.");
+				cmd->did_not_exist = 1;
+			}
 		}
-		if (delete_ref(name, old_sha1, 0)) {
+		if (delete_ref(namespaced_name, old_sha1, 0)) {
 			rp_error("failed to delete %s", name);
 			return "failed to delete";
 		}
 		return NULL; /* good */
 	}
 	else {
-		lock = lock_any_ref_for_update(name, old_sha1, 0);
+		lock = lock_any_ref_for_update(namespaced_name, old_sha1,
+					       0, NULL);
 		if (!lock) {
 			rp_error("failed to lock %s", name);
 			return "failed to lock";
@@ -445,28 +539,29 @@ static const char *update(struct command *cmd)
 	}
 }
 
-static char update_post_hook[] = "hooks/post-update";
-
 static void run_update_post_hook(struct command *commands)
 {
 	struct command *cmd;
 	int argc;
 	const char **argv;
 	struct child_process proc;
+	char *hook;
 
+	hook = find_hook("post-update");
 	for (argc = 0, cmd = commands; cmd; cmd = cmd->next) {
-		if (cmd->error_string)
+		if (cmd->error_string || cmd->did_not_exist)
 			continue;
 		argc++;
 	}
-	if (!argc || access(update_post_hook, X_OK) < 0)
+	if (!argc || !hook)
 		return;
+
 	argv = xmalloc(sizeof(*argv) * (2 + argc));
-	argv[0] = update_post_hook;
+	argv[0] = hook;
 
 	for (argc = 1, cmd = commands; cmd; cmd = cmd->next) {
 		char *p;
-		if (cmd->error_string)
+		if (cmd->error_string || cmd->did_not_exist)
 			continue;
 		p = xmalloc(strlen(cmd->ref_name) + 1);
 		strcpy(p, cmd->ref_name);
@@ -490,16 +585,28 @@ static void run_update_post_hook(struct command *commands)
 
 static void check_aliased_update(struct command *cmd, struct string_list *list)
 {
+	struct strbuf buf = STRBUF_INIT;
+	const char *dst_name;
 	struct string_list_item *item;
 	struct command *dst_cmd;
 	unsigned char sha1[20];
 	char cmd_oldh[41], cmd_newh[41], dst_oldh[41], dst_newh[41];
 	int flag;
 
-	const char *dst_name = resolve_ref(cmd->ref_name, sha1, 0, &flag);
+	strbuf_addf(&buf, "%s%s", get_git_namespace(), cmd->ref_name);
+	dst_name = resolve_ref_unsafe(buf.buf, sha1, 0, &flag);
+	strbuf_release(&buf);
 
 	if (!(flag & REF_ISSYMREF))
 		return;
+
+	dst_name = strip_namespace(dst_name);
+	if (!dst_name) {
+		rp_error("refusing update to broken symref '%s'", cmd->ref_name);
+		cmd->skip_update = 1;
+		cmd->error_string = "broken symref";
+		return;
+	}
 
 	if ((item = string_list_lookup(list, dst_name)) == NULL)
 		return;
@@ -539,10 +646,68 @@ static void check_aliased_updates(struct command *commands)
 	}
 	sort_string_list(&ref_list);
 
-	for (cmd = commands; cmd; cmd = cmd->next)
-		check_aliased_update(cmd, &ref_list);
+	for (cmd = commands; cmd; cmd = cmd->next) {
+		if (!cmd->error_string)
+			check_aliased_update(cmd, &ref_list);
+	}
 
 	string_list_clear(&ref_list, 0);
+}
+
+static int command_singleton_iterator(void *cb_data, unsigned char sha1[20])
+{
+	struct command **cmd_list = cb_data;
+	struct command *cmd = *cmd_list;
+
+	if (!cmd || is_null_sha1(cmd->new_sha1))
+		return -1; /* end of list */
+	*cmd_list = NULL; /* this returns only one */
+	hashcpy(sha1, cmd->new_sha1);
+	return 0;
+}
+
+static void set_connectivity_errors(struct command *commands)
+{
+	struct command *cmd;
+
+	for (cmd = commands; cmd; cmd = cmd->next) {
+		struct command *singleton = cmd;
+		if (!check_everything_connected(command_singleton_iterator,
+						0, &singleton))
+			continue;
+		cmd->error_string = "missing necessary objects";
+	}
+}
+
+static int iterate_receive_command_list(void *cb_data, unsigned char sha1[20])
+{
+	struct command **cmd_list = cb_data;
+	struct command *cmd = *cmd_list;
+
+	while (cmd) {
+		if (!is_null_sha1(cmd->new_sha1)) {
+			hashcpy(sha1, cmd->new_sha1);
+			*cmd_list = cmd->next;
+			return 0;
+		}
+		cmd = cmd->next;
+	}
+	*cmd_list = NULL;
+	return -1; /* end of list */
+}
+
+static void reject_updates_to_hidden(struct command *commands)
+{
+	struct command *cmd;
+
+	for (cmd = commands; cmd; cmd = cmd->next) {
+		if (cmd->error_string || !ref_is_hidden(cmd->ref_name))
+			continue;
+		if (is_null_sha1(cmd->new_sha1))
+			cmd->error_string = "deny deleting a hidden ref";
+		else
+			cmd->error_string = "deny updating a hidden ref";
+	}
 }
 
 static void execute_commands(struct command *commands, const char *unpacker_error)
@@ -552,23 +717,39 @@ static void execute_commands(struct command *commands, const char *unpacker_erro
 
 	if (unpacker_error) {
 		for (cmd = commands; cmd; cmd = cmd->next)
-			cmd->error_string = "n/a (unpacker error)";
+			cmd->error_string = "unpacker error";
 		return;
 	}
 
-	if (run_receive_hook(commands, pre_receive_hook)) {
-		for (cmd = commands; cmd; cmd = cmd->next)
-			cmd->error_string = "pre-receive hook declined";
+	cmd = commands;
+	if (check_everything_connected(iterate_receive_command_list,
+				       0, &cmd))
+		set_connectivity_errors(commands);
+
+	reject_updates_to_hidden(commands);
+
+	if (run_receive_hook(commands, "pre-receive", 0)) {
+		for (cmd = commands; cmd; cmd = cmd->next) {
+			if (!cmd->error_string)
+				cmd->error_string = "pre-receive hook declined";
+		}
 		return;
 	}
 
 	check_aliased_updates(commands);
 
-	head_name = resolve_ref("HEAD", sha1, 0, NULL);
+	free(head_name_to_free);
+	head_name = head_name_to_free = resolve_refdup("HEAD", sha1, 0, NULL);
 
-	for (cmd = commands; cmd; cmd = cmd->next)
-		if (!cmd->skip_update)
-			cmd->error_string = update(cmd);
+	for (cmd = commands; cmd; cmd = cmd->next) {
+		if (cmd->error_string)
+			continue;
+
+		if (cmd->skip_update)
+			continue;
+
+		cmd->error_string = update(cmd);
+	}
 }
 
 static struct command *read_head_info(void)
@@ -576,17 +757,15 @@ static struct command *read_head_info(void)
 	struct command *commands = NULL;
 	struct command **p = &commands;
 	for (;;) {
-		static char line[1000];
+		char *line;
 		unsigned char old_sha1[20], new_sha1[20];
 		struct command *cmd;
 		char *refname;
 		int len, reflen;
 
-		len = packet_read_line(0, line, sizeof(line));
-		if (!len)
+		line = packet_read_line(0, &len);
+		if (!line)
 			break;
-		if (line[len-1] == '\n')
-			line[--len] = 0;
 		if (len < 83 ||
 		    line[40] != ' ' ||
 		    line[81] != ' ' ||
@@ -598,10 +777,13 @@ static struct command *read_head_info(void)
 		refname = line + 82;
 		reflen = strlen(refname);
 		if (reflen + 82 < len) {
-			if (strstr(refname + reflen + 1, "report-status"))
+			const char *feature_list = refname + reflen + 1;
+			if (parse_feature_request(feature_list, "report-status"))
 				report_status = 1;
-			if (strstr(refname + reflen + 1, "side-band-64k"))
+			if (parse_feature_request(feature_list, "side-band-64k"))
 				use_sideband = LARGE_PACKET_MAX;
+			if (parse_feature_request(feature_list, "quiet"))
+				quiet = 1;
 		}
 		cmd = xcalloc(1, sizeof(struct command) + len - 80);
 		hashcpy(cmd->old_sha1, old_sha1);
@@ -635,28 +817,44 @@ static const char *parse_pack_header(struct pack_header *hdr)
 
 static const char *pack_lockfile;
 
-static const char *unpack(void)
+static const char *unpack(int err_fd)
 {
 	struct pack_header hdr;
 	const char *hdr_err;
 	char hdr_arg[38];
+	int fsck_objects = (receive_fsck_objects >= 0
+			    ? receive_fsck_objects
+			    : transfer_fsck_objects >= 0
+			    ? transfer_fsck_objects
+			    : 0);
 
 	hdr_err = parse_pack_header(&hdr);
-	if (hdr_err)
+	if (hdr_err) {
+		if (err_fd > 0)
+			close(err_fd);
 		return hdr_err;
+	}
 	snprintf(hdr_arg, sizeof(hdr_arg),
 			"--pack_header=%"PRIu32",%"PRIu32,
 			ntohl(hdr.hdr_version), ntohl(hdr.hdr_entries));
 
 	if (ntohl(hdr.hdr_entries) < unpack_limit) {
 		int code, i = 0;
-		const char *unpacker[4];
+		struct child_process child;
+		const char *unpacker[5];
 		unpacker[i++] = "unpack-objects";
-		if (receive_fsck_objects)
+		if (quiet)
+			unpacker[i++] = "-q";
+		if (fsck_objects)
 			unpacker[i++] = "--strict";
 		unpacker[i++] = hdr_arg;
 		unpacker[i++] = NULL;
-		code = run_command_v_opt(unpacker, RUN_GIT_CMD);
+		memset(&child, 0, sizeof(child));
+		child.argv = unpacker;
+		child.no_stdout = 1;
+		child.err = err_fd;
+		child.git_cmd = 1;
+		code = run_command(&child);
 		if (!code)
 			return NULL;
 		return "unpack-objects abnormal exit";
@@ -672,15 +870,17 @@ static const char *unpack(void)
 
 		keeper[i++] = "index-pack";
 		keeper[i++] = "--stdin";
-		if (receive_fsck_objects)
+		if (fsck_objects)
 			keeper[i++] = "--strict";
-		keeper[i++] = "--fix-thin";
+		if (fix_thin)
+			keeper[i++] = "--fix-thin";
 		keeper[i++] = hdr_arg;
 		keeper[i++] = keep_arg;
 		keeper[i++] = NULL;
 		memset(&ip, 0, sizeof(ip));
 		ip.argv = keeper;
 		ip.out = -1;
+		ip.err = err_fd;
 		ip.git_cmd = 1;
 		status = start_command(&ip);
 		if (status) {
@@ -695,6 +895,26 @@ static const char *unpack(void)
 		}
 		return "index-pack abnormal exit";
 	}
+}
+
+static const char *unpack_with_sideband(void)
+{
+	struct async muxer;
+	const char *ret;
+
+	if (!use_sideband)
+		return unpack(0);
+
+	memset(&muxer, 0, sizeof(muxer));
+	muxer.proc = copy_to_sideband;
+	muxer.in = -1;
+	if (start_async(&muxer))
+		return NULL;
+
+	ret = unpack(muxer.in);
+
+	finish_async(&muxer);
+	return ret;
 }
 
 static void report(struct command *commands, const char *unpack_status)
@@ -717,7 +937,7 @@ static void report(struct command *commands, const char *unpack_status)
 	if (use_sideband)
 		send_sideband(1, 1, buf.buf, buf.len, use_sideband);
 	else
-		safe_write(1, buf.buf, buf.len);
+		write_or_die(1, buf.buf, buf.len);
 	strbuf_release(&buf);
 }
 
@@ -731,45 +951,6 @@ static int delete_only(struct command *commands)
 	return 1;
 }
 
-static int add_refs_from_alternate(struct alternate_object_database *e, void *unused)
-{
-	char *other;
-	size_t len;
-	struct remote *remote;
-	struct transport *transport;
-	const struct ref *extra;
-
-	e->name[-1] = '\0';
-	other = xstrdup(make_absolute_path(e->base));
-	e->name[-1] = '/';
-	len = strlen(other);
-
-	while (other[len-1] == '/')
-		other[--len] = '\0';
-	if (len < 8 || memcmp(other + len - 8, "/objects", 8))
-		return 0;
-	/* Is this a git repository with refs? */
-	memcpy(other + len - 8, "/refs", 6);
-	if (!is_directory(other))
-		return 0;
-	other[len - 8] = '\0';
-	remote = remote_get(other);
-	transport = transport_get(remote, other);
-	for (extra = transport_get_remote_refs(transport);
-	     extra;
-	     extra = extra->next) {
-		add_extra_ref(".have", extra->old_sha1, 0);
-	}
-	transport_disconnect(transport);
-	free(other);
-	return 0;
-}
-
-static void add_alternate_refs(void)
-{
-	foreach_alt_odb(add_refs_from_alternate, NULL);
-}
-
 int cmd_receive_pack(int argc, const char **argv, const char *prefix)
 {
 	int advertise_refs = 0;
@@ -778,17 +959,28 @@ int cmd_receive_pack(int argc, const char **argv, const char *prefix)
 	char *dir = NULL;
 	struct command *commands;
 
+	packet_trace_identity("receive-pack");
+
 	argv++;
 	for (i = 1; i < argc; i++) {
 		const char *arg = *argv++;
 
 		if (*arg == '-') {
+			if (!strcmp(arg, "--quiet")) {
+				quiet = 1;
+				continue;
+			}
+
 			if (!strcmp(arg, "--advertise-refs")) {
 				advertise_refs = 1;
 				continue;
 			}
 			if (!strcmp(arg, "--stateless-rpc")) {
 				stateless_rpc = 1;
+				continue;
+			}
+			if (!strcmp(arg, "--reject-thin-pack-for-testing")) {
+				fix_thin = 0;
 				continue;
 			}
 
@@ -817,12 +1009,7 @@ int cmd_receive_pack(int argc, const char **argv, const char *prefix)
 		unpack_limit = receive_unpack_limit;
 
 	if (advertise_refs || !stateless_rpc) {
-		add_alternate_refs();
 		write_head_info();
-		clear_extra_refs();
-
-		/* EOF */
-		packet_flush(1);
 	}
 	if (advertise_refs)
 		return 0;
@@ -831,19 +1018,20 @@ int cmd_receive_pack(int argc, const char **argv, const char *prefix)
 		const char *unpack_status = NULL;
 
 		if (!delete_only(commands))
-			unpack_status = unpack();
+			unpack_status = unpack_with_sideband();
 		execute_commands(commands, unpack_status);
 		if (pack_lockfile)
 			unlink_or_warn(pack_lockfile);
 		if (report_status)
 			report(commands, unpack_status);
-		run_receive_hook(commands, post_receive_hook);
+		run_receive_hook(commands, "post-receive", 1);
 		run_update_post_hook(commands);
 		if (auto_gc) {
 			const char *argv_gc_auto[] = {
 				"gc", "--auto", "--quiet", NULL,
 			};
-			run_command_v_opt(argv_gc_auto, RUN_GIT_CMD);
+			int opt = RUN_GIT_CMD | RUN_COMMAND_STDOUT_TO_STDERR;
+			run_command_v_opt(argv_gc_auto, opt);
 		}
 		if (auto_update_server_info)
 			update_server_info(0);

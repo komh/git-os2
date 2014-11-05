@@ -24,7 +24,7 @@ H sub/2
 EOF
 
 NULL_SHA1=e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
-ZERO_SHA0=0000000000000000000000000000000000000000
+
 setup_absent() {
 	test -f 1 && rm 1
 	git update-index --remove 1 &&
@@ -91,12 +91,12 @@ test_expect_success 'update-index --remove' '
 	test_cmp expected 1
 '
 
-test_expect_success 'ls-files --delete' '
+test_expect_success 'ls-files --deleted' '
 	setup_absent &&
 	test -z "$(git ls-files -d)"
 '
 
-test_expect_success 'ls-files --delete' '
+test_expect_success 'ls-files --deleted' '
 	setup_dirty &&
 	test -z "$(git ls-files -d)"
 '
@@ -120,7 +120,7 @@ test_expect_success 'grep with skip-worktree file' '
 	test "$(git grep --no-ext-grep test)" = "1:test"
 '
 
-echo ":000000 100644 $ZERO_SHA0 $NULL_SHA1 A	1" > expected
+echo ":000000 100644 $_z40 $NULL_SHA1 A	1" > expected
 test_expect_success 'diff-index does not examine skip-worktree absent entries' '
 	setup_absent &&
 	git diff-index HEAD -- 1 > result &&

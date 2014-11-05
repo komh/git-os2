@@ -8,6 +8,7 @@ test_description='git tag
 Tests for operations with tags.'
 
 . ./test-lib.sh
+. "$TEST_DIRECTORY"/lib-gpg.sh
 
 # creating and listing lightweight tags:
 
@@ -102,6 +103,18 @@ test_expect_success 'creating a tag using HEAD directly should succeed' '
 	git tag myhead HEAD &&
 	tag_exists myhead
 '
+
+test_expect_success '--force can create a tag with the name of one existing' '
+	tag_exists mytag &&
+	git tag --force mytag &&
+	tag_exists mytag'
+
+test_expect_success '--force is moot with a non-existing tag name' '
+	git tag newtag >expect &&
+	git tag --force forcetag >actual &&
+	test_cmp expect actual
+'
+git tag -d newtag forcetag
 
 # deleting tags:
 
@@ -255,6 +268,55 @@ test_expect_success \
 	'listing tags using v* should print only those having v' '
 	git tag -l "v*" > actual &&
 	test_cmp expect actual
+'
+
+test_expect_success 'tag -l can accept multiple patterns' '
+	git tag -l "v1*" "v0*" >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'listing tags in column' '
+	COLUMNS=40 git tag -l --column=row >actual &&
+	cat >expected <<\EOF &&
+a1      aa1     cba     t210    t211
+v0.2.1  v1.0    v1.0.1  v1.1.3
+EOF
+	test_cmp expected actual
+'
+
+test_expect_success 'listing tags in column with column.*' '
+	git config column.tag row &&
+	git config column.ui dense &&
+	COLUMNS=40 git tag -l >actual &&
+	git config --unset column.ui &&
+	git config --unset column.tag &&
+	cat >expected <<\EOF &&
+a1      aa1   cba     t210    t211
+v0.2.1  v1.0  v1.0.1  v1.1.3
+EOF
+	test_cmp expected actual
+'
+
+test_expect_success 'listing tag with -n --column should fail' '
+	test_must_fail git tag --column -n
+'
+
+test_expect_success 'listing tags -n in column with column.ui ignored' '
+	git config column.ui "row dense" &&
+	COLUMNS=40 git tag -l -n >actual &&
+	git config --unset column.ui &&
+	cat >expected <<\EOF &&
+a1              Foo
+aa1             Foo
+cba             Foo
+t210            Foo
+t211            Foo
+v0.2.1          Foo
+v1.0            Foo
+v1.0.1          Foo
+v1.1.3          Foo
+EOF
+	test_cmp expected actual
 '
 
 # creating and verifying lightweight tags:
@@ -580,23 +642,18 @@ test_expect_success \
 	test_cmp expect actual
 '
 
-# subsequent tests require gpg; check if it is available
-gpg --version >/dev/null 2>/dev/null
-if [ $? -eq 127 ]; then
-	say "# gpg not found - skipping tag signing and verification tests"
-else
-	# As said here: http://www.gnupg.org/documentation/faqs.html#q6.19
-	# the gpg version 1.0.6 didn't parse trust packets correctly, so for
-	# that version, creation of signed tags using the generated key fails.
-	case "$(gpg --version)" in
-	'gpg (GnuPG) 1.0.6'*)
-		say "Skipping signed tag tests, because a bug in 1.0.6 version"
-		;;
-	*)
-		test_set_prereq GPG
-		;;
-	esac
-fi
+test_expect_success 'annotations for blobs are empty' '
+	blob=$(git hash-object -w --stdin <<-\EOF
+	Blob paragraph 1.
+
+	Blob paragraph 2.
+	EOF
+	) &&
+	git tag tag-blob $blob &&
+	echo "tag-blob        " >expect &&
+	git tag -n1 -l tag-blob >actual &&
+	test_cmp expect actual
+'
 
 # trying to verify annotated non-signed tags:
 
@@ -619,16 +676,6 @@ test_expect_success GPG \
 '
 
 # creating and verifying signed tags:
-
-# key generation info: gpg --homedir t/t7004 --gen-key
-# Type DSA and Elgamal, size 2048 bits, no expiration date.
-# Name and email: C O Mitter <committer@example.com>
-# No password given, to enable non-interactive operation.
-
-cp -R "$TEST_DIRECTORY"/t7004 ./gpghome
-chmod 0700 gpghome
-GNUPGHOME="$(pwd)/gpghome"
-export GNUPGHOME
 
 get_tag_header signed-tag $commit commit $time >expect
 echo 'A signed tag message' >>expect
@@ -1030,6 +1077,75 @@ test_expect_success GPG \
 	test_cmp expect actual
 '
 
+# usage with rfc1991 signatures
+get_tag_header rfc1991-signed-tag $commit commit $time >expect
+echo "RFC1991 signed tag" >>expect
+echo '-----BEGIN PGP MESSAGE-----' >>expect
+test_expect_success GPG \
+	'creating a signed tag with rfc1991' '
+	echo "rfc1991" >gpghome/gpg.conf &&
+	git tag -s -m "RFC1991 signed tag" rfc1991-signed-tag $commit &&
+	get_tag_msg rfc1991-signed-tag >actual &&
+	test_cmp expect actual
+'
+
+cat >fakeeditor <<'EOF'
+#!/bin/sh
+cp "$1" actual
+EOF
+chmod +x fakeeditor
+
+test_expect_success GPG \
+	'reediting a signed tag body omits signature' '
+	echo "rfc1991" >gpghome/gpg.conf &&
+	echo "RFC1991 signed tag" >expect &&
+	GIT_EDITOR=./fakeeditor git tag -f -s rfc1991-signed-tag $commit &&
+	test_cmp expect actual
+'
+
+test_expect_success GPG \
+	'verifying rfc1991 signature' '
+	echo "rfc1991" >gpghome/gpg.conf &&
+	git tag -v rfc1991-signed-tag
+'
+
+test_expect_success GPG \
+	'list tag with rfc1991 signature' '
+	echo "rfc1991" >gpghome/gpg.conf &&
+	echo "rfc1991-signed-tag RFC1991 signed tag" >expect &&
+	git tag -l -n1 rfc1991-signed-tag >actual &&
+	test_cmp expect actual &&
+	git tag -l -n2 rfc1991-signed-tag >actual &&
+	test_cmp expect actual &&
+	git tag -l -n999 rfc1991-signed-tag >actual &&
+	test_cmp expect actual
+'
+
+rm -f gpghome/gpg.conf
+
+test_expect_success GPG \
+	'verifying rfc1991 signature without --rfc1991' '
+	git tag -v rfc1991-signed-tag
+'
+
+test_expect_success GPG \
+	'list tag with rfc1991 signature without --rfc1991' '
+	echo "rfc1991-signed-tag RFC1991 signed tag" >expect &&
+	git tag -l -n1 rfc1991-signed-tag >actual &&
+	test_cmp expect actual &&
+	git tag -l -n2 rfc1991-signed-tag >actual &&
+	test_cmp expect actual &&
+	git tag -l -n999 rfc1991-signed-tag >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success GPG \
+	'reediting a signed tag body omits signature' '
+	echo "RFC1991 signed tag" >expect &&
+	GIT_EDITOR=./fakeeditor git tag -f -s rfc1991-signed-tag $commit &&
+	test_cmp expect actual
+'
+
 # try to sign with bad user.signingkey
 git config user.signingkey BobTheMouse
 test_expect_success GPG \
@@ -1051,13 +1167,22 @@ test_expect_success \
 
 test_expect_success \
 	'message in editor has initial comment' '
-	GIT_EDITOR=cat git tag -a initial-comment > actual
+	! (GIT_EDITOR=cat git tag -a initial-comment > actual)
+'
+
+test_expect_success 'message in editor has initial comment: first line' '
 	# check the first line --- should be empty
-	first=$(sed -e 1q <actual) &&
-	test -z "$first" &&
+	echo >first.expect &&
+	sed -e 1q <actual >first.actual &&
+	test_i18ncmp first.expect first.actual
+'
+
+test_expect_success \
+	'message in editor has initial comment: remainder' '
 	# remove commented lines from the remainder -- should be empty
-	rest=$(sed -e 1d -e '/^#/d' <actual) &&
-	test -z "$rest"
+	>rest.expect
+	sed -e 1d -e '/^#/d' <actual >rest.actual &&
+	test_cmp rest.expect rest.actual
 '
 
 get_tag_header reuse $commit commit $time >expect
@@ -1097,7 +1222,7 @@ hash1=$(git rev-parse HEAD)
 test_expect_success 'creating second commit and tag' '
 	echo foo-2.0 >foo &&
 	git add foo &&
-	git commit -m second
+	git commit -m second &&
 	git tag v2.0
 '
 
@@ -1122,18 +1247,18 @@ v2.0
 EOF
 
 test_expect_success 'checking that first commit is in all tags (hash)' "
-	git tag -l --contains $hash1 v* >actual
+	git tag -l --contains $hash1 v* >actual &&
 	test_cmp expected actual
 "
 
 # other ways of specifying the commit
 test_expect_success 'checking that first commit is in all tags (tag)' "
-	git tag -l --contains v1.0 v* >actual
+	git tag -l --contains v1.0 v* >actual &&
 	test_cmp expected actual
 "
 
 test_expect_success 'checking that first commit is in all tags (relative)' "
-	git tag -l --contains HEAD~2 v* >actual
+	git tag -l --contains HEAD~2 v* >actual &&
 	test_cmp expected actual
 "
 
@@ -1142,7 +1267,7 @@ v2.0
 EOF
 
 test_expect_success 'checking that second commit only has one tag' "
-	git tag -l --contains $hash2 v* >actual
+	git tag -l --contains $hash2 v* >actual &&
 	test_cmp expected actual
 "
 
@@ -1151,7 +1276,7 @@ cat > expected <<EOF
 EOF
 
 test_expect_success 'checking that third commit has no tags' "
-	git tag -l --contains $hash3 v* >actual
+	git tag -l --contains $hash3 v* >actual &&
 	test_cmp expected actual
 "
 
@@ -1161,7 +1286,7 @@ test_expect_success 'creating simple branch' '
 	git branch stable v2.0 &&
         git checkout stable &&
 	echo foo-3.0 > foo &&
-	git commit foo -m fourth
+	git commit foo -m fourth &&
 	git tag v3.0
 '
 
@@ -1172,7 +1297,7 @@ v3.0
 EOF
 
 test_expect_success 'checking that branch head only has one tag' "
-	git tag -l --contains $hash4 v* >actual
+	git tag -l --contains $hash4 v* >actual &&
 	test_cmp expected actual
 "
 
@@ -1186,7 +1311,7 @@ v4.0
 EOF
 
 test_expect_success 'checking that original branch head has one tag now' "
-	git tag -l --contains $hash3 v* >actual
+	git tag -l --contains $hash3 v* >actual &&
 	test_cmp expected actual
 "
 
@@ -1201,19 +1326,58 @@ v4.0
 EOF
 
 test_expect_success 'checking that initial commit is in all tags' "
-	git tag -l --contains $hash1 v* >actual
+	git tag -l --contains $hash1 v* >actual &&
 	test_cmp expected actual
 "
 
 # mixing modes and options:
 
 test_expect_success 'mixing incompatibles modes and options is forbidden' '
-	test_must_fail git tag -a
-	test_must_fail git tag -l -v
-	test_must_fail git tag -n 100
-	test_must_fail git tag -l -m msg
-	test_must_fail git tag -l -F some file
+	test_must_fail git tag -a &&
+	test_must_fail git tag -l -v &&
+	test_must_fail git tag -n 100 &&
+	test_must_fail git tag -l -m msg &&
+	test_must_fail git tag -l -F some file &&
 	test_must_fail git tag -v -s
+'
+
+# check points-at
+
+test_expect_success '--points-at cannot be used in non-list mode' '
+	test_must_fail git tag --points-at=v4.0 foo
+'
+
+test_expect_success '--points-at finds lightweight tags' '
+	echo v4.0 >expect &&
+	git tag --points-at v4.0 >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success '--points-at finds annotated tags of commits' '
+	git tag -m "v4.0, annotated" annotated-v4.0 v4.0 &&
+	echo annotated-v4.0 >expect &&
+	git tag -l --points-at v4.0 "annotated*" >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success '--points-at finds annotated tags of tags' '
+	git tag -m "describing the v4.0 tag object" \
+		annotated-again-v4.0 annotated-v4.0 &&
+	cat >expect <<-\EOF &&
+	annotated-again-v4.0
+	annotated-v4.0
+	EOF
+	git tag --points-at=annotated-v4.0 >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'multiple --points-at are OR-ed together' '
+	cat >expect <<-\EOF &&
+	v2.0
+	v3.0
+	EOF
+	git tag --points-at=v2.0 --points-at=v3.0 >actual &&
+	test_cmp expect actual
 '
 
 test_done

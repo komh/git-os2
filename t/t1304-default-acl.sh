@@ -14,15 +14,19 @@ umask 077
 # We need an arbitrary other user give permission to using ACLs. root
 # is a good candidate: exists on all unices, and it has permission
 # anyway, so we don't create a security hole running the testsuite.
+test_expect_success 'checking for a working acl setup' '
+	if setfacl -m d:m:rwx -m u:root:rwx . &&
+	   getfacl . | grep user:root:rwx &&
+	   touch should-have-readable-acl &&
+	   getfacl should-have-readable-acl | egrep "mask::?rw-"
+	then
+		test_set_prereq SETFACL
+	fi
+'
 
-setfacl_out="$(setfacl -m u:root:rwx . 2>&1)"
-setfacl_ret=$?
-
-if test $setfacl_ret != 0
+if test -z "$LOGNAME"
 then
-	say "Unable to use setfacl (output: '$setfacl_out'; return code: '$setfacl_ret')"
-else
-	test_set_prereq SETFACL
+	LOGNAME=$USER
 fi
 
 check_perms_and_acl () {

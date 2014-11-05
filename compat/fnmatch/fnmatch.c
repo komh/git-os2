@@ -25,6 +25,7 @@
 # define _GNU_SOURCE	1
 #endif
 
+#include <stddef.h>
 #include <errno.h>
 #include <fnmatch.h>
 #include <ctype.h>
@@ -55,7 +56,8 @@
    program understand `configure --with-gnu-libc' and omit the object files,
    it is simpler to just do this in the source for each such file.  */
 
-#if defined _LIBC || !defined __GNU_LIBRARY__
+#if defined NO_FNMATCH || defined NO_FNMATCH_CASEFOLD || \
+    defined _LIBC || !defined __GNU_LIBRARY__
 
 
 # if defined STDC_HEADERS || !defined isascii
@@ -120,20 +122,24 @@
    whose names are inconsistent.  */
 
 # if !defined _LIBC && !defined getenv
-extern char *getenv ();
+extern char *getenv (const char *name);
 # endif
 
 # ifndef errno
 extern int errno;
 # endif
 
+# ifndef NULL
+#  define NULL 0
+# endif
+
 /* This function doesn't exist on most systems.  */
 
 # if !defined HAVE___STRCHRNUL && !defined _LIBC
 static char *
-__strchrnul (s, c)
-     const char *s;
-     int c;
+__strchrnul (const char *s, int c)
+
+
 {
   char *result = strchr (s, c);
   if (result == NULL)
@@ -155,11 +161,11 @@ static int internal_fnmatch __P ((const char *pattern, const char *string,
      internal_function;
 static int
 internal_function
-internal_fnmatch (pattern, string, no_leading_period, flags)
-     const char *pattern;
-     const char *string;
-     int no_leading_period;
-     int flags;
+internal_fnmatch (const char *pattern, const char *string, int no_leading_period, int flags)
+
+
+
+
 {
   register const char *p = pattern, *n = string;
   register unsigned char c;
@@ -341,7 +347,7 @@ internal_fnmatch (pattern, string, no_leading_period, flags)
 
 		    for (;;)
 		      {
-			if (c1 == CHAR_CLASS_MAX_LENGTH)
+			if (c1 > CHAR_CLASS_MAX_LENGTH)
 			  /* The name is too long and therefore the pattern
 			     is ill-formed.  */
 			  return FNM_NOMATCH;
@@ -477,10 +483,10 @@ internal_fnmatch (pattern, string, no_leading_period, flags)
 
 
 int
-fnmatch (pattern, string, flags)
-     const char *pattern;
-     const char *string;
-     int flags;
+fnmatch (const char *pattern, const char *string, int flags)
+
+
+
 {
   return internal_fnmatch (pattern, string, flags & FNM_PERIOD, flags);
 }

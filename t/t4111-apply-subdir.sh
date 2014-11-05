@@ -86,10 +86,24 @@ test_expect_success 'apply --index from subdir of toplevel' '
 	test_cmp expected sub/dir/file
 '
 
+test_expect_success 'apply half-broken patch from subdir of toplevel' '
+	(
+		cd sub/dir &&
+		test_must_fail git apply <<-EOF
+		--- sub/dir/file
+		+++ sub/dir/file
+		@@ -1,0 +1,0 @@
+		--- file_in_root
+		+++ file_in_root
+		@@ -1,0 +1,0 @@
+		EOF
+	)
+'
+
 test_expect_success 'apply from .git dir' '
 	cp postimage expected &&
 	cp preimage .git/file &&
-	cp preimage .git/objects/file
+	cp preimage .git/objects/file &&
 	(
 		cd .git &&
 		git apply "$patch"
@@ -100,7 +114,7 @@ test_expect_success 'apply from .git dir' '
 test_expect_success 'apply from subdir of .git dir' '
 	cp postimage expected &&
 	cp preimage .git/file &&
-	cp preimage .git/objects/file
+	cp preimage .git/objects/file &&
 	(
 		cd .git/objects &&
 		git apply "$patch"

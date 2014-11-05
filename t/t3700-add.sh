@@ -30,10 +30,9 @@ test_expect_success \
 	 *) echo fail; git ls-files --stage xfoo1; (exit 1);;
 	 esac'
 
-test_expect_success SYMLINKS 'git add: filemode=0 should not get confused by symlink' '
+test_expect_success 'git add: filemode=0 should not get confused by symlink' '
 	rm -f xfoo1 &&
-	ln -s foo xfoo1 &&
-	git add xfoo1 &&
+	test_ln_s_add foo xfoo1 &&
 	case "`git ls-files --stage xfoo1`" in
 	120000" "*xfoo1) echo pass;;
 	*) echo fail; git ls-files --stage xfoo1; (exit 1);;
@@ -51,21 +50,19 @@ test_expect_success \
 	 *) echo fail; git ls-files --stage xfoo2; (exit 1);;
 	 esac'
 
-test_expect_success SYMLINKS 'git add: filemode=0 should not get confused by symlink' '
+test_expect_success 'git add: filemode=0 should not get confused by symlink' '
 	rm -f xfoo2 &&
-	ln -s foo xfoo2 &&
-	git update-index --add xfoo2 &&
+	test_ln_s_add foo xfoo2 &&
 	case "`git ls-files --stage xfoo2`" in
 	120000" "*xfoo2) echo pass;;
 	*) echo fail; git ls-files --stage xfoo2; (exit 1);;
 	esac
 '
 
-test_expect_success SYMLINKS \
+test_expect_success \
 	'git update-index --add: Test that executable bit is not used...' \
 	'git config core.filemode 0 &&
-	 ln -s xfoo2 xfoo3 &&
-	 git update-index --add xfoo3 &&
+	 test_ln_s_add xfoo2 xfoo3 &&	# runs git update-index --add
 	 case "`git ls-files --stage xfoo3`" in
 	 120000" "*xfoo3) echo pass;;
 	 *) echo fail; git ls-files --stage xfoo3; (exit 1);;
@@ -179,6 +176,21 @@ test_expect_success 'git add --refresh' '
 	test -z "`git diff-index HEAD -- foo`"
 '
 
+test_expect_success 'git add --refresh with pathspec' '
+	git reset --hard &&
+	echo >foo && echo >bar && echo >baz &&
+	git add foo bar baz && H=$(git rev-parse :foo) && git rm -f foo &&
+	echo "100644 $H 3	foo" | git update-index --index-info &&
+	test-chmtime -60 bar baz &&
+	>expect &&
+	git add --refresh bar >actual &&
+	test_cmp expect actual &&
+
+	git diff-files --name-only >actual &&
+	! grep bar actual&&
+	grep baz actual
+'
+
 test_expect_success POSIXPERM,SANITY 'git add should fail atomically upon an unreadable file' '
 	git reset --hard &&
 	date >foo1 &&
@@ -268,8 +280,12 @@ test_expect_success 'git add --dry-run of existing changed file' "
 
 test_expect_success 'git add --dry-run of non-existing file' "
 	echo ignored-file >>.gitignore &&
-	test_must_fail git add --dry-run track-this ignored-file >actual 2>&1 &&
-	echo \"fatal: pathspec 'ignored-file' did not match any files\" | test_cmp - actual
+	test_must_fail git add --dry-run track-this ignored-file >actual 2>&1
+"
+
+test_expect_success 'git add --dry-run of an existing file output' "
+	echo \"fatal: pathspec 'ignored-file' did not match any files\" >expect &&
+	test_i18ncmp expect actual
 "
 
 cat >expect.err <<\EOF
@@ -283,9 +299,12 @@ add 'track-this'
 EOF
 
 test_expect_success 'git add --dry-run --ignore-missing of non-existing file' '
-	test_must_fail git add --dry-run --ignore-missing track-this ignored-file >actual.out 2>actual.err &&
-	test_cmp expect.out actual.out &&
-	test_cmp expect.err actual.err
+	test_must_fail git add --dry-run --ignore-missing track-this ignored-file >actual.out 2>actual.err
+'
+
+test_expect_success 'git add --dry-run --ignore-missing of non-existing file output' '
+	test_i18ncmp expect.out actual.out &&
+	test_i18ncmp expect.err actual.err
 '
 
 test_done

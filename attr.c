@@ -1,6 +1,17 @@
+/*
+ * Handle git attributes.  See gitattributes(5) for a description of
+ * the file syntax, and Documentation/technical/api-gitattributes.txt
+ * for a description of the API.
+ *
+ * One basic design decision here is that we are not going to support
+ * an insanely large number of attributes.
+ */
+
 #define NO_THE_INDEX_COMPATIBILITY_MACROS
 #include "cache.h"
+#include "exec_cmd.h"
 #include "attr.h"
+#include "dir.h"
 
 const char git_attr__true[] = "(builtin)true";
 const char git_attr__false[] = "\0(builtin)false";
@@ -10,12 +21,7 @@ static const char git_attr__unknown[] = "(builtin)unknown";
 #define ATTR__UNSET NULL
 #define ATTR__UNKNOWN git_attr__unknown
 
-/*
- * The basic design decision here is that we are not going to have
- * insanely large number of attributes.
- *
- * This is a randomly chosen prime.
- */
+/* This is a randomly chosen prime. */
 #define HASHSIZE 257
 
 #ifndef DEBUG_ATTR
@@ -33,6 +39,11 @@ static int attr_nr;
 static struct git_attr_check *check_all_attr;
 static struct git_attr *(git_attr_hash[HASHSIZE]);
 
+char *git_attr_name(struct git_attr *attr)
+{
+	return attr->name;
+}
+
 static unsigned hash_name(const char *name, int namelen)
 {
 	unsigned val = 0, c;
@@ -47,12 +58,10 @@ static unsigned hash_name(const char *name, int namelen)
 static int invalid_attr_name(const char *name, int namelen)
 {
 	/*
-	 * Attribute name cannot begin with '-' and from
-	 * [-A-Za-z0-9_.].  We'd specifically exclude '=' for now,
-	 * as we might later want to allow non-binary value for
-	 * attributes, e.g. "*.svg	merge=special-merge-program-for-svg"
+	 * Attribute name cannot begin with '-' and must consist of
+	 * characters from [-A-Za-z0-9_.].
 	 */
-	if (*name == '-')
+	if (namelen <= 0 || *name == '-')
 		return -1;
 	while (namelen--) {
 		char ch = *name++;
@@ -100,25 +109,36 @@ struct git_attr *git_attr(const char *name)
 	return git_attr_internal(name, strlen(name));
 }
 
-/*
- * .gitattributes file is one line per record, each of which is
- *
- * (1) glob pattern.
- * (2) whitespace
- * (3) whitespace separated list of attribute names, each of which
- *     could be prefixed with '-' to mean "set to false", '!' to mean
- *     "unset".
- */
-
 /* What does a matched pattern decide? */
 struct attr_state {
 	struct git_attr *attr;
 	const char *setto;
 };
 
+struct pattern {
+	const char *pattern;
+	int patternlen;
+	int nowildcardlen;
+	int flags;		/* EXC_FLAG_* */
+};
+
+/*
+ * One rule, as from a .gitattributes file.
+ *
+ * If is_macro is true, then u.attr is a pointer to the git_attr being
+ * defined.
+ *
+ * If is_macro is false, then u.pattern points at the filename pattern
+ * to which the rule applies.  (The memory pointed to is part of the
+ * memory block allocated for the match_attr instance.)
+ *
+ * In either case, num_attr is the number of attributes affected by
+ * this rule, and state is an array listing them.  The attributes are
+ * listed as they appear in the file (macros unexpanded).
+ */
 struct match_attr {
 	union {
-		char *pattern;
+		struct pattern pat;
 		struct git_attr *attr;
 	} u;
 	char is_macro;
@@ -128,8 +148,15 @@ struct match_attr {
 
 static const char blank[] = " \t\r\n";
 
+/*
+ * Parse a whitespace-delimited attribute state (i.e., "attr",
+ * "-attr", "!attr", or "attr=value") from the string starting at src.
+ * If e is not NULL, write the results to *e.  Return a pointer to the
+ * remainder of the string (with leading whitespace removed), or NULL
+ * if there was an error.
+ */
 static const char *parse_attr(const char *src, int lineno, const char *cp,
-			      int *num_attr, struct match_attr *res)
+			      struct attr_state *e)
 {
 	const char *ep, *equals;
 	int len;
@@ -142,7 +169,7 @@ static const char *parse_attr(const char *src, int lineno, const char *cp,
 		len = equals - cp;
 	else
 		len = ep - cp;
-	if (!res) {
+	if (!e) {
 		if (*cp == '-' || *cp == '!') {
 			cp++;
 			len--;
@@ -154,9 +181,6 @@ static const char *parse_attr(const char *src, int lineno, const char *cp,
 			return NULL;
 		}
 	} else {
-		struct attr_state *e;
-
-		e = &(res->state[*num_attr]);
 		if (*cp == '-' || *cp == '!') {
 			e->setto = (*cp == '-') ? ATTR__FALSE : ATTR__UNSET;
 			cp++;
@@ -169,7 +193,6 @@ static const char *parse_attr(const char *src, int lineno, const char *cp,
 		}
 		e->attr = git_attr_internal(cp, len);
 	}
-	(*num_attr)++;
 	return ep + strspn(ep, blank);
 }
 
@@ -177,10 +200,9 @@ static struct match_attr *parse_attr_line(const char *line, const char *src,
 					  int lineno, int macro_ok)
 {
 	int namelen;
-	int num_attr;
-	const char *cp, *name;
+	int num_attr, i;
+	const char *cp, *name, *states;
 	struct match_attr *res = NULL;
-	int pass;
 	int is_macro;
 
 	cp = line + strspn(line, blank);
@@ -209,32 +231,44 @@ static struct match_attr *parse_attr_line(const char *line, const char *src,
 	else
 		is_macro = 0;
 
-	for (pass = 0; pass < 2; pass++) {
-		/* pass 0 counts and allocates, pass 1 fills */
-		num_attr = 0;
-		cp = name + namelen;
-		cp = cp + strspn(cp, blank);
-		while (*cp) {
-			cp = parse_attr(src, lineno, cp, &num_attr, res);
-			if (!cp)
-				return NULL;
-		}
-		if (pass)
-			break;
-		res = xcalloc(1,
-			      sizeof(*res) +
-			      sizeof(struct attr_state) * num_attr +
-			      (is_macro ? 0 : namelen + 1));
-		if (is_macro)
-			res->u.attr = git_attr_internal(name, namelen);
-		else {
-			res->u.pattern = (char *)&(res->state[num_attr]);
-			memcpy(res->u.pattern, name, namelen);
-			res->u.pattern[namelen] = 0;
-		}
-		res->is_macro = is_macro;
-		res->num_attr = num_attr;
+	states = name + namelen;
+	states += strspn(states, blank);
+
+	/* First pass to count the attr_states */
+	for (cp = states, num_attr = 0; *cp; num_attr++) {
+		cp = parse_attr(src, lineno, cp, NULL);
+		if (!cp)
+			return NULL;
 	}
+
+	res = xcalloc(1,
+		      sizeof(*res) +
+		      sizeof(struct attr_state) * num_attr +
+		      (is_macro ? 0 : namelen + 1));
+	if (is_macro)
+		res->u.attr = git_attr_internal(name, namelen);
+	else {
+		char *p = (char *)&(res->state[num_attr]);
+		memcpy(p, name, namelen);
+		res->u.pat.pattern = p;
+		parse_exclude_pattern(&res->u.pat.pattern,
+				      &res->u.pat.patternlen,
+				      &res->u.pat.flags,
+				      &res->u.pat.nowildcardlen);
+		if (res->u.pat.flags & EXC_FLAG_NEGATIVE) {
+			warning(_("Negative patterns are ignored in git attributes\n"
+				  "Use '\\!' for literal leading exclamation."));
+			return NULL;
+		}
+	}
+	res->is_macro = is_macro;
+	res->num_attr = num_attr;
+
+	/* Second pass to fill the attr_states */
+	for (cp = states, i = 0; *cp; i++) {
+		cp = parse_attr(src, lineno, cp, &(res->state[i]));
+	}
+
 	return res;
 }
 
@@ -252,13 +286,14 @@ static struct match_attr *parse_attr_line(const char *line, const char *src,
  * (reading the file from top to bottom), .gitattribute of the root
  * directory (again, reading the file from top to bottom) down to the
  * current directory, and then scan the list backwards to find the first match.
- * This is exactly the same as what excluded() does in dir.c to deal with
+ * This is exactly the same as what is_excluded() does in dir.c to deal with
  * .gitignore
  */
 
 static struct attr_stack {
 	struct attr_stack *prev;
 	char *origin;
+	size_t originlen;
 	unsigned num_matches;
 	unsigned alloc;
 	struct match_attr **attrs;
@@ -283,11 +318,12 @@ static void free_attr_elem(struct attr_stack *e)
 		}
 		free(a);
 	}
+	free(e->attrs);
 	free(e);
 }
 
 static const char *builtin_attr[] = {
-	"[attr]binary -diff -text",
+	"[attr]binary -diff -merge -text",
 	NULL,
 };
 
@@ -333,46 +369,16 @@ static struct attr_stack *read_attr_from_file(const char *path, int macro_ok)
 	char buf[2048];
 	int lineno = 0;
 
-	if (!fp)
+	if (!fp) {
+		if (errno != ENOENT && errno != ENOTDIR)
+			warn_on_inaccessible(path);
 		return NULL;
+	}
 	res = xcalloc(1, sizeof(*res));
 	while (fgets(buf, sizeof(buf), fp))
 		handle_attr_line(res, buf, path, ++lineno, macro_ok);
 	fclose(fp);
 	return res;
-}
-
-static void *read_index_data(const char *path)
-{
-	int pos, len;
-	unsigned long sz;
-	enum object_type type;
-	void *data;
-	struct index_state *istate = use_index ? use_index : &the_index;
-
-	len = strlen(path);
-	pos = index_name_pos(istate, path, len);
-	if (pos < 0) {
-		/*
-		 * We might be in the middle of a merge, in which
-		 * case we would read stage #2 (ours).
-		 */
-		int i;
-		for (i = -pos - 1;
-		     (pos < 0 && i < istate->cache_nr &&
-		      !strcmp(istate->cache[i]->name, path));
-		     i++)
-			if (ce_stage(istate->cache[i]) == 2)
-				pos = i;
-	}
-	if (pos < 0)
-		return NULL;
-	data = read_sha1_file(istate->cache[pos]->sha1, &type, &sz);
-	if (!data || type != OBJ_BLOB) {
-		free(data);
-		return NULL;
-	}
-	return data;
 }
 
 static struct attr_stack *read_attr_from_index(const char *path, int macro_ok)
@@ -381,7 +387,7 @@ static struct attr_stack *read_attr_from_index(const char *path, int macro_ok)
 	char *buf, *sp;
 	int lineno = 0;
 
-	buf = read_index_data(path);
+	buf = read_blob_data_from_index(use_index ? use_index : &the_index, path, NULL);
 	if (!buf)
 		return NULL;
 
@@ -462,44 +468,82 @@ static void drop_attr_stack(void)
 	}
 }
 
+static const char *git_etc_gitattributes(void)
+{
+	static const char *system_wide;
+	if (!system_wide)
+		system_wide = system_path(ETC_GITATTRIBUTES);
+	return system_wide;
+}
+
+static int git_attr_system(void)
+{
+	return !git_env_bool("GIT_ATTR_NOSYSTEM", 0);
+}
+
 static void bootstrap_attr_stack(void)
 {
-	if (!attr_stack) {
-		struct attr_stack *elem;
+	struct attr_stack *elem;
+	char *xdg_attributes_file;
 
-		elem = read_attr_from_array(builtin_attr);
-		elem->origin = NULL;
-		elem->prev = attr_stack;
-		attr_stack = elem;
+	if (attr_stack)
+		return;
 
-		if (!is_bare_repository() || direction == GIT_ATTR_INDEX) {
-			elem = read_attr(GITATTRIBUTES_FILE, 1);
-			elem->origin = strdup("");
+	elem = read_attr_from_array(builtin_attr);
+	elem->origin = NULL;
+	elem->prev = attr_stack;
+	attr_stack = elem;
+
+	if (git_attr_system()) {
+		elem = read_attr_from_file(git_etc_gitattributes(), 1);
+		if (elem) {
+			elem->origin = NULL;
 			elem->prev = attr_stack;
 			attr_stack = elem;
-			debug_push(elem);
 		}
+	}
 
-		elem = read_attr_from_file(git_path(INFOATTRIBUTES_FILE), 1);
-		if (!elem)
-			elem = xcalloc(1, sizeof(*elem));
-		elem->origin = NULL;
+	if (!git_attributes_file) {
+		home_config_paths(NULL, &xdg_attributes_file, "attributes");
+		git_attributes_file = xdg_attributes_file;
+	}
+	if (git_attributes_file) {
+		elem = read_attr_from_file(git_attributes_file, 1);
+		if (elem) {
+			elem->origin = NULL;
+			elem->prev = attr_stack;
+			attr_stack = elem;
+		}
+	}
+
+	if (!is_bare_repository() || direction == GIT_ATTR_INDEX) {
+		elem = read_attr(GITATTRIBUTES_FILE, 1);
+		elem->origin = xstrdup("");
+		elem->originlen = 0;
 		elem->prev = attr_stack;
 		attr_stack = elem;
+		debug_push(elem);
 	}
+
+	elem = read_attr_from_file(git_path(INFOATTRIBUTES_FILE), 1);
+	if (!elem)
+		elem = xcalloc(1, sizeof(*elem));
+	elem->origin = NULL;
+	elem->prev = attr_stack;
+	attr_stack = elem;
 }
 
 static void prepare_attr_stack(const char *path, int dirlen)
 {
 	struct attr_stack *elem, *info;
 	int len;
-	struct strbuf pathbuf;
-
-	strbuf_init(&pathbuf, dirlen+2+strlen(GITATTRIBUTES_FILE));
+	const char *cp;
 
 	/*
 	 * At the bottom of the attribute stack is the built-in
-	 * set of attribute definitions.  Then, contents from
+	 * set of attribute definitions, followed by the contents
+	 * of $(prefix)/etc/gitattributes and a file specified by
+	 * core.attributesfile.  Then, contents from
 	 * .gitattribute files from directories closer to the
 	 * root to the ones in deeper directories are pushed
 	 * to the stack.  Finally, at the very top of the stack
@@ -510,8 +554,7 @@ static void prepare_attr_stack(const char *path, int dirlen)
 	 * .gitattributes in deeper directories to shallower ones,
 	 * and finally use the built-in set as the default.
 	 */
-	if (!attr_stack)
-		bootstrap_attr_stack();
+	bootstrap_attr_stack();
 
 	/*
 	 * Pop the "info" one that is always at the top of the stack.
@@ -521,14 +564,17 @@ static void prepare_attr_stack(const char *path, int dirlen)
 
 	/*
 	 * Pop the ones from directories that are not the prefix of
-	 * the path we are checking.
+	 * the path we are checking. Break out of the loop when we see
+	 * the root one (whose origin is an empty string "") or the builtin
+	 * one (whose origin is NULL) without popping it.
 	 */
-	while (attr_stack && attr_stack->origin) {
+	while (attr_stack->origin) {
 		int namelen = strlen(attr_stack->origin);
 
 		elem = attr_stack;
 		if (namelen <= dirlen &&
-		    !strncmp(elem->origin, path, namelen))
+		    !strncmp(elem->origin, path, namelen) &&
+		    (!namelen || path[namelen] == '/'))
 			break;
 
 		debug_pop(elem);
@@ -540,27 +586,35 @@ static void prepare_attr_stack(const char *path, int dirlen)
 	 * Read from parent directories and push them down
 	 */
 	if (!is_bare_repository() || direction == GIT_ATTR_INDEX) {
-		while (1) {
-			char *cp;
+		/*
+		 * bootstrap_attr_stack() should have added, and the
+		 * above loop should have stopped before popping, the
+		 * root element whose attr_stack->origin is set to an
+		 * empty string.
+		 */
+		struct strbuf pathbuf = STRBUF_INIT;
 
+		assert(attr_stack->origin);
+		while (1) {
 			len = strlen(attr_stack->origin);
 			if (dirlen <= len)
 				break;
-			strbuf_reset(&pathbuf);
-			strbuf_add(&pathbuf, path, dirlen);
+			cp = memchr(path + len + 1, '/', dirlen - len - 1);
+			if (!cp)
+				cp = path + dirlen;
+			strbuf_add(&pathbuf, path, cp - path);
 			strbuf_addch(&pathbuf, '/');
-			cp = strchr(pathbuf.buf + len + 1, '/');
-			strcpy(cp + 1, GITATTRIBUTES_FILE);
+			strbuf_addstr(&pathbuf, GITATTRIBUTES_FILE);
 			elem = read_attr(pathbuf.buf, 0);
-			*cp = '\0';
-			elem->origin = strdup(pathbuf.buf);
+			strbuf_setlen(&pathbuf, cp - path);
+			elem->origin = strbuf_detach(&pathbuf, &elem->originlen);
 			elem->prev = attr_stack;
 			attr_stack = elem;
 			debug_push(elem);
 		}
-	}
 
-	strbuf_release(&pathbuf);
+		strbuf_release(&pathbuf);
+	}
 
 	/*
 	 * Finally push the "info" one at the top of the stack.
@@ -570,28 +624,26 @@ static void prepare_attr_stack(const char *path, int dirlen)
 }
 
 static int path_matches(const char *pathname, int pathlen,
-			const char *pattern,
+			int basename_offset,
+			const struct pattern *pat,
 			const char *base, int baselen)
 {
-	if (!strchr(pattern, '/')) {
-		/* match basename */
-		const char *basename = strrchr(pathname, '/');
-		basename = basename ? basename + 1 : pathname;
-		return (fnmatch(pattern, basename, 0) == 0);
-	}
-	/*
-	 * match with FNM_PATHNAME; the pattern has base implicitly
-	 * in front of it.
-	 */
-	if (*pattern == '/')
-		pattern++;
-	if (pathlen < baselen ||
-	    (baselen && pathname[baselen] != '/') ||
-	    strncmp(pathname, base, baselen))
+	const char *pattern = pat->pattern;
+	int prefix = pat->nowildcardlen;
+	int isdir = (pathlen && pathname[pathlen - 1] == '/');
+
+	if ((pat->flags & EXC_FLAG_MUSTBEDIR) && !isdir)
 		return 0;
-	if (baselen != 0)
-		baselen++;
-	return fnmatch(pattern, pathname + baselen, FNM_PATHNAME) == 0;
+
+	if (pat->flags & EXC_FLAG_NODIR) {
+		return match_basename(pathname + basename_offset,
+				      pathlen - basename_offset - isdir,
+				      pattern, prefix,
+				      pat->patternlen, pat->flags);
+	}
+	return match_pathname(pathname, pathlen - isdir,
+			      base, baselen,
+			      pattern, prefix, pat->patternlen, pat->flags);
 }
 
 static int macroexpand_one(int attr_nr, int rem);
@@ -608,7 +660,7 @@ static int fill_one(const char *what, struct match_attr *a, int rem)
 
 		if (*n == ATTR__UNKNOWN) {
 			debug_set(what,
-				  a->is_macro ? a->u.attr->name : a->u.pattern,
+				  a->is_macro ? a->u.attr->name : a->u.pat.pattern,
 				  attr, v);
 			*n = v;
 			rem--;
@@ -618,7 +670,8 @@ static int fill_one(const char *what, struct match_attr *a, int rem)
 	return rem;
 }
 
-static int fill(const char *path, int pathlen, struct attr_stack *stk, int rem)
+static int fill(const char *path, int pathlen, int basename_offset,
+		struct attr_stack *stk, int rem)
 {
 	int i;
 	const char *base = stk->origin ? stk->origin : "";
@@ -627,8 +680,8 @@ static int fill(const char *path, int pathlen, struct attr_stack *stk, int rem)
 		struct match_attr *a = stk->attrs[i];
 		if (a->is_macro)
 			continue;
-		if (path_matches(path, pathlen,
-				 a->u.pattern, base, strlen(base)))
+		if (path_matches(path, pathlen, basename_offset,
+				 &a->u.pat, base, stk->originlen))
 			rem = fill_one("fill", a, rem);
 	}
 	return rem;
@@ -658,32 +711,78 @@ static int macroexpand_one(int attr_nr, int rem)
 	return rem;
 }
 
-int git_checkattr(const char *path, int num, struct git_attr_check *check)
+/*
+ * Collect all attributes for path into the array pointed to by
+ * check_all_attr.
+ */
+static void collect_all_attrs(const char *path)
 {
 	struct attr_stack *stk;
-	const char *cp;
-	int dirlen, pathlen, i, rem;
+	int i, pathlen, rem, dirlen;
+	const char *cp, *last_slash = NULL;
+	int basename_offset;
 
-	bootstrap_attr_stack();
+	for (cp = path; *cp; cp++) {
+		if (*cp == '/' && cp[1])
+			last_slash = cp;
+	}
+	pathlen = cp - path;
+	if (last_slash) {
+		basename_offset = last_slash + 1 - path;
+		dirlen = last_slash - path;
+	} else {
+		basename_offset = 0;
+		dirlen = 0;
+	}
+
+	prepare_attr_stack(path, dirlen);
 	for (i = 0; i < attr_nr; i++)
 		check_all_attr[i].value = ATTR__UNKNOWN;
 
-	pathlen = strlen(path);
-	cp = strrchr(path, '/');
-	if (!cp)
-		dirlen = 0;
-	else
-		dirlen = cp - path;
-	prepare_attr_stack(path, dirlen);
 	rem = attr_nr;
 	for (stk = attr_stack; 0 < rem && stk; stk = stk->prev)
-		rem = fill(path, pathlen, stk, rem);
+		rem = fill(path, pathlen, basename_offset, stk, rem);
+}
+
+int git_check_attr(const char *path, int num, struct git_attr_check *check)
+{
+	int i;
+
+	collect_all_attrs(path);
 
 	for (i = 0; i < num; i++) {
 		const char *value = check_all_attr[check[i].attr->attr_nr].value;
 		if (value == ATTR__UNKNOWN)
 			value = ATTR__UNSET;
 		check[i].value = value;
+	}
+
+	return 0;
+}
+
+int git_all_attrs(const char *path, int *num, struct git_attr_check **check)
+{
+	int i, count, j;
+
+	collect_all_attrs(path);
+
+	/* Count the number of attributes that are set. */
+	count = 0;
+	for (i = 0; i < attr_nr; i++) {
+		const char *value = check_all_attr[i].value;
+		if (value != ATTR__UNSET && value != ATTR__UNKNOWN)
+			++count;
+	}
+	*num = count;
+	*check = xmalloc(sizeof(**check) * count);
+	j = 0;
+	for (i = 0; i < attr_nr; i++) {
+		const char *value = check_all_attr[i].value;
+		if (value != ATTR__UNSET && value != ATTR__UNKNOWN) {
+			(*check)[j].attr = check_all_attr[i].attr;
+			(*check)[j].value = value;
+			++j;
+		}
 	}
 
 	return 0;

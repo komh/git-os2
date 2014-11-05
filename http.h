@@ -8,6 +8,7 @@
 
 #include "strbuf.h"
 #include "remote.h"
+#include "url.h"
 
 /*
  * We detect based on the cURL version if multi-transfer is
@@ -41,16 +42,22 @@
 #define NO_CURL_IOCTL
 #endif
 
-struct slot_results
-{
+/*
+ * CURLOPT_USE_SSL was known as CURLOPT_FTP_SSL up to 7.16.4,
+ * and the constants were known as CURLFTPSSL_*
+*/
+#if !defined(CURLOPT_USE_SSL) && defined(CURLOPT_FTP_SSL)
+#define CURLOPT_USE_SSL CURLOPT_FTP_SSL
+#define CURLUSESSL_TRY CURLFTPSSL_TRY
+#endif
+
+struct slot_results {
 	CURLcode curl_result;
 	long http_code;
 };
 
-struct active_request_slot
-{
+struct active_request_slot {
 	CURL *curl;
-	FILE *local;
 	int in_use;
 	CURLcode curl_result;
 	long http_code;
@@ -61,16 +68,15 @@ struct active_request_slot
 	struct active_request_slot *next;
 };
 
-struct buffer
-{
+struct buffer {
 	struct strbuf buf;
 	size_t posn;
 };
 
 /* Curl request read/write callbacks */
-extern size_t fread_buffer(void *ptr, size_t eltsize, size_t nmemb, void *strbuf);
-extern size_t fwrite_buffer(const void *ptr, size_t eltsize, size_t nmemb, void *strbuf);
-extern size_t fwrite_null(const void *ptr, size_t eltsize, size_t nmemb, void *strbuf);
+extern size_t fread_buffer(char *ptr, size_t eltsize, size_t nmemb, void *strbuf);
+extern size_t fwrite_buffer(char *ptr, size_t eltsize, size_t nmemb, void *strbuf);
+extern size_t fwrite_null(char *ptr, size_t eltsize, size_t nmemb, void *strbuf);
 #ifndef NO_CURL_IOCTL
 extern curlioerr ioctl_buffer(CURL *handle, int cmd, void *clientp);
 #endif
@@ -81,6 +87,7 @@ extern int start_active_slot(struct active_request_slot *slot);
 extern void run_active_slot(struct active_request_slot *slot);
 extern void finish_active_slot(struct active_request_slot *slot);
 extern void finish_all_active_slots(void);
+extern int handle_curl_result(struct slot_results *results);
 
 #ifdef USE_CURL_MULTI
 extern void fill_active_slots(void);
@@ -88,13 +95,14 @@ extern void add_fill_function(void *data, int (*fill)(void *));
 extern void step_active_slots(void);
 #endif
 
-extern void http_init(struct remote *remote);
+extern void http_init(struct remote *remote, const char *url,
+		      int proactive_auth);
 extern void http_cleanup(void);
 
-extern int data_received;
 extern int active_requests;
 extern int http_is_verbose;
 extern size_t http_post_buffer;
+extern struct credential http_auth;
 
 extern char curl_errorstr[CURL_ERROR_SIZE];
 
@@ -117,12 +125,31 @@ extern void append_remote_object_url(struct strbuf *buf, const char *url,
 				     int only_two_digit_prefix);
 extern char *get_remote_object_url(const char *url, const char *hex,
 				   int only_two_digit_prefix);
-extern void end_url_with_slash(struct strbuf *buf, const char *url);
 
-/* Options for http_request_*() */
-#define HTTP_NO_CACHE		1
+/* Options for http_get_*() */
+struct http_get_options {
+	unsigned no_cache:1,
+		 keep_error:1;
 
-/* Return values for http_request_*() */
+	/* If non-NULL, returns the content-type of the response. */
+	struct strbuf *content_type;
+
+	/*
+	 * If non-NULL, returns the URL we ended up at, including any
+	 * redirects we followed.
+	 */
+	struct strbuf *effective_url;
+
+	/*
+	 * If both base_url and effective_url are non-NULL, the base URL will
+	 * be munged to reflect any redirections going from the requested url
+	 * to effective_url. See the definition of update_url_from_redirect
+	 * for details.
+	 */
+	struct strbuf *base_url;
+};
+
+/* Return values for http_get_*() */
 #define HTTP_OK			0
 #define HTTP_MISSING_TARGET	1
 #define HTTP_ERROR		2
@@ -131,17 +158,11 @@ extern void end_url_with_slash(struct strbuf *buf, const char *url);
 #define HTTP_NOAUTH	5
 
 /*
- * Requests an url and stores the result in a strbuf.
+ * Requests a URL and stores the result in a strbuf.
  *
  * If the result pointer is NULL, a HTTP HEAD request is made instead of GET.
  */
-int http_get_strbuf(const char *url, struct strbuf *result, int options);
-
-/*
- * Prints an error message using error() containing url and curl_errorstr,
- * and returns ret.
- */
-int http_error(const char *url, int ret);
+int http_get_strbuf(const char *url, struct strbuf *result, struct http_get_options *options);
 
 extern int http_fetch_ref(const char *base, struct ref *ref);
 
@@ -149,8 +170,7 @@ extern int http_fetch_ref(const char *base, struct ref *ref);
 extern int http_get_info_packs(const char *base_url,
 	struct packed_git **packs_head);
 
-struct http_pack_request
-{
+struct http_pack_request {
 	char *url;
 	struct packed_git *target;
 	struct packed_git **lst;
@@ -166,8 +186,7 @@ extern int finish_http_pack_request(struct http_pack_request *preq);
 extern void release_http_pack_request(struct http_pack_request *preq);
 
 /* Helpers for fetching object */
-struct http_object_request
-{
+struct http_object_request {
 	char *url;
 	char tmpfile[PATH_MAX];
 	int localfile;
@@ -177,7 +196,7 @@ struct http_object_request
 	unsigned char sha1[20];
 	unsigned char real_sha1[20];
 	git_SHA_CTX c;
-	z_stream stream;
+	git_zstream stream;
 	int zret;
 	int rename;
 	struct active_request_slot *slot;

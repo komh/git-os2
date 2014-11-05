@@ -52,7 +52,7 @@ test_expect_success 'refusing to edit notes in refs/remotes/' '
 
 # 1 indicates caught gracefully by die, 128 means git-show barked
 test_expect_success 'handle empty notes gracefully' '
-	git notes show ; test 1 = $?
+	test_expect_code 1 git notes show
 '
 
 test_expect_success 'show non-existent notes entry with %N' '
@@ -101,11 +101,29 @@ test_expect_success 'edit existing notes' '
 	test_must_fail git notes show HEAD^
 '
 
-test_expect_success 'cannot add note where one exists' '
-	! MSG=b2 git notes add &&
+test_expect_success 'cannot "git notes add -m" where notes already exists' '
+	test_must_fail git notes add -m "b2" &&
 	test ! -f .git/NOTES_EDITMSG &&
 	test 1 = $(git ls-tree refs/notes/commits | wc -l) &&
 	test b3 = $(git notes show) &&
+	git show HEAD^ &&
+	test_must_fail git notes show HEAD^
+'
+
+test_expect_success 'can overwrite existing note with "git notes add -f -m"' '
+	git notes add -f -m "b1" &&
+	test ! -f .git/NOTES_EDITMSG &&
+	test 1 = $(git ls-tree refs/notes/commits | wc -l) &&
+	test b1 = $(git notes show) &&
+	git show HEAD^ &&
+	test_must_fail git notes show HEAD^
+'
+
+test_expect_success 'add w/no options on existing note morphs into edit' '
+	MSG=b2 git notes add &&
+	test ! -f .git/NOTES_EDITMSG &&
+	test 1 = $(git ls-tree refs/notes/commits | wc -l) &&
+	test b2 = $(git notes show) &&
 	git show HEAD^ &&
 	test_must_fail git notes show HEAD^
 '
@@ -194,6 +212,13 @@ test_expect_success 'show -F notes' '
 	test_cmp expect-F output
 '
 
+test_expect_success 'Re-adding -F notes without -f fails' '
+	echo "zyxxy" > note5 &&
+	test_must_fail git notes add -F note5 &&
+	git log -3 > output &&
+	test_cmp expect-F output
+'
+
 cat >expect << EOF
 commit 15023535574ded8b1a89052b32673f84cf9582b8
 tree e070e3af51011e47b183c33adf9736736a525709
@@ -246,6 +271,44 @@ do
 		eval "$negate grep xyzzy output"
 	'
 done
+
+test_expect_success 'setup alternate notes ref' '
+	git notes --ref=alternate add -m alternate
+'
+
+test_expect_success 'git log --notes shows default notes' '
+	git log -1 --notes >output &&
+	grep xyzzy output &&
+	! grep alternate output
+'
+
+test_expect_success 'git log --notes=X shows only X' '
+	git log -1 --notes=alternate >output &&
+	! grep xyzzy output &&
+	grep alternate output
+'
+
+test_expect_success 'git log --notes --notes=X shows both' '
+	git log -1 --notes --notes=alternate >output &&
+	grep xyzzy output &&
+	grep alternate output
+'
+
+test_expect_success 'git log --no-notes resets default state' '
+	git log -1 --notes --notes=alternate \
+		--no-notes --notes=alternate \
+		>output &&
+	! grep xyzzy output &&
+	grep alternate output
+'
+
+test_expect_success 'git log --no-notes resets ref list' '
+	git log -1 --notes --notes=alternate \
+		--no-notes --notes \
+		>output &&
+	grep xyzzy output &&
+	! grep alternate output
+'
 
 test_expect_success 'create -m notes (setup)' '
 	: > a5 &&
@@ -370,6 +433,81 @@ test_expect_success 'removing non-existing note should not create new commit' '
 	test_must_fail git notes remove HEAD^ &&
 	git rev-parse --verify refs/notes/commits > after_commit &&
 	test_cmp before_commit after_commit
+'
+
+test_expect_success 'removing more than one' '
+	before=$(git rev-parse --verify refs/notes/commits) &&
+	test_when_finished "git update-ref refs/notes/commits $before" &&
+
+	# We have only two -- add another and make sure it stays
+	git notes add -m "extra" &&
+	git notes list HEAD >after-removal-expect &&
+	git notes remove HEAD^^ HEAD^^^ &&
+	git notes list | sed -e "s/ .*//" >actual &&
+	test_cmp after-removal-expect actual
+'
+
+test_expect_success 'removing is atomic' '
+	before=$(git rev-parse --verify refs/notes/commits) &&
+	test_when_finished "git update-ref refs/notes/commits $before" &&
+	test_must_fail git notes remove HEAD^^ HEAD^^^ HEAD^ &&
+	after=$(git rev-parse --verify refs/notes/commits) &&
+	test "$before" = "$after"
+'
+
+test_expect_success 'removing with --ignore-missing' '
+	before=$(git rev-parse --verify refs/notes/commits) &&
+	test_when_finished "git update-ref refs/notes/commits $before" &&
+
+	# We have only two -- add another and make sure it stays
+	git notes add -m "extra" &&
+	git notes list HEAD >after-removal-expect &&
+	git notes remove --ignore-missing HEAD^^ HEAD^^^ HEAD^ &&
+	git notes list | sed -e "s/ .*//" >actual &&
+	test_cmp after-removal-expect actual
+'
+
+test_expect_success 'removing with --ignore-missing but bogus ref' '
+	before=$(git rev-parse --verify refs/notes/commits) &&
+	test_when_finished "git update-ref refs/notes/commits $before" &&
+	test_must_fail git notes remove --ignore-missing HEAD^^ HEAD^^^ NO-SUCH-COMMIT &&
+	after=$(git rev-parse --verify refs/notes/commits) &&
+	test "$before" = "$after"
+'
+
+test_expect_success 'remove reads from --stdin' '
+	before=$(git rev-parse --verify refs/notes/commits) &&
+	test_when_finished "git update-ref refs/notes/commits $before" &&
+
+	# We have only two -- add another and make sure it stays
+	git notes add -m "extra" &&
+	git notes list HEAD >after-removal-expect &&
+	git rev-parse HEAD^^ HEAD^^^ >input &&
+	git notes remove --stdin <input &&
+	git notes list | sed -e "s/ .*//" >actual &&
+	test_cmp after-removal-expect actual
+'
+
+test_expect_success 'remove --stdin is also atomic' '
+	before=$(git rev-parse --verify refs/notes/commits) &&
+	test_when_finished "git update-ref refs/notes/commits $before" &&
+	git rev-parse HEAD^^ HEAD^^^ HEAD^ >input &&
+	test_must_fail git notes remove --stdin <input &&
+	after=$(git rev-parse --verify refs/notes/commits) &&
+	test "$before" = "$after"
+'
+
+test_expect_success 'removing with --stdin --ignore-missing' '
+	before=$(git rev-parse --verify refs/notes/commits) &&
+	test_when_finished "git update-ref refs/notes/commits $before" &&
+
+	# We have only two -- add another and make sure it stays
+	git notes add -m "extra" &&
+	git notes list HEAD >after-removal-expect &&
+	git rev-parse HEAD^^ HEAD^^^ HEAD^ >input &&
+	git notes remove --ignore-missing --stdin <input &&
+	git notes list | sed -e "s/ .*//" >actual &&
+	test_cmp after-removal-expect actual
 '
 
 test_expect_success 'list notes with "git notes list"' '
@@ -627,16 +765,16 @@ test_expect_success '--show-notes=ref accumulates' '
 
 test_expect_success 'Allow notes on non-commits (trees, blobs, tags)' '
 	git config core.notesRef refs/notes/other &&
-	echo "Note on a tree" > expect
+	echo "Note on a tree" > expect &&
 	git notes add -m "Note on a tree" HEAD: &&
 	git notes show HEAD: > actual &&
 	test_cmp expect actual &&
-	echo "Note on a blob" > expect
+	echo "Note on a blob" > expect &&
 	filename=$(git ls-tree --name-only HEAD | head -n1) &&
 	git notes add -m "Note on a blob" HEAD:$filename &&
 	git notes show HEAD:$filename > actual &&
 	test_cmp expect actual &&
-	echo "Note on a tag" > expect
+	echo "Note on a tag" > expect &&
 	git tag -a -m "This is an annotated tag" foobar HEAD^ &&
 	git notes add -m "Note on a tag" foobar &&
 	git notes show foobar > actual &&
@@ -962,6 +1100,7 @@ Date:   Thu Apr 7 15:27:13 2005 -0700
 
 Notes (other):
     a fresh note
+$whitespace
     another fresh note
 EOF
 
@@ -983,8 +1122,11 @@ Date:   Thu Apr 7 15:27:13 2005 -0700
 
 Notes (other):
     a fresh note
+$whitespace
     another fresh note
+$whitespace
     append 1
+$whitespace
     append 2
 EOF
 
@@ -1059,6 +1201,25 @@ test_expect_success 'GIT_NOTES_REWRITE_REF overrides config' '
 test_expect_success 'git notes copy diagnoses too many or too few parameters' '
 	test_must_fail git notes copy &&
 	test_must_fail git notes copy one two three
+'
+
+test_expect_success 'git notes get-ref (no overrides)' '
+	git config --unset core.notesRef &&
+	sane_unset GIT_NOTES_REF &&
+	test "$(git notes get-ref)" = "refs/notes/commits"
+'
+
+test_expect_success 'git notes get-ref (core.notesRef)' '
+	git config core.notesRef refs/notes/foo &&
+	test "$(git notes get-ref)" = "refs/notes/foo"
+'
+
+test_expect_success 'git notes get-ref (GIT_NOTES_REF)' '
+	test "$(GIT_NOTES_REF=refs/notes/bar git notes get-ref)" = "refs/notes/bar"
+'
+
+test_expect_success 'git notes get-ref (--ref)' '
+	test "$(GIT_NOTES_REF=refs/notes/bar git notes --ref=baz get-ref)" = "refs/notes/baz"
 '
 
 test_done

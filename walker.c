@@ -56,10 +56,7 @@ static int process_tree(struct walker *walker, struct tree *tree)
 		if (!obj || process(walker, obj))
 			return -1;
 	}
-	free(tree->buffer);
-	tree->buffer = NULL;
-	tree->size = 0;
-	tree->object.parsed = 0;
+	free_tree_buffer(tree);
 	return 0;
 }
 
@@ -190,7 +187,7 @@ static int interpret_target(struct walker *walker, char *target, unsigned char *
 {
 	if (!get_sha1_hex(target, sha1))
 		return 0;
-	if (!check_ref_format(target)) {
+	if (!check_refname_format(target, 0)) {
 		struct ref *ref = alloc_ref(target);
 		if (!walker->fetch_ref(walker, ref)) {
 			hashcpy(sha1, ref->old_sha1);
@@ -207,7 +204,7 @@ static int mark_complete(const char *path, const unsigned char *sha1, int flag, 
 	struct commit *commit = lookup_commit_reference_gently(sha1, 1);
 	if (commit) {
 		commit->object.flags |= COMPLETE;
-		insert_by_date(commit, &complete);
+		commit_list_insert_by_date(commit, &complete);
 	}
 	return 0;
 }

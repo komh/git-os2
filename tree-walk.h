@@ -20,9 +20,9 @@ static inline const unsigned char *tree_entry_extract(struct tree_desc *desc, co
 	return desc->entry.sha1;
 }
 
-static inline int tree_entry_len(const char *name, const unsigned char *sha1)
+static inline int tree_entry_len(const struct name_entry *ne)
 {
-	return (const char *)sha1 - name - 1;
+	return (const char *)ne->sha1 - ne->path - 1;
 }
 
 void update_tree_entry(struct tree_desc *);
@@ -44,8 +44,9 @@ struct traverse_info {
 	struct traverse_info *prev;
 	struct name_entry name;
 	int pathlen;
+	struct pathspec *pathspec;
 
-	unsigned long conflicts;
+	unsigned long df_conflicts;
 	traverse_callback_t fn;
 	void *data;
 	int show_all_errors;
@@ -57,7 +58,19 @@ extern void setup_traverse_info(struct traverse_info *info, const char *base);
 
 static inline int traverse_path_len(const struct traverse_info *info, const struct name_entry *n)
 {
-	return info->pathlen + tree_entry_len(n->path, n->sha1);
+	return info->pathlen + tree_entry_len(n);
 }
+
+/* in general, positive means "kind of interesting" */
+enum interesting {
+	all_entries_not_interesting = -1, /* no, and no subsequent entries will be either */
+	entry_not_interesting = 0,
+	entry_interesting = 1,
+	all_entries_interesting = 2 /* yes, and all subsequent entries will be */
+};
+
+extern enum interesting tree_entry_interesting(const struct name_entry *,
+					       struct strbuf *, int,
+					       const struct pathspec *ps);
 
 #endif

@@ -48,7 +48,7 @@ test_expect_success 'setup svn repository' '
 test_expect_success 'setup git mirror and merge' '
 	git svn init "$svnrepo" -t tags -T trunk -b branches &&
 	git svn fetch &&
-	git checkout --track -b svn remotes/trunk &&
+	git checkout -b svn remotes/trunk &&
 	git checkout -b merge &&
 	echo new file > new_file &&
 	git add new_file &&
@@ -62,7 +62,7 @@ test_expect_success 'setup git mirror and merge' '
 	echo friend > README &&
 	cat tmp >> README &&
 	git commit -a -m "friend" &&
-	git pull . merge
+	git merge merge
 	'
 
 test_debug 'gitk --all & sleep 1'

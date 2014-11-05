@@ -6,6 +6,7 @@
 test_description='for-each-ref test'
 
 . ./test-lib.sh
+. "$TEST_DIRECTORY"/lib-gpg.sh
 
 # Mon Jul 3 15:18:43 2006 +0000
 datestamp=1151939923
@@ -37,11 +38,13 @@ test_atom() {
 	case "$1" in
 		head) ref=refs/heads/master ;;
 		 tag) ref=refs/tags/testtag ;;
+		   *) ref=$1 ;;
 	esac
 	printf '%s\n' "$3" >expected
-	test_expect_${4:-success} "basic atom: $1 $2" "
+	test_expect_${4:-success} $PREREQ "basic atom: $1 $2" "
 		git for-each-ref --format='%($2)' $ref >actual &&
-		test_cmp expected actual
+		sanitize_pgp <actual >actual.clean &&
+		test_cmp expected actual.clean
 	"
 }
 
@@ -55,6 +58,8 @@ test_atom head parent ''
 test_atom head numparent 0
 test_atom head object ''
 test_atom head type ''
+test_atom head '*objectname' ''
+test_atom head '*objecttype' ''
 test_atom head author 'A U Thor <author@example.com> 1151939924 +0200'
 test_atom head authorname 'A U Thor'
 test_atom head authoremail '<author@example.com>'
@@ -71,7 +76,10 @@ test_atom head taggerdate ''
 test_atom head creator 'C O Mitter <committer@example.com> 1151939923 +0200'
 test_atom head creatordate 'Mon Jul 3 17:18:43 2006 +0200'
 test_atom head subject 'Initial'
+test_atom head contents:subject 'Initial'
 test_atom head body ''
+test_atom head contents:body ''
+test_atom head contents:signature ''
 test_atom head contents 'Initial
 '
 
@@ -85,6 +93,8 @@ test_atom tag parent ''
 test_atom tag numparent ''
 test_atom tag object '67a36f10722846e891fbada1ba48ed035de75581'
 test_atom tag type 'commit'
+test_atom tag '*objectname' '67a36f10722846e891fbada1ba48ed035de75581'
+test_atom tag '*objecttype' 'commit'
 test_atom tag author ''
 test_atom tag authorname ''
 test_atom tag authoremail ''
@@ -101,7 +111,10 @@ test_atom tag taggerdate 'Mon Jul 3 17:18:45 2006 +0200'
 test_atom tag creator 'C O Mitter <committer@example.com> 1151939925 +0200'
 test_atom tag creatordate 'Mon Jul 3 17:18:45 2006 +0200'
 test_atom tag subject 'Tagging at 1151939927'
+test_atom tag contents:subject 'Tagging at 1151939927'
 test_atom tag body ''
+test_atom tag contents:body ''
+test_atom tag contents:signature ''
 test_atom tag contents 'Tagging at 1151939927
 '
 
@@ -359,4 +372,102 @@ test_expect_success 'an unusual tag with an incomplete line' '
 
 '
 
+test_expect_success 'create tag with subject and body content' '
+	cat >>msg <<-\EOF &&
+		the subject line
+
+		first body line
+		second body line
+	EOF
+	git tag -F msg subject-body
+'
+test_atom refs/tags/subject-body subject 'the subject line'
+test_atom refs/tags/subject-body body 'first body line
+second body line
+'
+test_atom refs/tags/subject-body contents 'the subject line
+
+first body line
+second body line
+'
+
+test_expect_success 'create tag with multiline subject' '
+	cat >msg <<-\EOF &&
+		first subject line
+		second subject line
+
+		first body line
+		second body line
+	EOF
+	git tag -F msg multiline
+'
+test_atom refs/tags/multiline subject 'first subject line second subject line'
+test_atom refs/tags/multiline contents:subject 'first subject line second subject line'
+test_atom refs/tags/multiline body 'first body line
+second body line
+'
+test_atom refs/tags/multiline contents:body 'first body line
+second body line
+'
+test_atom refs/tags/multiline contents:signature ''
+test_atom refs/tags/multiline contents 'first subject line
+second subject line
+
+first body line
+second body line
+'
+
+test_expect_success GPG 'create signed tags' '
+	git tag -s -m "" signed-empty &&
+	git tag -s -m "subject line" signed-short &&
+	cat >msg <<-\EOF &&
+	subject line
+
+	body contents
+	EOF
+	git tag -s -F msg signed-long
+'
+
+sig='-----BEGIN PGP SIGNATURE-----
+-----END PGP SIGNATURE-----
+'
+
+PREREQ=GPG
+test_atom refs/tags/signed-empty subject ''
+test_atom refs/tags/signed-empty contents:subject ''
+test_atom refs/tags/signed-empty body "$sig"
+test_atom refs/tags/signed-empty contents:body ''
+test_atom refs/tags/signed-empty contents:signature "$sig"
+test_atom refs/tags/signed-empty contents "$sig"
+
+test_atom refs/tags/signed-short subject 'subject line'
+test_atom refs/tags/signed-short contents:subject 'subject line'
+test_atom refs/tags/signed-short body "$sig"
+test_atom refs/tags/signed-short contents:body ''
+test_atom refs/tags/signed-short contents:signature "$sig"
+test_atom refs/tags/signed-short contents "subject line
+$sig"
+
+test_atom refs/tags/signed-long subject 'subject line'
+test_atom refs/tags/signed-long contents:subject 'subject line'
+test_atom refs/tags/signed-long body "body contents
+$sig"
+test_atom refs/tags/signed-long contents:body 'body contents
+'
+test_atom refs/tags/signed-long contents:signature "$sig"
+test_atom refs/tags/signed-long contents "subject line
+
+body contents
+$sig"
+
+cat >expected <<\EOF
+408fe76d02a785a006c2e9c669b7be5589ede96d <committer@example.com> refs/tags/master
+90b5ebede4899eda64893bc2a4c8f1d6fb6dfc40 <committer@example.com> refs/tags/bogo
+EOF
+
+test_expect_success 'Verify sort with multiple keys' '
+	git for-each-ref --format="%(objectname) %(taggeremail) %(refname)" --sort=objectname --sort=taggeremail \
+		refs/tags/bogo refs/tags/master > actual &&
+	test_cmp expected actual
+'
 test_done

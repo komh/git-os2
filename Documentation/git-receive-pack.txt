@@ -8,6 +8,7 @@ git-receive-pack - Receive what is pushed into the repository
 
 SYNOPSIS
 --------
+[verse]
 'git-receive-pack' <directory>
 
 DESCRIPTION
@@ -149,16 +150,7 @@ if the repository is packed and is served via a dumb transport.
 
 SEE ALSO
 --------
-linkgit:git-send-pack[1]
-
-
-Author
-------
-Written by Linus Torvalds <torvalds@osdl.org>
-
-Documentation
---------------
-Documentation by Junio C Hamano.
+linkgit:git-send-pack[1], linkgit:gitnamespaces[7]
 
 GIT
 ---

@@ -8,14 +8,12 @@ static const char http_fetch_usage[] = "git http-fetch "
 
 int main(int argc, const char **argv)
 {
-	const char *prefix;
 	struct walker *walker;
 	int commits_on_stdin = 0;
 	int commits;
 	const char **write_ref = NULL;
 	char **commit_id;
-	const char *url;
-	char *rewritten_url = NULL;
+	char *url = NULL;
 	int arg = 1;
 	int rc = 0;
 	int get_tree = 0;
@@ -23,6 +21,8 @@ int main(int argc, const char **argv)
 	int get_all = 0;
 	int get_verbosely = 0;
 	int get_recover = 0;
+
+	git_setup_gettext();
 
 	git_extract_argv0_path(argv[0]);
 
@@ -57,20 +57,19 @@ int main(int argc, const char **argv)
 		commit_id = (char **) &argv[arg++];
 		commits = 1;
 	}
-	url = argv[arg];
 
-	prefix = setup_git_directory();
+	if (get_all == 0)
+		warning("http-fetch: use without -a is deprecated.\n"
+			"In a future release, -a will become the default.");
+
+	if (argv[arg])
+		str_end_url_with_slash(argv[arg], &url);
+
+	setup_git_directory();
 
 	git_config(git_default_config, NULL);
 
-	if (url && url[strlen(url)-1] != '/') {
-		rewritten_url = xmalloc(strlen(url)+2);
-		strcpy(rewritten_url, url);
-		strcat(rewritten_url, "/");
-		url = rewritten_url;
-	}
-
-	http_init(NULL);
+	http_init(NULL, url, 0);
 	walker = get_http_walker(url);
 	walker->get_tree = get_tree;
 	walker->get_history = get_history;
@@ -93,7 +92,7 @@ int main(int argc, const char **argv)
 	walker_free(walker);
 	http_cleanup();
 
-	free(rewritten_url);
+	free(url);
 
 	return rc;
 }

@@ -2,6 +2,9 @@
 #include "win32.h"
 #include <conio.h>
 #include "../strbuf.h"
+#include "../run-command.h"
+
+static const int delay[] = { 0, 1, 10, 20, 40 };
 
 int err_win_to_posix(DWORD winerr)
 {
@@ -116,6 +119,167 @@ int err_win_to_posix(DWORD winerr)
 	return error;
 }
 
+static inline int is_file_in_use_error(DWORD errcode)
+{
+	switch (errcode) {
+	case ERROR_SHARING_VIOLATION:
+	case ERROR_ACCESS_DENIED:
+		return 1;
+	}
+
+	return 0;
+}
+
+static int read_yes_no_answer(void)
+{
+	char answer[1024];
+
+	if (fgets(answer, sizeof(answer), stdin)) {
+		size_t answer_len = strlen(answer);
+		int got_full_line = 0, c;
+
+		/* remove the newline */
+		if (answer_len >= 2 && answer[answer_len-2] == '\r') {
+			answer[answer_len-2] = '\0';
+			got_full_line = 1;
+		} else if (answer_len >= 1 && answer[answer_len-1] == '\n') {
+			answer[answer_len-1] = '\0';
+			got_full_line = 1;
+		}
+		/* flush the buffer in case we did not get the full line */
+		if (!got_full_line)
+			while ((c = getchar()) != EOF && c != '\n')
+				;
+	} else
+		/* we could not read, return the
+		 * default answer which is no */
+		return 0;
+
+	if (tolower(answer[0]) == 'y' && !answer[1])
+		return 1;
+	if (!strncasecmp(answer, "yes", sizeof(answer)))
+		return 1;
+	if (tolower(answer[0]) == 'n' && !answer[1])
+		return 0;
+	if (!strncasecmp(answer, "no", sizeof(answer)))
+		return 0;
+
+	/* did not find an answer we understand */
+	return -1;
+}
+
+static int ask_yes_no_if_possible(const char *format, ...)
+{
+	char question[4096];
+	const char *retry_hook[] = { NULL, NULL, NULL };
+	va_list args;
+
+	va_start(args, format);
+	vsnprintf(question, sizeof(question), format, args);
+	va_end(args);
+
+	if ((retry_hook[0] = mingw_getenv("GIT_ASK_YESNO"))) {
+		retry_hook[1] = question;
+		return !run_command_v_opt(retry_hook, 0);
+	}
+
+	if (!isatty(_fileno(stdin)) || !isatty(_fileno(stderr)))
+		return 0;
+
+	while (1) {
+		int answer;
+		fprintf(stderr, "%s (y/n) ", question);
+
+		if ((answer = read_yes_no_answer()) >= 0)
+			return answer;
+
+		fprintf(stderr, "Sorry, I did not understand your answer. "
+				"Please type 'y' or 'n'\n");
+	}
+}
+
+#undef unlink
+int mingw_unlink(const char *pathname)
+{
+	int ret, tries = 0;
+
+	/* read-only files cannot be removed */
+	chmod(pathname, 0666);
+	while ((ret = unlink(pathname)) == -1 && tries < ARRAY_SIZE(delay)) {
+		if (!is_file_in_use_error(GetLastError()))
+			break;
+		/*
+		 * We assume that some other process had the source or
+		 * destination file open at the wrong moment and retry.
+		 * In order to give the other process a higher chance to
+		 * complete its operation, we give up our time slice now.
+		 * If we have to retry again, we do sleep a bit.
+		 */
+		Sleep(delay[tries]);
+		tries++;
+	}
+	while (ret == -1 && is_file_in_use_error(GetLastError()) &&
+	       ask_yes_no_if_possible("Unlink of file '%s' failed. "
+			"Should I try again?", pathname))
+	       ret = unlink(pathname);
+	return ret;
+}
+
+static int is_dir_empty(const char *path)
+{
+	struct strbuf buf = STRBUF_INIT;
+	WIN32_FIND_DATAA findbuf;
+	HANDLE handle;
+
+	strbuf_addf(&buf, "%s\\*", path);
+	handle = FindFirstFileA(buf.buf, &findbuf);
+	if (handle == INVALID_HANDLE_VALUE) {
+		strbuf_release(&buf);
+		return GetLastError() == ERROR_NO_MORE_FILES;
+	}
+
+	while (!strcmp(findbuf.cFileName, ".") ||
+			!strcmp(findbuf.cFileName, ".."))
+		if (!FindNextFile(handle, &findbuf)) {
+			strbuf_release(&buf);
+			return GetLastError() == ERROR_NO_MORE_FILES;
+		}
+	FindClose(handle);
+	strbuf_release(&buf);
+	return 0;
+}
+
+#undef rmdir
+int mingw_rmdir(const char *pathname)
+{
+	int ret, tries = 0;
+
+	while ((ret = rmdir(pathname)) == -1 && tries < ARRAY_SIZE(delay)) {
+		if (!is_file_in_use_error(GetLastError()))
+			errno = err_win_to_posix(GetLastError());
+		if (errno != EACCES)
+			break;
+		if (!is_dir_empty(pathname)) {
+			errno = ENOTEMPTY;
+			break;
+		}
+		/*
+		 * We assume that some other process had the source or
+		 * destination file open at the wrong moment and retry.
+		 * In order to give the other process a higher chance to
+		 * complete its operation, we give up our time slice now.
+		 * If we have to retry again, we do sleep a bit.
+		 */
+		Sleep(delay[tries]);
+		tries++;
+	}
+	while (ret == -1 && errno == EACCES && is_file_in_use_error(GetLastError()) &&
+	       ask_yes_no_if_possible("Deletion of directory '%s' failed. "
+			"Should I try again?", pathname))
+	       ret = rmdir(pathname);
+	return ret;
+}
+
 #undef open
 int mingw_open (const char *filename, int oflags, ...)
 {
@@ -127,7 +291,7 @@ int mingw_open (const char *filename, int oflags, ...)
 	mode = va_arg(args, int);
 	va_end(args);
 
-	if (!strcmp(filename, "/dev/null"))
+	if (filename && !strcmp(filename, "/dev/null"))
 		filename = "nul";
 
 	fd = open(filename, oflags, mode);
@@ -157,10 +321,35 @@ ssize_t mingw_write(int fd, const void *buf, size_t count)
 	return write(fd, buf, min(count, 31 * 1024 * 1024));
 }
 
+static BOOL WINAPI ctrl_ignore(DWORD type)
+{
+	return TRUE;
+}
+
+#undef fgetc
+int mingw_fgetc(FILE *stream)
+{
+	int ch;
+	if (!isatty(_fileno(stream)))
+		return fgetc(stream);
+
+	SetConsoleCtrlHandler(ctrl_ignore, TRUE);
+	while (1) {
+		ch = fgetc(stream);
+		if (ch != EOF || GetLastError() != ERROR_OPERATION_ABORTED)
+			break;
+
+		/* Ctrl+C was pressed, simulate SIGINT and retry */
+		mingw_raise(SIGINT);
+	}
+	SetConsoleCtrlHandler(ctrl_ignore, FALSE);
+	return ch;
+}
+
 #undef fopen
 FILE *mingw_fopen (const char *filename, const char *otype)
 {
-	if (!strcmp(filename, "/dev/null"))
+	if (filename && !strcmp(filename, "/dev/null"))
 		filename = "nul";
 	return fopen(filename, otype);
 }
@@ -171,6 +360,28 @@ FILE *mingw_freopen (const char *filename, const char *otype, FILE *stream)
 	if (filename && !strcmp(filename, "/dev/null"))
 		filename = "nul";
 	return freopen(filename, otype, stream);
+}
+
+#undef fflush
+int mingw_fflush(FILE *stream)
+{
+	int ret = fflush(stream);
+
+	/*
+	 * write() is used behind the scenes of stdio output functions.
+	 * Since git code does not check for errors after each stdio write
+	 * operation, it can happen that write() is called by a later
+	 * stdio function even if an earlier write() call failed. In the
+	 * case of a pipe whose readable end was closed, only the first
+	 * call to write() reports EPIPE on Windows. Subsequent write()
+	 * calls report EINVAL. It is impossible to notice whether this
+	 * fflush invocation triggered such a case, therefore, we have to
+	 * catch all EINVAL errors whole-sale.
+	 */
+	if (ret && errno == EINVAL)
+		errno = EPIPE;
+
+	return ret;
 }
 
 /*
@@ -192,12 +403,16 @@ static inline time_t filetime_to_time_t(const FILETIME *ft)
 /* We keep the do_lstat code in a separate function to avoid recursion.
  * When a path ends with a slash, the stat will fail with ENOENT. In
  * this case, we strip the trailing slashes and stat again.
+ *
+ * If follow is true then act like stat() and report on the link
+ * target. Otherwise report on the link itself.
  */
-static int do_lstat(const char *file_name, struct stat *buf)
+static int do_lstat(int follow, const char *file_name, struct stat *buf)
 {
+	int err;
 	WIN32_FILE_ATTRIBUTE_DATA fdata;
 
-	if (!(errno = get_file_attr(file_name, &fdata))) {
+	if (!(err = get_file_attr(file_name, &fdata))) {
 		buf->st_ino = 0;
 		buf->st_gid = 0;
 		buf->st_uid = 0;
@@ -209,8 +424,28 @@ static int do_lstat(const char *file_name, struct stat *buf)
 		buf->st_atime = filetime_to_time_t(&(fdata.ftLastAccessTime));
 		buf->st_mtime = filetime_to_time_t(&(fdata.ftLastWriteTime));
 		buf->st_ctime = filetime_to_time_t(&(fdata.ftCreationTime));
+		if (fdata.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) {
+			WIN32_FIND_DATAA findbuf;
+			HANDLE handle = FindFirstFileA(file_name, &findbuf);
+			if (handle != INVALID_HANDLE_VALUE) {
+				if ((findbuf.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) &&
+						(findbuf.dwReserved0 == IO_REPARSE_TAG_SYMLINK)) {
+					if (follow) {
+						char buffer[MAXIMUM_REPARSE_DATA_BUFFER_SIZE];
+						buf->st_size = readlink(file_name, buffer, MAXIMUM_REPARSE_DATA_BUFFER_SIZE);
+					} else {
+						buf->st_mode = S_IFLNK;
+					}
+					buf->st_mode |= S_IREAD;
+					if (!(findbuf.dwFileAttributes & FILE_ATTRIBUTE_READONLY))
+						buf->st_mode |= S_IWRITE;
+				}
+				FindClose(handle);
+			}
+		}
 		return 0;
 	}
+	errno = err;
 	return -1;
 }
 
@@ -220,12 +455,12 @@ static int do_lstat(const char *file_name, struct stat *buf)
  * complete. Note that Git stat()s are redirected to mingw_lstat()
  * too, since Windows doesn't really handle symlinks that well.
  */
-int mingw_lstat(const char *file_name, struct stat *buf)
+static int do_stat_internal(int follow, const char *file_name, struct stat *buf)
 {
 	int namelen;
 	static char alt_name[PATH_MAX];
 
-	if (!do_lstat(file_name, buf))
+	if (!do_lstat(follow, file_name, buf))
 		return 0;
 
 	/* if file_name ended in a '/', Windows returned ENOENT;
@@ -244,10 +479,18 @@ int mingw_lstat(const char *file_name, struct stat *buf)
 
 	memcpy(alt_name, file_name, namelen);
 	alt_name[namelen] = 0;
-	return do_lstat(alt_name, buf);
+	return do_lstat(follow, alt_name, buf);
 }
 
-#undef fstat
+int mingw_lstat(const char *file_name, struct stat *buf)
+{
+	return do_stat_internal(0, file_name, buf);
+}
+int mingw_stat(const char *file_name, struct stat *buf)
+{
+	return do_stat_internal(1, file_name, buf);
+}
+
 int mingw_fstat(int fd, struct stat *buf)
 {
 	HANDLE fh = (HANDLE)_get_osfhandle(fd);
@@ -377,71 +620,6 @@ int pipe(int filedes[2])
 	return 0;
 }
 
-int poll(struct pollfd *ufds, unsigned int nfds, int timeout)
-{
-	int i, pending;
-
-	if (timeout >= 0) {
-		if (nfds == 0) {
-			Sleep(timeout);
-			return 0;
-		}
-		return errno = EINVAL, error("poll timeout not supported");
-	}
-
-	/* When there is only one fd to wait for, then we pretend that
-	 * input is available and let the actual wait happen when the
-	 * caller invokes read().
-	 */
-	if (nfds == 1) {
-		if (!(ufds[0].events & POLLIN))
-			return errno = EINVAL, error("POLLIN not set");
-		ufds[0].revents = POLLIN;
-		return 0;
-	}
-
-repeat:
-	pending = 0;
-	for (i = 0; i < nfds; i++) {
-		DWORD avail = 0;
-		HANDLE h = (HANDLE) _get_osfhandle(ufds[i].fd);
-		if (h == INVALID_HANDLE_VALUE)
-			return -1;	/* errno was set */
-
-		if (!(ufds[i].events & POLLIN))
-			return errno = EINVAL, error("POLLIN not set");
-
-		/* this emulation works only for pipes */
-		if (!PeekNamedPipe(h, NULL, 0, NULL, &avail, NULL)) {
-			int err = GetLastError();
-			if (err == ERROR_BROKEN_PIPE) {
-				ufds[i].revents = POLLHUP;
-				pending++;
-			} else {
-				errno = EINVAL;
-				return error("PeekNamedPipe failed,"
-					" GetLastError: %u", err);
-			}
-		} else if (avail) {
-			ufds[i].revents = POLLIN;
-			pending++;
-		} else
-			ufds[i].revents = 0;
-	}
-	if (!pending) {
-		/* The only times that we spin here is when the process
-		 * that is connected through the pipes is waiting for
-		 * its own input data to become available. But since
-		 * the process (pack-objects) is itself CPU intensive,
-		 * it will happily pick up the time slice that we are
-		 * relinquishing here.
-		 */
-		Sleep(0);
-		goto repeat;
-	}
-	return 0;
-}
-
 struct tm *gmtime_r(const time_t *timep, struct tm *result)
 {
 	/* gmtime() in MSVCRT.DLL is thread-safe, but not reentrant */
@@ -467,19 +645,6 @@ char *mingw_getcwd(char *pointer, int len)
 		if (pointer[i] == '\\')
 			pointer[i] = '/';
 	return ret;
-}
-
-#undef getenv
-char *mingw_getenv(const char *name)
-{
-	char *result = getenv(name);
-	if (!result && !strcmp(name, "TMPDIR")) {
-		/* on Windows it is TMP and TEMP */
-		result = getenv("TMP");
-		if (!result)
-			result = getenv("TEMP");
-	}
-	return result;
 }
 
 /*
@@ -581,7 +746,7 @@ static const char *parse_interpreter(const char *cmd)
  */
 static char **get_path_split(void)
 {
-	char *p, **path, *envpath = getenv("PATH");
+	char *p, **path, *envpath = mingw_getenv("PATH");
 	int i, n = 0;
 
 	if (!envpath || !*envpath)
@@ -670,6 +835,14 @@ static int env_compare(const void *a, const void *b)
 	char *const *eb = b;
 	return strcasecmp(*ea, *eb);
 }
+
+struct pinfo_t {
+	struct pinfo_t *next;
+	pid_t pid;
+	HANDLE proc;
+};
+static struct pinfo_t *pinfo = NULL;
+CRITICAL_SECTION pinfo_cs;
 
 static pid_t mingw_spawnve_fd(const char *cmd, const char **argv, char **env,
 			      const char *dir,
@@ -763,7 +936,26 @@ static pid_t mingw_spawnve_fd(const char *cmd, const char **argv, char **env,
 		return -1;
 	}
 	CloseHandle(pi.hThread);
-	return (pid_t)pi.hProcess;
+
+	/*
+	 * The process ID is the human-readable identifier of the process
+	 * that we want to present in log and error messages. The handle
+	 * is not useful for this purpose. But we cannot close it, either,
+	 * because it is not possible to turn a process ID into a process
+	 * handle after the process terminated.
+	 * Keep the handle in a list for waitpid.
+	 */
+	EnterCriticalSection(&pinfo_cs);
+	{
+		struct pinfo_t *info = xmalloc(sizeof(struct pinfo_t));
+		info->pid = pi.dwProcessId;
+		info->proc = pi.hProcess;
+		info->next = pinfo;
+		pinfo = info;
+	}
+	LeaveCriticalSection(&pinfo_cs);
+
+	return (pid_t)pi.dwProcessId;
 }
 
 static pid_t mingw_spawnve(const char *cmd, const char **argv, char **env,
@@ -859,7 +1051,7 @@ static void mingw_execve(const char *cmd, char *const *argv, char *const *env)
 	}
 }
 
-void mingw_execvp(const char *cmd, char *const *argv)
+int mingw_execvp(const char *cmd, char *const *argv)
 {
 	char **path = get_path_split();
 	char *prog = path_lookup(cmd, path, 0);
@@ -871,6 +1063,38 @@ void mingw_execvp(const char *cmd, char *const *argv)
 		errno = ENOENT;
 
 	free_path_split(path);
+	return -1;
+}
+
+int mingw_execv(const char *cmd, char *const *argv)
+{
+	mingw_execve(cmd, argv, environ);
+	return -1;
+}
+
+int mingw_kill(pid_t pid, int sig)
+{
+	if (pid > 0 && sig == SIGTERM) {
+		HANDLE h = OpenProcess(PROCESS_TERMINATE, FALSE, pid);
+
+		if (TerminateProcess(h, -1)) {
+			CloseHandle(h);
+			return 0;
+		}
+
+		errno = err_win_to_posix(GetLastError());
+		CloseHandle(h);
+		return -1;
+	} else if (pid > 0 && sig == 0) {
+		HANDLE h = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, pid);
+		if (h) {
+			CloseHandle(h);
+			return 0;
+		}
+	}
+
+	errno = EINVAL;
+	return -1;
 }
 
 static char **copy_environ(void)
@@ -947,9 +1171,39 @@ char **make_augmented_environ(const char *const *vars)
 	return env;
 }
 
+#undef getenv
+
+/*
+ * The system's getenv looks up the name in a case-insensitive manner.
+ * This version tries a case-sensitive lookup and falls back to
+ * case-insensitive if nothing was found.  This is necessary because,
+ * as a prominent example, CMD sets 'Path', but not 'PATH'.
+ * Warning: not thread-safe.
+ */
+static char *getenv_cs(const char *name)
+{
+	size_t len = strlen(name);
+	int i = lookup_env(environ, name, len);
+	if (i >= 0)
+		return environ[i] + len + 1;	/* skip past name and '=' */
+	return getenv(name);
+}
+
+char *mingw_getenv(const char *name)
+{
+	char *result = getenv_cs(name);
+	if (!result && !strcmp(name, "TMPDIR")) {
+		/* on Windows it is TMP and TEMP */
+		result = getenv_cs("TMP");
+		if (!result)
+			result = getenv_cs("TEMP");
+	}
+	return result;
+}
+
 /*
  * Note, this isn't a complete replacement for getaddrinfo. It assumes
- * that service contains a numerical port, or that it it is null. It
+ * that service contains a numerical port, or that it is null. It
  * does a simple search using gethostbyname, and returns one IPv4 host
  * if one was found.
  */
@@ -957,19 +1211,22 @@ static int WSAAPI getaddrinfo_stub(const char *node, const char *service,
 				   const struct addrinfo *hints,
 				   struct addrinfo **res)
 {
-	struct hostent *h = gethostbyname(node);
+	struct hostent *h = NULL;
 	struct addrinfo *ai;
 	struct sockaddr_in *sin;
 
-	if (!h)
-		return WSAGetLastError();
+	if (node) {
+		h = gethostbyname(node);
+		if (!h)
+			return WSAGetLastError();
+	}
 
 	ai = xmalloc(sizeof(struct addrinfo));
 	*res = ai;
 	ai->ai_flags = 0;
 	ai->ai_family = AF_INET;
-	ai->ai_socktype = hints->ai_socktype;
-	switch (hints->ai_socktype) {
+	ai->ai_socktype = hints ? hints->ai_socktype : 0;
+	switch (ai->ai_socktype) {
 	case SOCK_STREAM:
 		ai->ai_protocol = IPPROTO_TCP;
 		break;
@@ -981,16 +1238,27 @@ static int WSAAPI getaddrinfo_stub(const char *node, const char *service,
 		break;
 	}
 	ai->ai_addrlen = sizeof(struct sockaddr_in);
-	ai->ai_canonname = strdup(h->h_name);
+	if (hints && (hints->ai_flags & AI_CANONNAME))
+		ai->ai_canonname = h ? xstrdup(h->h_name) : NULL;
+	else
+		ai->ai_canonname = NULL;
 
 	sin = xmalloc(ai->ai_addrlen);
 	memset(sin, 0, ai->ai_addrlen);
 	sin->sin_family = AF_INET;
+	/* Note: getaddrinfo is supposed to allow service to be a string,
+	 * which should be looked up using getservbyname. This is
+	 * currently not implemented */
 	if (service)
 		sin->sin_port = htons(atoi(service));
-	sin->sin_addr = *(struct in_addr *)h->h_addr;
+	if (h)
+		sin->sin_addr = *(struct in_addr *)h->h_addr;
+	else if (hints && (hints->ai_flags & AI_PASSIVE))
+		sin->sin_addr.s_addr = INADDR_ANY;
+	else
+		sin->sin_addr.s_addr = INADDR_LOOPBACK;
 	ai->ai_addr = (struct sockaddr *)sin;
-	ai->ai_next = 0;
+	ai->ai_next = NULL;
 	return 0;
 }
 
@@ -1109,6 +1377,13 @@ static void ensure_socket_initialization(void)
 	initialized = 1;
 }
 
+#undef gethostname
+int mingw_gethostname(char *name, int namelen)
+{
+    ensure_socket_initialization();
+    return gethostname(name, namelen);
+}
+
 #undef gethostbyname
 struct hostent *mingw_gethostbyname(const char *host)
 {
@@ -1139,7 +1414,10 @@ int mingw_getnameinfo(const struct sockaddr *sa, socklen_t salen,
 int mingw_socket(int domain, int type, int protocol)
 {
 	int sockfd;
-	SOCKET s = WSASocket(domain, type, protocol, NULL, 0, 0);
+	SOCKET s;
+
+	ensure_socket_initialization();
+	s = WSASocket(domain, type, protocol, NULL, 0, 0);
 	if (s == INVALID_SOCKET) {
 		/*
 		 * WSAGetLastError() values are regular BSD error codes
@@ -1169,12 +1447,57 @@ int mingw_connect(int sockfd, struct sockaddr *sa, size_t sz)
 	return connect(s, sa, sz);
 }
 
+#undef bind
+int mingw_bind(int sockfd, struct sockaddr *sa, size_t sz)
+{
+	SOCKET s = (SOCKET)_get_osfhandle(sockfd);
+	return bind(s, sa, sz);
+}
+
+#undef setsockopt
+int mingw_setsockopt(int sockfd, int lvl, int optname, void *optval, int optlen)
+{
+	SOCKET s = (SOCKET)_get_osfhandle(sockfd);
+	return setsockopt(s, lvl, optname, (const char*)optval, optlen);
+}
+
+#undef shutdown
+int mingw_shutdown(int sockfd, int how)
+{
+	SOCKET s = (SOCKET)_get_osfhandle(sockfd);
+	return shutdown(s, how);
+}
+
+#undef listen
+int mingw_listen(int sockfd, int backlog)
+{
+	SOCKET s = (SOCKET)_get_osfhandle(sockfd);
+	return listen(s, backlog);
+}
+
+#undef accept
+int mingw_accept(int sockfd1, struct sockaddr *sa, socklen_t *sz)
+{
+	int sockfd2;
+
+	SOCKET s1 = (SOCKET)_get_osfhandle(sockfd1);
+	SOCKET s2 = accept(s1, sa, sz);
+
+	/* convert into a file descriptor */
+	if ((sockfd2 = _open_osfhandle(s2, O_RDWR|O_BINARY)) < 0) {
+		int err = errno;
+		closesocket(s2);
+		return error("unable to make a socket file descriptor: %s",
+			strerror(err));
+	}
+	return sockfd2;
+}
+
 #undef rename
 int mingw_rename(const char *pold, const char *pnew)
 {
 	DWORD attrs, gle;
 	int tries = 0;
-	static const int delay[] = { 0, 1, 10, 20, 40 };
 
 	/*
 	 * Try native rename() first to get errno right.
@@ -1216,6 +1539,11 @@ repeat:
 		tries++;
 		goto repeat;
 	}
+	if (gle == ERROR_ACCESS_DENIED &&
+	       ask_yes_no_if_possible("Rename from '%s' to '%s' failed. "
+		       "Should I try again?", pold, pnew))
+		goto repeat;
+
 	errno = EACCES;
 	return -1;
 }
@@ -1250,7 +1578,7 @@ static HANDLE timer_event;
 static HANDLE timer_thread;
 static int timer_interval;
 static int one_shot;
-static sig_handler_t timer_fn = SIG_DFL;
+static sig_handler_t timer_fn = SIG_DFL, sigint_fn = SIG_DFL;
 
 /* The timer works like this:
  * The thread, ticktack(), is a trivial routine that most of the time
@@ -1264,10 +1592,7 @@ static sig_handler_t timer_fn = SIG_DFL;
 static unsigned __stdcall ticktack(void *dummy)
 {
 	while (WaitForSingleObject(timer_event, timer_interval) == WAIT_TIMEOUT) {
-		if (timer_fn == SIG_DFL)
-			die("Alarm");
-		if (timer_fn != SIG_IGN)
-			timer_fn(SIGALRM);
+		mingw_raise(SIGALRM);
 		if (one_shot)
 			break;
 	}
@@ -1357,12 +1682,51 @@ int sigaction(int sig, struct sigaction *in, struct sigaction *out)
 #undef signal
 sig_handler_t mingw_signal(int sig, sig_handler_t handler)
 {
-	sig_handler_t old = timer_fn;
-	if (sig != SIGALRM)
+	sig_handler_t old;
+
+	switch (sig) {
+	case SIGALRM:
+		old = timer_fn;
+		timer_fn = handler;
+		break;
+
+	case SIGINT:
+		old = sigint_fn;
+		sigint_fn = handler;
+		break;
+
+	default:
 		return signal(sig, handler);
-	timer_fn = handler;
+	}
+
 	return old;
 }
+
+#undef raise
+int mingw_raise(int sig)
+{
+	switch (sig) {
+	case SIGALRM:
+		if (timer_fn == SIG_DFL) {
+			if (isatty(STDERR_FILENO))
+				fputs("Alarm clock\n", stderr);
+			exit(128 + SIGALRM);
+		} else if (timer_fn != SIG_IGN)
+			timer_fn(SIGALRM);
+		return 0;
+
+	case SIGINT:
+		if (sigint_fn == SIG_DFL)
+			exit(128 + SIGINT);
+		else if (sigint_fn != SIG_IGN)
+			sigint_fn(SIGINT);
+		return 0;
+
+	default:
+		return raise(sig);
+	}
+}
+
 
 static const char *make_backslash_path(const char *path)
 {
@@ -1386,6 +1750,7 @@ void mingw_open_html(const char *unixpath)
 			const char *, const char *, const char *, INT);
 	T ShellExecute;
 	HMODULE shell32;
+	int r;
 
 	shell32 = LoadLibrary("shell32.dll");
 	if (!shell32)
@@ -1395,9 +1760,12 @@ void mingw_open_html(const char *unixpath)
 		die("cannot run browser");
 
 	printf("Launching default browser to display HTML ...\n");
-	ShellExecute(NULL, "open", htmlpath, NULL, "\\", 0);
-
+	r = (int)ShellExecute(NULL, "open", htmlpath, NULL, "\\", SW_SHOWNORMAL);
 	FreeLibrary(shell32);
+	/* see the MSDN documentation referring to the result codes here */
+	if (r <= 32) {
+		die("failed to launch browser for %.*s", MAX_PATH, unixpath);
+	}
 }
 
 int link(const char *oldpath, const char *newpath)
@@ -1421,77 +1789,54 @@ int link(const char *oldpath, const char *newpath)
 	return 0;
 }
 
-char *getpass(const char *prompt)
+pid_t waitpid(pid_t pid, int *status, int options)
 {
-	struct strbuf buf = STRBUF_INIT;
-
-	fputs(prompt, stderr);
-	for (;;) {
-		char c = _getch();
-		if (c == '\r' || c == '\n')
-			break;
-		strbuf_addch(&buf, c);
-	}
-	fputs("\n", stderr);
-	return strbuf_detach(&buf, NULL);
-}
-
-#ifndef NO_MINGW_REPLACE_READDIR
-/* MinGW readdir implementation to avoid extra lstats for Git */
-struct mingw_DIR
-{
-	struct _finddata_t	dd_dta;		/* disk transfer area for this dir */
-	struct mingw_dirent	dd_dir;		/* Our own implementation, including d_type */
-	long			dd_handle;	/* _findnext handle */
-	int			dd_stat; 	/* 0 = next entry to read is first entry, -1 = off the end, positive = 0 based index of next entry */
-	char			dd_name[1]; 	/* given path for dir with search pattern (struct is extended) */
-};
-
-struct dirent *mingw_readdir(DIR *dir)
-{
-	WIN32_FIND_DATAA buf;
-	HANDLE handle;
-	struct mingw_DIR *mdir = (struct mingw_DIR*)dir;
-
-	if (!dir->dd_handle) {
-		errno = EBADF; /* No set_errno for mingw */
-		return NULL;
+	HANDLE h = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_INFORMATION,
+	    FALSE, pid);
+	if (!h) {
+		errno = ECHILD;
+		return -1;
 	}
 
-	if (dir->dd_handle == (long)INVALID_HANDLE_VALUE && dir->dd_stat == 0)
-	{
-		DWORD lasterr;
-		handle = FindFirstFileA(dir->dd_name, &buf);
-		lasterr = GetLastError();
-		dir->dd_handle = (long)handle;
-		if (handle == INVALID_HANDLE_VALUE && (lasterr != ERROR_NO_MORE_FILES)) {
-			errno = err_win_to_posix(lasterr);
-			return NULL;
+	if (pid > 0 && options & WNOHANG) {
+		if (WAIT_OBJECT_0 != WaitForSingleObject(h, 0)) {
+			CloseHandle(h);
+			return 0;
 		}
-	} else if (dir->dd_handle == (long)INVALID_HANDLE_VALUE) {
-		return NULL;
-	} else if (!FindNextFileA((HANDLE)dir->dd_handle, &buf)) {
-		DWORD lasterr = GetLastError();
-		FindClose((HANDLE)dir->dd_handle);
-		dir->dd_handle = (long)INVALID_HANDLE_VALUE;
-		/* POSIX says you shouldn't set errno when readdir can't
-		   find any more files; so, if another error we leave it set. */
-		if (lasterr != ERROR_NO_MORE_FILES)
-			errno = err_win_to_posix(lasterr);
-		return NULL;
+		options &= ~WNOHANG;
 	}
 
-	/* We get here if `buf' contains valid data.  */
-	strcpy(dir->dd_dir.d_name, buf.cFileName);
-	++dir->dd_stat;
+	if (options == 0) {
+		struct pinfo_t **ppinfo;
+		if (WaitForSingleObject(h, INFINITE) != WAIT_OBJECT_0) {
+			CloseHandle(h);
+			return 0;
+		}
 
-	/* Set file type, based on WIN32_FIND_DATA */
-	mdir->dd_dir.d_type = 0;
-	if (buf.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
-		mdir->dd_dir.d_type |= DT_DIR;
-	else
-		mdir->dd_dir.d_type |= DT_REG;
+		if (status)
+			GetExitCodeProcess(h, (LPDWORD)status);
 
-	return (struct dirent*)&dir->dd_dir;
+		EnterCriticalSection(&pinfo_cs);
+
+		ppinfo = &pinfo;
+		while (*ppinfo) {
+			struct pinfo_t *info = *ppinfo;
+			if (info->pid == pid) {
+				CloseHandle(info->proc);
+				*ppinfo = info->next;
+				free(info);
+				break;
+			}
+			ppinfo = &info->next;
+		}
+
+		LeaveCriticalSection(&pinfo_cs);
+
+		CloseHandle(h);
+		return pid;
+	}
+	CloseHandle(h);
+
+	errno = EINVAL;
+	return -1;
 }
-#endif // !NO_MINGW_REPLACE_READDIR

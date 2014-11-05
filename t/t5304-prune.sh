@@ -14,7 +14,8 @@ add_blob() {
 	BLOB=$(echo aleph_0 | git hash-object -w --stdin) &&
 	BLOB_FILE=.git/objects/$(echo $BLOB | sed "s/^../&\//") &&
 	test $((1 + $before)) = $(git count-objects | sed "s/ .*//") &&
-	test -f $BLOB_FILE
+	test -f $BLOB_FILE &&
+	test-chmtime =+0 $BLOB_FILE
 }
 
 test_expect_success setup '
@@ -192,6 +193,32 @@ test_expect_success 'gc: prune old objects after local clone' '
 		test 0 = $(git count-objects | sed "s/ .*//") &&
 		! test -f $BLOB_FILE
 	)
+'
+
+test_expect_success 'garbage report in count-objects -v' '
+	: >.git/objects/pack/foo &&
+	: >.git/objects/pack/foo.bar &&
+	: >.git/objects/pack/foo.keep &&
+	: >.git/objects/pack/foo.pack &&
+	: >.git/objects/pack/fake.bar &&
+	: >.git/objects/pack/fake.keep &&
+	: >.git/objects/pack/fake.pack &&
+	: >.git/objects/pack/fake.idx &&
+	: >.git/objects/pack/fake2.keep &&
+	: >.git/objects/pack/fake3.idx &&
+	git count-objects -v 2>stderr &&
+	grep "index file .git/objects/pack/fake.idx is too small" stderr &&
+	grep "^warning:" stderr | sort >actual &&
+	cat >expected <<\EOF &&
+warning: garbage found: .git/objects/pack/fake.bar
+warning: garbage found: .git/objects/pack/foo
+warning: garbage found: .git/objects/pack/foo.bar
+warning: no corresponding .idx nor .pack: .git/objects/pack/fake2.keep
+warning: no corresponding .idx: .git/objects/pack/foo.keep
+warning: no corresponding .idx: .git/objects/pack/foo.pack
+warning: no corresponding .pack: .git/objects/pack/fake3.idx
+EOF
+	test_cmp expected actual
 '
 
 test_done

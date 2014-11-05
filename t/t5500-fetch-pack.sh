@@ -91,13 +91,13 @@ test_expect_success 'setup' '
 		prev=$cur &&
 		cur=$(($cur+1))
 	done &&
-	add B1 $A1
+	add B1 $A1 &&
 	echo $ATIP > .git/refs/heads/A &&
 	echo $BTIP > .git/refs/heads/B &&
 	git symbolic-ref HEAD refs/heads/B
 '
 
-pull_to_client 1st "B A" $((11*3))
+pull_to_client 1st "refs/heads/B refs/heads/A" $((11*3))
 
 test_expect_success 'post 1st pull setup' '
 	add A11 $A10 &&
@@ -110,12 +110,44 @@ test_expect_success 'post 1st pull setup' '
 	done
 '
 
-pull_to_client 2nd "B" $((64*3))
+pull_to_client 2nd "refs/heads/B" $((64*3))
 
-pull_to_client 3rd "A" $((1*3))
+pull_to_client 3rd "refs/heads/A" $((1*3))
+
+test_expect_success 'single branch clone' '
+	git clone --single-branch "file://$(pwd)/." singlebranch
+'
+
+test_expect_success 'single branch object count' '
+	GIT_DIR=singlebranch/.git git count-objects -v |
+		grep "^in-pack:" > count.singlebranch &&
+	echo "in-pack: 198" >expected &&
+	test_cmp expected count.singlebranch
+'
+
+test_expect_success 'single given branch clone' '
+	git clone --single-branch --branch A "file://$(pwd)/." branch-a &&
+	test_must_fail git --git-dir=branch-a/.git rev-parse origin/B
+'
+
+test_expect_success 'clone shallow depth 1' '
+	git clone --no-single-branch --depth 1 "file://$(pwd)/." shallow0 &&
+	test "`git --git-dir=shallow0/.git rev-list --count HEAD`" = 1
+'
+
+test_expect_success 'clone shallow depth 1 with fsck' '
+	git config --global fetch.fsckobjects true &&
+	git clone --no-single-branch --depth 1 "file://$(pwd)/." shallow0fsck &&
+	test "`git --git-dir=shallow0fsck/.git rev-list --count HEAD`" = 1 &&
+	git config --global --unset fetch.fsckobjects
+'
 
 test_expect_success 'clone shallow' '
-	git clone --depth 2 "file://$(pwd)/." shallow
+	git clone --no-single-branch --depth 2 "file://$(pwd)/." shallow
+'
+
+test_expect_success 'clone shallow depth count' '
+	test "`git --git-dir=shallow/.git rev-list --count HEAD`" = 2
 '
 
 test_expect_success 'clone shallow object count' '
@@ -123,7 +155,7 @@ test_expect_success 'clone shallow object count' '
 		cd shallow &&
 		git count-objects -v
 	) > count.shallow &&
-	grep "^in-pack: 18" count.shallow
+	grep "^in-pack: 12" count.shallow
 '
 
 test_expect_success 'clone shallow object count (part 2)' '
@@ -240,12 +272,264 @@ test_expect_success 'additional simple shallow deepenings' '
 	)
 '
 
+test_expect_success 'clone shallow depth count' '
+	test "`git --git-dir=shallow/.git rev-list --count HEAD`" = 11
+'
+
 test_expect_success 'clone shallow object count' '
 	(
 		cd shallow &&
 		git count-objects -v
 	) > count.shallow &&
-	grep "^count: 52" count.shallow
+	grep "^count: 55" count.shallow
+'
+
+test_expect_success 'fetch --no-shallow on full repo' '
+	test_must_fail git fetch --noshallow
+'
+
+test_expect_success 'fetch --depth --no-shallow' '
+	(
+		cd shallow &&
+		test_must_fail git fetch --depth=1 --noshallow
+	)
+'
+
+test_expect_success 'turn shallow to complete repository' '
+	(
+		cd shallow &&
+		git fetch --unshallow &&
+		! test -f .git/shallow &&
+		git fsck --full
+	)
+'
+
+test_expect_success 'clone shallow without --no-single-branch' '
+	git clone --depth 1 "file://$(pwd)/." shallow2
+'
+
+test_expect_success 'clone shallow object count' '
+	(
+		cd shallow2 &&
+		git count-objects -v
+	) > count.shallow2 &&
+	grep "^in-pack: 3" count.shallow2
+'
+
+test_expect_success 'clone shallow with --branch' '
+	git clone --depth 1 --branch A "file://$(pwd)/." shallow3
+'
+
+test_expect_success 'clone shallow object count' '
+	echo "in-pack: 3" > count3.expected &&
+	GIT_DIR=shallow3/.git git count-objects -v |
+		grep "^in-pack" > count3.actual &&
+	test_cmp count3.expected count3.actual
+'
+
+test_expect_success 'clone shallow with detached HEAD' '
+	git checkout HEAD^ &&
+	git clone --depth 1 "file://$(pwd)/." shallow5 &&
+	git checkout - &&
+	GIT_DIR=shallow5/.git git rev-parse HEAD >actual &&
+	git rev-parse HEAD^ >expected &&
+	test_cmp expected actual
+'
+
+test_expect_success 'shallow clone pulling tags' '
+	git tag -a -m A TAGA1 A &&
+	git tag -a -m B TAGB1 B &&
+	git tag TAGA2 A &&
+	git tag TAGB2 B &&
+	git clone --depth 1 "file://$(pwd)/." shallow6 &&
+
+	cat >taglist.expected <<\EOF &&
+TAGB1
+TAGB2
+EOF
+	GIT_DIR=shallow6/.git git tag -l >taglist.actual &&
+	test_cmp taglist.expected taglist.actual &&
+
+	echo "in-pack: 4" > count6.expected &&
+	GIT_DIR=shallow6/.git git count-objects -v |
+		grep "^in-pack" > count6.actual &&
+	test_cmp count6.expected count6.actual
+'
+
+test_expect_success 'shallow cloning single tag' '
+	git clone --depth 1 --branch=TAGB1 "file://$(pwd)/." shallow7 &&
+	cat >taglist.expected <<\EOF &&
+TAGB1
+TAGB2
+EOF
+	GIT_DIR=shallow7/.git git tag -l >taglist.actual &&
+	test_cmp taglist.expected taglist.actual &&
+
+	echo "in-pack: 4" > count7.expected &&
+	GIT_DIR=shallow7/.git git count-objects -v |
+		grep "^in-pack" > count7.actual &&
+	test_cmp count7.expected count7.actual
+'
+
+test_expect_success 'clone shallow with packed refs' '
+	git pack-refs --all &&
+	git clone --depth 1 --branch A "file://$(pwd)/." shallow8 &&
+	echo "in-pack: 4" > count8.expected &&
+	GIT_DIR=shallow8/.git git count-objects -v |
+		grep "^in-pack" > count8.actual &&
+	test_cmp count8.expected count8.actual
+'
+
+test_expect_success 'fetch in shallow repo unreachable shallow objects' '
+	(
+		git clone --bare --branch B --single-branch "file://$(pwd)/." no-reflog &&
+		git clone --depth 1 "file://$(pwd)/no-reflog" shallow9 &&
+		cd no-reflog &&
+		git tag -d TAGB1 TAGB2 &&
+		git update-ref refs/heads/B B~~ &&
+		git gc --prune=now &&
+		cd ../shallow9 &&
+		git fetch origin &&
+		git fsck --no-dangling
+	)
+'
+test_expect_success 'fetch creating new shallow root' '
+	(
+		git clone "file://$(pwd)/." shallow10 &&
+		git commit --allow-empty -m empty &&
+		cd shallow10 &&
+		git fetch --depth=1 --progress 2>actual &&
+		# This should fetch only the empty commit, no tree or
+		# blob objects
+		grep "remote: Total 1" actual
+	)
+'
+
+test_expect_success 'setup tests for the --stdin parameter' '
+	for head in C D E F
+	do
+		add $head
+	done &&
+	for head in A B C D E F
+	do
+		git tag $head $head
+	done &&
+	cat >input <<-\EOF
+	refs/heads/C
+	refs/heads/A
+	refs/heads/D
+	refs/tags/C
+	refs/heads/B
+	refs/tags/A
+	refs/heads/E
+	refs/tags/B
+	refs/tags/E
+	refs/tags/D
+	EOF
+	sort <input >expect &&
+	(
+		echo refs/heads/E &&
+		echo refs/tags/E &&
+		cat input
+	) >input.dup
+'
+
+test_expect_success 'fetch refs from cmdline' '
+	(
+		cd client &&
+		git fetch-pack --no-progress .. $(cat ../input)
+	) >output &&
+	cut -d " " -f 2 <output | sort >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'fetch refs from stdin' '
+	(
+		cd client &&
+		git fetch-pack --stdin --no-progress .. <../input
+	) >output &&
+	cut -d " " -f 2 <output | sort >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'fetch mixed refs from cmdline and stdin' '
+	(
+		cd client &&
+		tail -n +5 ../input |
+		git fetch-pack --stdin --no-progress .. $(head -n 4 ../input)
+	) >output &&
+	cut -d " " -f 2 <output | sort >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'test duplicate refs from stdin' '
+	(
+	cd client &&
+	git fetch-pack --stdin --no-progress .. <../input.dup
+	) >output &&
+	cut -d " " -f 2 <output | sort >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'set up tests of missing reference' '
+	cat >expect-error <<-\EOF
+	error: no such remote ref refs/heads/xyzzy
+	EOF
+'
+
+test_expect_success 'test lonely missing ref' '
+	(
+		cd client &&
+		test_must_fail git fetch-pack --no-progress .. refs/heads/xyzzy
+	) >/dev/null 2>error-m &&
+	test_cmp expect-error error-m
+'
+
+test_expect_success 'test missing ref after existing' '
+	(
+		cd client &&
+		test_must_fail git fetch-pack --no-progress .. refs/heads/A refs/heads/xyzzy
+	) >/dev/null 2>error-em &&
+	test_cmp expect-error error-em
+'
+
+test_expect_success 'test missing ref before existing' '
+	(
+		cd client &&
+		test_must_fail git fetch-pack --no-progress .. refs/heads/xyzzy refs/heads/A
+	) >/dev/null 2>error-me &&
+	test_cmp expect-error error-me
+'
+
+test_expect_success 'test --all, --depth, and explicit head' '
+	(
+		cd client &&
+		git fetch-pack --no-progress --all --depth=1 .. refs/heads/A
+	) >out-adh 2>error-adh
+'
+
+test_expect_success 'test --all, --depth, and explicit tag' '
+	git tag OLDTAG refs/heads/B~5 &&
+	(
+		cd client &&
+		git fetch-pack --no-progress --all --depth=1 .. refs/tags/OLDTAG
+	) >out-adt 2>error-adt
+'
+
+test_expect_success 'shallow fetch with tags does not break the repository' '
+	mkdir repo1 &&
+	(
+		cd repo1 &&
+		git init &&
+		test_commit 1 &&
+		test_commit 2 &&
+		test_commit 3 &&
+		mkdir repo2 &&
+		cd repo2 &&
+		git init &&
+		git fetch --depth=2 ../.git master:branch &&
+		git fsck
+	)
 '
 
 test_done

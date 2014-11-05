@@ -8,7 +8,8 @@ git-unpack-objects - Unpack objects from a packed archive
 
 SYNOPSIS
 --------
-'git unpack-objects' [-n] [-q] [-r] [--strict] <pack-file
+[verse]
+'git unpack-objects' [-n] [-q] [-r] [--strict] < <pack-file>
 
 
 DESCRIPTION
@@ -42,15 +43,6 @@ OPTIONS
 
 --strict::
 	Don't write objects with broken content or links.
-
-
-Author
-------
-Written by Linus Torvalds <torvalds@osdl.org>
-
-Documentation
--------------
-Documentation by Junio C Hamano
 
 GIT
 ---

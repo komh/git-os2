@@ -63,7 +63,7 @@ test_expect_success SIMPLEPAGER 'git grep -O' '
 
 test_expect_success 'git grep -O --cached' '
 	test_must_fail git grep --cached -O GREP_PATTERN >out 2>msg &&
-	grep open-files-in-pager msg
+	test_i18ngrep open-files-in-pager msg
 '
 
 test_expect_success 'git grep -O --no-index' '
@@ -124,11 +124,6 @@ test_expect_success 'modified file' '
 	test_cmp expect actual &&
 	test_cmp empty out
 '
-
-test_config() {
-	git config "$1" "$2" &&
-	test_when_finished "git config --unset $1"
-}
 
 test_expect_success 'copes with color settings' '
 	rm -f actual &&

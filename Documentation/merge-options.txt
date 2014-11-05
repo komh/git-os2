@@ -7,20 +7,43 @@ With --no-commit perform the merge but pretend the merge
 failed and do not autocommit, to give the user a chance to
 inspect and further tweak the merge result before committing.
 
---ff::
---no-ff::
-	Do not generate a merge commit if the merge resolved as
-	a fast-forward, only update the branch pointer. This is
-	the default behavior of git-merge.
+--edit::
+-e::
+--no-edit::
+	Invoke an editor before committing successful mechanical merge to
+	further edit the auto-generated merge message, so that the user
+	can explain and justify the merge. The `--no-edit` option can be
+	used to accept the auto-generated message (this is generally
+	discouraged). The `--edit` (or `-e`) option is still useful if you are
+	giving a draft message with the `-m` option from the command line
+	and want to edit it in the editor.
 +
-With --no-ff Generate a merge commit even if the merge
-resolved as a fast-forward.
+Older scripts may depend on the historical behaviour of not allowing the
+user to edit the merge log message. They will see an editor opened when
+they run `git merge`. To make it easier to adjust such scripts to the
+updated behaviour, the environment variable `GIT_MERGE_AUTOEDIT` can be
+set to `no` at the beginning of them.
 
---log::
+--ff::
+	When the merge resolves as a fast-forward, only update the branch
+	pointer, without creating a merge commit.  This is the default
+	behavior.
+
+--no-ff::
+	Create a merge commit even when the merge resolves as a
+	fast-forward.  This is the default behaviour when merging an
+	annotated (and possibly signed) tag.
+
+--ff-only::
+	Refuse to merge and exit with a non-zero status unless the
+	current `HEAD` is already up-to-date or the merge can be
+	resolved as a fast-forward.
+
+--log[=<n>]::
 --no-log::
 	In addition to branch names, populate the log message with
-	one-line descriptions from the actual commits that are being
-	merged.
+	one-line descriptions from at most <n> actual commits that are being
+	merged. See also linkgit:git-fmt-merge-msg[1].
 +
 With --no-log do not list one-line descriptions from the
 actual commits being merged.
@@ -49,11 +72,6 @@ merge.
 With --no-squash perform the merge and commit the result. This
 option can be used to override --squash.
 
---ff-only::
-	Refuse to merge and exit with a non-zero status unless the
-	current `HEAD` is already up-to-date or the merge can be
-	resolved as a fast-forward.
-
 -s <strategy>::
 --strategy=<strategy>::
 	Use the given merge strategy; can be supplied more than
@@ -67,6 +85,11 @@ option can be used to override --squash.
 	Pass merge strategy specific option through to the merge
 	strategy.
 
+--verify-signatures::
+--no-verify-signatures::
+	Verify that the commits being merged have good and trusted GPG signatures
+	and abort the merge in case they do not.
+
 --summary::
 --no-summary::
 	Synonyms to --stat and --no-stat; these are deprecated and will be
@@ -75,9 +98,17 @@ option can be used to override --squash.
 ifndef::git-pull[]
 -q::
 --quiet::
-	Operate quietly.
+	Operate quietly. Implies --no-progress.
 
 -v::
 --verbose::
 	Be verbose.
+
+--progress::
+--no-progress::
+	Turn progress on/off explicitly. If neither is specified,
+	progress is shown if standard error is connected to a terminal.
+	Note that not all merge strategies may support progress
+	reporting.
+
 endif::git-pull[]

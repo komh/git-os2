@@ -9,26 +9,49 @@ git-grep - Print lines matching a pattern
 SYNOPSIS
 --------
 [verse]
-'git grep' [-a | --text] [-I] [-i | --ignore-case] [-w | --word-regexp]
+'git grep' [-a | --text] [-I] [--textconv] [-i | --ignore-case] [-w | --word-regexp]
 	   [-v | --invert-match] [-h|-H] [--full-name]
 	   [-E | --extended-regexp] [-G | --basic-regexp]
-	   [-F | --fixed-strings] [-n]
+	   [-P | --perl-regexp]
+	   [-F | --fixed-strings] [-n | --line-number]
 	   [-l | --files-with-matches] [-L | --files-without-match]
 	   [(-O | --open-files-in-pager) [<pager>]]
 	   [-z | --null]
 	   [-c | --count] [--all-match] [-q | --quiet]
 	   [--max-depth <depth>]
 	   [--color[=<when>] | --no-color]
+	   [--break] [--heading] [-p | --show-function]
 	   [-A <post-context>] [-B <pre-context>] [-C <context>]
+	   [-W | --function-context]
 	   [-f <file>] [-e] <pattern>
 	   [--and|--or|--not|(|)|-e <pattern>...]
-	   [--cached | --no-index | <tree>...]
+	   [ [--[no-]exclude-standard] [--cached | --no-index | --untracked] | <tree>...]
 	   [--] [<pathspec>...]
 
 DESCRIPTION
 -----------
 Look for specified patterns in the tracked files in the work tree, blobs
-registered in the index file, or blobs in given tree objects.
+registered in the index file, or blobs in given tree objects.  Patterns
+are lists of one or more search expressions separated by newline
+characters.  An empty string as search expression matches all lines.
+
+
+CONFIGURATION
+-------------
+
+grep.lineNumber::
+	If set to true, enable '-n' option by default.
+
+grep.patternType::
+	Set the default matching behavior. Using a value of 'basic', 'extended',
+	'fixed', or 'perl' will enable the '--basic-regexp', '--extended-regexp',
+	'--fixed-strings', or '--perl-regexp' option accordingly, while the
+	value 'default' will return to the default matching behavior.
+
+grep.extendedRegexp::
+	If set to true, enable '--extended-regexp' option by default. This
+	option is ignored when the 'grep.patternType' option is set to a value
+	other than 'default'.
 
 
 OPTIONS
@@ -38,11 +61,31 @@ OPTIONS
 	blobs registered in the index file.
 
 --no-index::
-	Search files in the current directory, not just those tracked by git.
+	Search files in the current directory that is not managed by Git.
+
+--untracked::
+	In addition to searching in the tracked files in the working
+	tree, search also in untracked files.
+
+--no-exclude-standard::
+	Also search in ignored files by not honoring the `.gitignore`
+	mechanism. Only useful with `--untracked`.
+
+--exclude-standard::
+	Do not pay attention to ignored files specified via the	`.gitignore`
+	mechanism.  Only useful when searching files in the current directory
+	with `--no-index`.
 
 -a::
 --text::
 	Process binary files as if they were text.
+
+--textconv::
+	Honor textconv filter settings.
+
+--no-textconv::
+	Do not honor textconv filter settings.
+	This is the default.
 
 -i::
 --ignore-case::
@@ -55,6 +98,9 @@ OPTIONS
 --max-depth <depth>::
 	For each <pathspec> given on command line, descend at most <depth>
 	levels of directories. A negative value means no limit.
+	This option is ignored if <pathspec> contains active wildcards.
+	In other words if "a*" matches a directory named "a*",
+	"*" is matched literally so --max-depth is still effective.
 
 -w::
 --word-regexp::
@@ -87,12 +133,18 @@ OPTIONS
 	Use POSIX extended/basic regexp for patterns.  Default
 	is to use basic regexp.
 
+-P::
+--perl-regexp::
+	Use Perl-compatible regexp for patterns. Requires libpcre to be
+	compiled in.
+
 -F::
 --fixed-strings::
 	Use fixed strings for patterns (don't interpret pattern
 	as a regex).
 
 -n::
+--line-number::
 	Prefix the line number to matching lines.
 
 -l::
@@ -131,14 +183,12 @@ OPTIONS
 	gives the default to color output.
 	Same as `--color=never`.
 
--[ABC] <context>::
-	Show `context` trailing (`A` -- after), or leading (`B`
-	-- before), or both (`C` -- context) lines, and place a
-	line containing `--` between contiguous groups of
-	matches.
+--break::
+	Print an empty line between matches from different files.
 
--<num>::
-	A shortcut for specifying `-C<num>`.
+--heading::
+	Show the filename above the matches in that file instead of
+	at the start of each shown line.
 
 -p::
 --show-function::
@@ -147,6 +197,29 @@ OPTIONS
 	The name is determined in the same way as 'git diff' works out
 	patch hunk headers (see 'Defining a custom hunk-header' in
 	linkgit:gitattributes[5]).
+
+-<num>::
+-C <num>::
+--context <num>::
+	Show <num> leading and trailing lines, and place a line
+	containing `--` between contiguous groups of matches.
+
+-A <num>::
+--after-context <num>::
+	Show <num> trailing lines, and place a line containing
+	`--` between contiguous groups of matches.
+
+-B <num>::
+--before-context <num>::
+	Show <num> leading lines, and place a line containing
+	`--` between contiguous groups of matches.
+
+-W::
+--function-context::
+	Show the surrounding text from the previous line containing a
+	function name up to the one before the next function name,
+	effectively showing the whole function in which the match was
+	found.
 
 -f <file>::
 	Read patterns from <file>, one per line.
@@ -191,27 +264,17 @@ OPTIONS
 Examples
 --------
 
-git grep {apostrophe}time_t{apostrophe} \-- {apostrophe}*.[ch]{apostrophe}::
+`git grep 'time_t' -- '*.[ch]'`::
 	Looks for `time_t` in all tracked .c and .h files in the working
 	directory and its subdirectories.
 
-git grep -e {apostrophe}#define{apostrophe} --and \( -e MAX_PATH -e PATH_MAX \)::
+`git grep -e '#define' --and \( -e MAX_PATH -e PATH_MAX \)`::
 	Looks for a line that has `#define` and either `MAX_PATH` or
 	`PATH_MAX`.
 
-git grep --all-match -e NODE -e Unexpected::
+`git grep --all-match -e NODE -e Unexpected`::
 	Looks for a line that has `NODE` or `Unexpected` in
 	files that have lines that match both.
-
-Author
-------
-Originally written by Linus Torvalds <torvalds@osdl.org>, later
-revamped by Junio C Hamano.
-
-
-Documentation
---------------
-Documentation by Junio C Hamano and the git-list <git@vger.kernel.org>.
 
 GIT
 ---

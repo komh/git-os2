@@ -20,7 +20,9 @@ test_expect_success 'setup' '
 	 echo one >file && git add file && git commit -m one &&
 	 git checkout -b two &&
 	 echo two >file && git add file && git commit -m two &&
-	 git checkout master)
+	 git checkout master) &&
+	mkdir empty &&
+	(cd empty && git init)
 '
 
 test_expect_success 'vanilla clone chooses HEAD' '
@@ -57,12 +59,12 @@ test_expect_success 'clone -b does not munge remotes/origin/HEAD' '
 	)
 '
 
-test_expect_success 'clone -b with bogus branch chooses HEAD' '
-	git clone -b bogus parent clone-bogus &&
-	(cd clone-bogus &&
-	 check_HEAD master &&
-	 check_file one
-	)
+test_expect_success 'clone -b with bogus branch' '
+	test_must_fail git clone -b bogus parent clone-bogus
+'
+
+test_expect_success 'clone -b not allowed with empty repos' '
+	test_must_fail git clone -b branch empty clone-branch-empty
 '
 
 test_done
