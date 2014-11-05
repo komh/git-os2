@@ -1996,7 +1996,7 @@ git-http-push$X: revision.o http.o http-push.o $(GITLIBS)
 
 $(REMOTE_CURL_ALIASES): $(REMOTE_CURL_PRIMARY)
 	$(QUIET_LNCP)$(RM) $@ && \
-	$(LN_X) $< $@ 2>/dev/null || \
+	$(LN_S) $< $@ 2>/dev/null || \
 	$(LN_S_X) $< $@ 2>/dev/null || \
 	$(CP_X) $< $@
 
