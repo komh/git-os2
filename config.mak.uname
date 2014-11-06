@@ -585,7 +585,7 @@ ifneq (,$(findstring OS/2,$(uname_S)))
 	X = .exe
 #	htmldir=doc/git/html/
 #	prefix =
-#	INSTALL = /bin/install
+	INSTALL = ginstall
 #	EXTLIBS += -lz
 #	NO_R_TO_GCC_LINKER = YesPlease
 #	INTERNAL_QSORT = YesPlease
