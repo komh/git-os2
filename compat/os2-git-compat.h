@@ -101,3 +101,7 @@ int main(int argc, char **argv) \
   return git_os2_main(argc, (const char **)argv); \
 } \
 int git_os2_main(c,v)
+
+#define SHUT_RD     0
+#define SHUT_WR     1
+#define SHUT_RDWR   2
