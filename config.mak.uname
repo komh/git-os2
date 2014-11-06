@@ -765,6 +765,7 @@ ifneq (,$(findstring OS/2,$(uname_S)))
 	NO_REGEX = YesPlease
 #	NO_PYTHON = YesPlease
 	BLK_SHA1 = YesPlease
+	NO_POSIX_GOODIES = UnfortunatelyYes
 	COMPAT_CFLAGS += -Icompat
 	COMPAT_CFLAGS += -DSTRIP_EXTENSION=\".exe\"
 	COMPAT_OBJS += compat/os2.o
@@ -772,11 +773,13 @@ ifneq (,$(findstring OS/2,$(uname_S)))
 	LN_X = ln4exe
 #	htmldir=doc/git/html/
 #	prefix =
-#	INSTALL = /bin/install
+	INSTALL = ginstall
 #	EXTLIBS += -lz
 #	NO_R_TO_GCC_LINKER = YesPlease
 #	INTERNAL_QSORT = YesPlease
 #	NO_CURL = YesPlease
+	NO_TRUSTABLE_FILEMODE = UnfortunatelyPlease
+	CSPRNG_METHOD = openssl
 endif
 ifeq ($(uname_S),QNX)
 	COMPAT_CFLAGS += -DSA_RESTART=0
