@@ -1380,10 +1380,19 @@ static
 void
 git_os2_prepare_direnv()
 {
+  static const char *perllibdirs[] = {
+    "/share/perl5",
+    "/lib/site_perl",
+    "/perl/blib/lib",
+    NULL
+  };
+
   char stmp[_MAX_PATH];
+  char gitpm[_MAX_PATH];
   struct stat st;
   char *s;
   int n;
+  int i;
 
   if (!git_base_dir) git_os2_runtime_prefix();
 
@@ -1392,30 +1401,15 @@ git_os2_prepare_direnv()
   if (n < sizeof(stmp))
     setenv_non_override(EXEC_PATH_ENVIRONMENT, stmp);
 
+  /* find the location of Git.pm file for GITPERLLIB */
   s = NULL;
-  n = snprintf(stmp, sizeof(stmp), "%s%s", git_base_dir, "/lib/site_perl");
-  if (n < sizeof(stmp)) {
-    struct dirent *d;
-    DIR *dirp;
-    if ((dirp = opendir(stmp)) != NULL) {
-      while((d = readdir(dirp)) != NULL) {
-	if (d->d_attr & A_DIR) { /* EMX specific */
-	  if (isdigit(d->d_name[0]) && d->d_name[1] == '.' && isdigit(d->d_name[2])) {
-	    n = snprintf(stmp, sizeof(stmp), "%s%s/%s", git_base_dir, "/lib/site_perl", d->d_name);
-	    if (n < sizeof(stmp)) {
-	      s = stmp;
-	      break;
-	    }
-	  }
-	}
-      }
-      closedir(dirp);
-    }
-  }
-  if (!s) {
-    n = snprintf(stmp, sizeof(stmp), "%s%s", git_base_dir, "/perl/blib/lib");
-    if (n < sizeof(stmp) && stat(stmp, &st) >= 0 && S_ISDIR(st.st_mode))
+  for (i = 0; perllibdirs[i]; i++) {
+    snprintf(stmp, sizeof(stmp), "%s%s", git_base_dir, perllibdirs[i]);
+    snprintf(gitpm, sizeof(gitpm), "%s/%s", stmp, "Git.pm");
+    if (stat(gitpm, &st) == 0 && S_ISREG(st.st_mode)) {
       s = stmp;
+      break;
+    }
   }
 
   if (s)
