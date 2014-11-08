@@ -1399,6 +1399,7 @@ git_os2_prepare_direnv()
   s = NULL;
   n = snprintf(stmp, sizeof(stmp), "%s%s", git_base_dir, "/lib/site_perl");
   if (n < sizeof(stmp)) {
+#if 0   /* do not use version specific perl directory */
     struct dirent *d;
     DIR *dirp;
     if ((dirp = opendir(stmp)) != NULL) {
@@ -1415,6 +1416,10 @@ git_os2_prepare_direnv()
       }
       closedir(dirp);
     }
+#else
+    if (stat(stmp, &st) >= 0 && S_ISDIR(st.st_mode))
+      s = stmp;
+#endif
   }
   if (!s) {
     n = snprintf(stmp, sizeof(stmp), "%s%s", git_base_dir, "/perl/blib/lib");
