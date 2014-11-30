@@ -1094,7 +1094,7 @@ divide_str_to_args(char ***pargv, char *cmdline)
     (*pargv)[argc-1] = cmdline;
     (*pargv)[argc] = NULL;
     cmdline = my_skipnospc(cmdline);
-    if (*cmdline) {
+    if (*cmdline && !my_iseol(cmdline)) {
       *cmdline++ = '\0';
     }
   }
