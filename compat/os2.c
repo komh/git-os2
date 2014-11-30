@@ -1206,6 +1206,16 @@ wrapped_exec_2(int with_path, const char *progname_by_caller, char **argv_by_cal
       rc = execv(execprog, argv);
       break;
     }
+    case FILE_EXETYPE_UNKNOWN:
+    {
+      /* assume a shell script */
+      execprog = wrapped_get_gitshell(NULL);
+      argv = alloca((argc + 1 + 1) * sizeof(char *));
+      argv[0] = execprog;
+      memcpy(argv + 1, argv_by_caller, sizeof(char *) * (argc + 1));
+      rc = execv(execprog, argv);
+      break;
+    }
     default:
       errno = ENOEXEC;
       return -1;
