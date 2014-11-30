@@ -1043,8 +1043,11 @@ check_file_exetype(const char *fn, char *lbuf, size_t n_lbuf)
     rc = FILE_EXETYPE_SH;
   }
   else {
-    /* todo: check CRLF */
-    rc = FILE_EXETYPE_CMD;
+    const char *ext = _getext2(fn);
+    if (!stricmp(ext, ".cmd") && stricmp(ext, ".bat")) {
+      /* todo: check CRLF */
+      rc = FILE_EXETYPE_CMD;
+    }
   }
   close(fd);
 
