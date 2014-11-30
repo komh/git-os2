@@ -1038,7 +1038,7 @@ check_file_exetype(const char *fn, char *lbuf, size_t n_lbuf)
     }
     rc = FILE_EXETYPE_SH;
   }
-  else {
+  else if (!stricmp(_getext2(fn), ".cmd")) {
     /* todo: check CRLF */
     rc = FILE_EXETYPE_CMD;
   }
