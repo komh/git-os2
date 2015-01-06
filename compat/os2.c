@@ -1705,6 +1705,36 @@ int git_os2_main_prepare (int * p_argc, char ** * p_argv)
 }
 
 /*
+   On kLIBC, if high-mem enabled modules and high-mem disabled moduels
+   are linked together, high-mem support is not enabled.
+   For example, in case of high-mem enabled executable linking against
+   high-mem disabled DLLs, high-mem is not enabled.
+   To avoid this, explicitly call high-mem allocation functions, and fall
+   back into low-mem allocation functions if it fails.
+*/
+
+void *malloc (size_t size)
+{
+    void *ptr = _hmalloc (size);
+
+    return ptr ? ptr : _lmalloc (size);
+}
+
+void *calloc (size_t elements, size_t size)
+{
+    void *ptr = _hcalloc (elements, size);
+
+    return ptr ? ptr : _lcalloc (elements, size);
+}
+
+void *realloc (void *mem, size_t size)
+{
+    void *ptr = _hrealloc (mem, size);
+
+    return ptr ? ptr : _lrealloc (mem, size);
+}
+
+/*
 todo:
   + test server commands.
   + check klibc implementation of functions/syscalls
