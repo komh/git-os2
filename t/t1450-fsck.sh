@@ -142,6 +142,20 @@ test_expect_success '> in name is reported' '
 	grep "error in commit $new" out
 '
 
+# date is 2^64 + 1
+test_expect_success 'integer overflow in timestamps is reported' '
+	git cat-file commit HEAD >basis &&
+	sed "s/^\\(author .*>\\) [0-9]*/\\1 18446744073709551617/" \
+		<basis >bad-timestamp &&
+	new=$(git hash-object -t commit -w --stdin <bad-timestamp) &&
+	test_when_finished "remove_object $new" &&
+	git update-ref refs/heads/bogus "$new" &&
+	test_when_finished "git update-ref -d refs/heads/bogus" &&
+	git fsck 2>out &&
+	cat out &&
+	grep "error in commit $new.*integer overflow" out
+'
+
 test_expect_success 'tag pointing to nonexistent' '
 	cat >invalid-tag <<-\EOF &&
 	object ffffffffffffffffffffffffffffffffffffffff
@@ -237,35 +251,40 @@ test_expect_success 'fsck notices submodule entry pointing to null sha1' '
 	)
 '
 
-test_expect_success 'fsck notices "." and ".." in trees' '
-	(
-		git init dots &&
-		cd dots &&
-		blob=$(echo foo | git hash-object -w --stdin) &&
-		tab=$(printf "\\t") &&
-		git mktree <<-EOF &&
-		100644 blob $blob$tab.
-		100644 blob $blob$tab..
-		EOF
-		git fsck 2>out &&
-		cat out &&
-		grep "warning.*\\." out
-	)
-'
-
-test_expect_success 'fsck notices ".git" in trees' '
-	(
-		git init dotgit &&
-		cd dotgit &&
-		blob=$(echo foo | git hash-object -w --stdin) &&
-		tab=$(printf "\\t") &&
-		git mktree <<-EOF &&
-		100644 blob $blob$tab.git
-		EOF
-		git fsck 2>out &&
-		cat out &&
-		grep "warning.*\\.git" out
-	)
-'
+while read name path pretty; do
+	while read mode type; do
+		: ${pretty:=$path}
+		test_expect_success "fsck notices $pretty as $type" '
+		(
+			git init $name-$type &&
+			cd $name-$type &&
+			echo content >file &&
+			git add file &&
+			git commit -m base &&
+			blob=$(git rev-parse :file) &&
+			tree=$(git rev-parse HEAD^{tree}) &&
+			value=$(eval "echo \$$type") &&
+			printf "$mode $type %s\t%s" "$value" "$path" >bad &&
+			bad_tree=$(git mktree <bad) &&
+			git fsck 2>out &&
+			cat out &&
+			grep "warning.*tree $bad_tree" out
+		)'
+	done <<-\EOF
+	100644 blob
+	040000 tree
+	EOF
+done <<-EOF
+dot .
+dotdot ..
+dotgit .git
+dotgit-case .GIT
+dotgit-unicode .gI${u200c}T .gI{u200c}T
+dotgit-case2 .Git
+git-tilde1 git~1
+dotgitdot .git.
+dot-backslash-case .\\\\.GIT\\\\foobar
+dotgit-case-backslash .git\\\\foobar
+EOF
 
 test_done

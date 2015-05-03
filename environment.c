@@ -10,6 +10,7 @@
 #include "cache.h"
 #include "refs.h"
 #include "fmt-merge-msg.h"
+#include "commit.h"
 
 int trust_executable_bit = 1;
 int trust_ctime = 1;
@@ -63,6 +64,16 @@ int precomposed_unicode = -1; /* see probe_utf8_pathname_composition() */
 struct startup_info *startup_info;
 unsigned long pack_size_limit_cfg;
 
+#ifndef PROTECT_HFS_DEFAULT
+#define PROTECT_HFS_DEFAULT 0
+#endif
+int protect_hfs = PROTECT_HFS_DEFAULT;
+
+#ifndef PROTECT_NTFS_DEFAULT
+#define PROTECT_NTFS_DEFAULT 0
+#endif
+int protect_ntfs = PROTECT_NTFS_DEFAULT;
+
 /*
  * The character that begins a commented line in user-editable file
  * that is subject to stripspace.
@@ -97,6 +108,7 @@ const char * const local_repo_env[] = {
 	INDEX_ENVIRONMENT,
 	NO_REPLACE_OBJECTS_ENVIRONMENT,
 	GIT_PREFIX_ENVIRONMENT,
+	GIT_SHALLOW_FILE_ENVIRONMENT,
 	NULL
 };
 
@@ -124,6 +136,7 @@ static char *expand_namespace(const char *raw_namespace)
 static void setup_git_env(void)
 {
 	const char *gitfile;
+	const char *shallow_file;
 
 	git_dir = getenv(GIT_DIR_ENVIRONMENT);
 	if (!git_dir)
@@ -147,6 +160,9 @@ static void setup_git_env(void)
 		read_replace_refs = 0;
 	namespace = expand_namespace(getenv(GIT_NAMESPACE_ENVIRONMENT));
 	namespace_len = strlen(namespace);
+	shallow_file = getenv(GIT_SHALLOW_FILE_ENVIRONMENT);
+	if (shallow_file)
+		set_alternate_shallow_file(shallow_file, 0);
 }
 
 int is_bare_repository(void)
@@ -171,7 +187,7 @@ const char *get_git_namespace(void)
 
 const char *strip_namespace(const char *namespaced_ref)
 {
-	if (prefixcmp(namespaced_ref, get_git_namespace()) != 0)
+	if (!starts_with(namespaced_ref, get_git_namespace()))
 		return NULL;
 	return namespaced_ref + namespace_len;
 }

@@ -84,11 +84,10 @@ static int git_wcwidth(ucs_char_t ch)
 	 *   "uniset +cat=Me +cat=Mn +cat=Cf -00AD +1160-11FF +200B c".
 	 */
 	static const struct interval combining[] = {
-		{ 0x0300, 0x0357 }, { 0x035D, 0x036F }, { 0x0483, 0x0486 },
-		{ 0x0488, 0x0489 }, { 0x0591, 0x05A1 }, { 0x05A3, 0x05B9 },
-		{ 0x05BB, 0x05BD }, { 0x05BF, 0x05BF }, { 0x05C1, 0x05C2 },
-		{ 0x05C4, 0x05C4 }, { 0x0600, 0x0603 }, { 0x0610, 0x0615 },
-		{ 0x064B, 0x0658 }, { 0x0670, 0x0670 }, { 0x06D6, 0x06E4 },
+		{ 0x0300, 0x036F }, { 0x0483, 0x0489 }, { 0x0591, 0x05BD },
+		{ 0x05BF, 0x05BF }, { 0x05C1, 0x05C2 }, { 0x05C4, 0x05C5 },
+		{ 0x05C7, 0x05C7 }, { 0x0600, 0x0604 }, { 0x0610, 0x061A },
+		{ 0x064B, 0x065F }, { 0x0670, 0x0670 }, { 0x06D6, 0x06E4 },
 		{ 0x06E7, 0x06E8 }, { 0x06EA, 0x06ED }, { 0x070F, 0x070F },
 		{ 0x0711, 0x0711 }, { 0x0730, 0x074A }, { 0x07A6, 0x07B0 },
 		{ 0x0901, 0x0902 }, { 0x093C, 0x093C }, { 0x0941, 0x0948 },
@@ -627,4 +626,68 @@ int mbs_chrlen(const char **text, size_t *remainder_p, const char *encoding)
 		*remainder_p -= chrlen;
 
 	return chrlen;
+}
+
+/*
+ * Pick the next char from the stream, folding as an HFS+ filename comparison
+ * would. Note that this is _not_ complete by any means. It's just enough
+ * to make is_hfs_dotgit() work, and should not be used otherwise.
+ */
+static ucs_char_t next_hfs_char(const char **in)
+{
+	while (1) {
+		ucs_char_t out = pick_one_utf8_char(in, NULL);
+		/*
+		 * check for malformed utf8. Technically this
+		 * gets converted to a percent-sequence, but
+		 * returning 0 is good enough for is_hfs_dotgit
+		 * to realize it cannot be .git
+		 */
+		if (!*in)
+			return 0;
+
+		/* these code points are ignored completely */
+		switch (out) {
+		case 0x200c: /* ZERO WIDTH NON-JOINER */
+		case 0x200d: /* ZERO WIDTH JOINER */
+		case 0x200e: /* LEFT-TO-RIGHT MARK */
+		case 0x200f: /* RIGHT-TO-LEFT MARK */
+		case 0x202a: /* LEFT-TO-RIGHT EMBEDDING */
+		case 0x202b: /* RIGHT-TO-LEFT EMBEDDING */
+		case 0x202c: /* POP DIRECTIONAL FORMATTING */
+		case 0x202d: /* LEFT-TO-RIGHT OVERRIDE */
+		case 0x202e: /* RIGHT-TO-LEFT OVERRIDE */
+		case 0x206a: /* INHIBIT SYMMETRIC SWAPPING */
+		case 0x206b: /* ACTIVATE SYMMETRIC SWAPPING */
+		case 0x206c: /* INHIBIT ARABIC FORM SHAPING */
+		case 0x206d: /* ACTIVATE ARABIC FORM SHAPING */
+		case 0x206e: /* NATIONAL DIGIT SHAPES */
+		case 0x206f: /* NOMINAL DIGIT SHAPES */
+		case 0xfeff: /* ZERO WIDTH NO-BREAK SPACE */
+			continue;
+		}
+
+		/*
+		 * there's a great deal of other case-folding that occurs,
+		 * but this is enough to catch anything that will convert
+		 * to ".git"
+		 */
+		return tolower(out);
+	}
+}
+
+int is_hfs_dotgit(const char *path)
+{
+	ucs_char_t c;
+
+	if (next_hfs_char(&path) != '.' ||
+	    next_hfs_char(&path) != 'g' ||
+	    next_hfs_char(&path) != 'i' ||
+	    next_hfs_char(&path) != 't')
+		return 0;
+	c = next_hfs_char(&path);
+	if (c && !is_dir_sep(c))
+		return 0;
+
+	return 1;
 }

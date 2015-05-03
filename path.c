@@ -265,12 +265,12 @@ static struct passwd *getpw_str(const char *username, size_t len)
 char *expand_user_path(const char *path)
 {
 	struct strbuf user_path = STRBUF_INIT;
-	const char *first_slash = strchrnul(path, '/');
 	const char *to_copy = path;
 
 	if (path == NULL)
 		goto return_null;
 	if (path[0] == '~') {
+		const char *first_slash = strchrnul(path, '/');
 		const char *username = path + 1;
 		size_t username_len = first_slash - username;
 		if (username_len == 0) {
@@ -829,4 +829,37 @@ int offset_1st_component(const char *path)
 	if (has_dos_drive_prefix(path))
 		return 2 + is_dir_sep(path[2]);
 	return is_dir_sep(path[0]);
+}
+
+static int only_spaces_and_periods(const char *path, size_t len, size_t skip)
+{
+	if (len < skip)
+		return 0;
+	len -= skip;
+	path += skip;
+	while (len-- > 0) {
+		char c = *(path++);
+		if (c != ' ' && c != '.')
+			return 0;
+	}
+	return 1;
+}
+
+int is_ntfs_dotgit(const char *name)
+{
+	int len;
+
+	for (len = 0; ; len++)
+		if (!name[len] || name[len] == '\\' || is_dir_sep(name[len])) {
+			if (only_spaces_and_periods(name, len, 4) &&
+					!strncasecmp(name, ".git", 4))
+				return 1;
+			if (only_spaces_and_periods(name, len, 5) &&
+					!strncasecmp(name, "git~1", 5))
+				return 1;
+			if (name[len] != '\\')
+				return 0;
+			name += len + 1;
+			len = -1;
+		}
 }
