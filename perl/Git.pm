@@ -407,7 +407,7 @@ sub command_bidi_pipe {
 		$cwd_save = cwd();
 		_setup_git_cmd_env($self);
 	}
-	$pid = open2($in, $out, 'git', @_);
+	$pid = open2($in, $out, 'git.exe', @_);
 	chdir($cwd_save) if $cwd_save;
 	return ($pid, $in, $out, join(' ', @_));
 }
@@ -1624,7 +1624,7 @@ sub _setup_git_cmd_env {
 
 # Execute the given Git command ($_[0]) with arguments ($_[1..])
 # by searching for it at proper places.
-sub _execv_git_cmd { exec('git', @_); }
+sub _execv_git_cmd { exec('git.exe', @_); }
 
 # Close pipe to a subprocess.
 sub _cmd_close {
