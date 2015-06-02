@@ -181,7 +181,7 @@ sub run_cmd_pipe {
 	}
 }
 
-my ($GIT_DIR) = run_cmd_pipe(qw(git rev-parse --git-dir));
+my ($GIT_DIR) = run_cmd_pipe(qw(git.exe rev-parse --git-dir));
 
 if (!defined $GIT_DIR) {
 	exit(1); # rev-parse would have already said "not a git repo"
@@ -231,7 +231,7 @@ sub unquote_path {
 
 sub refresh {
 	my $fh;
-	open $fh, 'git update-index --refresh |'
+	open $fh, 'git.exe update-index --refresh |'
 	    or die;
 	while (<$fh>) {
 		;# ignore 'needs update'
@@ -244,7 +244,7 @@ sub list_untracked {
 		chomp $_;
 		unquote_path($_);
 	}
-	run_cmd_pipe(qw(git ls-files --others --exclude-standard --), @ARGV);
+	run_cmd_pipe(qw(git.exe ls-files --others --exclude-standard --), @ARGV);
 }
 
 my $status_fmt = '%12s %12s %s';
@@ -253,7 +253,7 @@ my $status_head = sprintf($status_fmt, 'staged', 'unstaged', 'path');
 {
 	my $initial;
 	sub is_initial_commit {
-		$initial = system('git rev-parse HEAD -- >/dev/null 2>&1') != 0
+		$initial = system('git.exe rev-parse HEAD -- >/dev/null 2>&1') != 0
 			unless defined $initial;
 		return $initial;
 	}
@@ -293,12 +293,12 @@ sub list_modified {
 		@tracked = map {
 			chomp $_;
 			unquote_path($_);
-		} run_cmd_pipe(qw(git ls-files --), @ARGV);
+		} run_cmd_pipe(qw(git.exe ls-files --), @ARGV);
 		return if (!@tracked);
 	}
 
 	my $reference = get_diff_reference($patch_mode_revision);
-	for (run_cmd_pipe(qw(git diff-index --cached
+	for (run_cmd_pipe(qw(git.exe diff-index --cached
 			     --numstat --summary), $reference,
 			     '--', @tracked)) {
 		if (($add, $del, $file) =
@@ -325,7 +325,7 @@ sub list_modified {
 		}
 	}
 
-	for (run_cmd_pipe(qw(git diff-files --numstat --summary --raw --), @tracked)) {
+	for (run_cmd_pipe(qw(git.exe diff-files --numstat --summary --raw --), @tracked)) {
 		if (($add, $del, $file) =
 		    /^([-\d]+)	([-\d]+)	(.*)/) {
 			$file = unquote_path($file);
@@ -675,7 +675,7 @@ sub update_cmd {
 				       HEADER => $status_head, },
 				     @mods);
 	if (@update) {
-		system(qw(git update-index --add --remove --),
+		system(qw(git.exe update-index --add --remove --),
 		       map { $_->{VALUE} } @update);
 		say_n_paths('updated', @update);
 	}
@@ -688,14 +688,14 @@ sub revert_cmd {
 				     list_modified());
 	if (@update) {
 		if (is_initial_commit()) {
-			system(qw(git rm --cached),
+			system(qw(git.exe rm --cached),
 				map { $_->{VALUE} } @update);
 		}
 		else {
-			my @lines = run_cmd_pipe(qw(git ls-tree HEAD --),
+			my @lines = run_cmd_pipe(qw(git.exe ls-tree HEAD --),
 						 map { $_->{VALUE} } @update);
 			my $fh;
-			open $fh, '| git update-index --index-info'
+			open $fh, '| git.exe update-index --index-info'
 			    or die;
 			for (@lines) {
 				print $fh $_;
@@ -704,7 +704,7 @@ sub revert_cmd {
 			for (@update) {
 				if ($_->{INDEX_ADDDEL} &&
 				    $_->{INDEX_ADDDEL} eq 'create') {
-					system(qw(git update-index --force-remove --),
+					system(qw(git.exe update-index --force-remove --),
 					       $_->{VALUE});
 					print "note: $_->{VALUE} is untracked now.\n";
 				}
@@ -720,7 +720,7 @@ sub add_untracked_cmd {
 	my @add = list_and_choose({ PROMPT => 'Add untracked' },
 				  list_untracked());
 	if (@add) {
-		system(qw(git update-index --add --), @add);
+		system(qw(git.exe update-index --add --), @add);
 		say_n_paths('added', @add);
 	}
 	print "\n";
@@ -729,7 +729,7 @@ sub add_untracked_cmd {
 sub run_git_apply {
 	my $cmd = shift;
 	my $fh;
-	open $fh, '| git ' . $cmd . " --recount --allow-overlap";
+	open $fh, '| git.exe ' . $cmd . " --recount --allow-overlap";
 	print $fh @_;
 	return close $fh;
 }
@@ -743,10 +743,10 @@ sub parse_diff {
 	if (defined $patch_mode_revision) {
 		push @diff_cmd, get_diff_reference($patch_mode_revision);
 	}
-	my @diff = run_cmd_pipe("git", @diff_cmd, "--", $path);
+	my @diff = run_cmd_pipe("git.exe", @diff_cmd, "--", $path);
 	my @colored = ();
 	if ($diff_use_color) {
-		@colored = run_cmd_pipe("git", @diff_cmd, qw(--color --), $path);
+		@colored = run_cmd_pipe("git.exe", @diff_cmd, qw(--color --), $path);
 	}
 	my (@hunk) = { TEXT => [], DISPLAY => [], TYPE => 'header' };
 
@@ -1050,7 +1050,7 @@ sub edit_hunk_manually {
 EOF
 	close $fh;
 
-	chomp(my $editor = run_cmd_pipe(qw(git var GIT_EDITOR)));
+	chomp(my $editor = run_cmd_pipe(qw(git.exe var GIT_EDITOR)));
 	system('sh', '-c', $editor.' "$@"', $editor, $hunkfile);
 
 	if ($? != 0) {
@@ -1542,7 +1542,7 @@ sub diff_cmd {
 				   @mods);
 	return if (!@them);
 	my $reference = is_initial_commit() ? get_empty_tree() : 'HEAD';
-	system(qw(git diff -p --cached), $reference, '--',
+	system(qw(git.exe diff -p --cached), $reference, '--',
 		map { $_->{VALUE} } @them);
 }
 
