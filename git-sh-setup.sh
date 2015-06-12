@@ -27,7 +27,7 @@ git_broken_path_fix () {
 			for elem
 			do
 				case "$SANE_TOOL_PATH:$elem" in
-				(?*:/bin | ?*:/usr/bin)
+				?*:/bin | ?*:/usr/bin)
 					path="$path$sep$SANE_TOOL_PATH"
 					sep=:
 					SANE_TOOL_PATH=
