@@ -48,7 +48,8 @@ export ASCIIDOC="$python_for_git /asciidoc/asciidoc.py"
 #export XSLTPROC=xsltproc
 #export XSLTPROC="echo xslt_is_not_available"
 
-gitbase="/git"
+gitbase="/usr"
+#gitbase="/git"
 #gitbase="/git-1.7.3.5"
 #gitbase="/git-1.7.3.4"
 #gitbase="/git-1.7.3.3"
