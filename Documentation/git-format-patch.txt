@@ -14,6 +14,7 @@ SYNOPSIS
 		   [(--attach|--inline)[=<boundary>] | --no-attach]
 		   [-s | --signoff]
 		   [--signature=<signature> | --no-signature]
+		   [--signature-file=<file>]
 		   [-n | --numbered | -N | --no-numbered]
 		   [--start-number <n>] [--numbered-files]
 		   [--in-reply-to=Message-Id] [--suffix=.<sfx>]
@@ -169,7 +170,7 @@ will want to ensure that threading is disabled for `git send-email`.
 -v <n>::
 --reroll-count=<n>::
 	Mark the series as the <n>-th iteration of the topic. The
-	output filenames have `v<n>` pretended to them, and the
+	output filenames have `v<n>` prepended to them, and the
 	subject prefix ("PATCH" by default, but configurable via the
 	`--subject-prefix` option) has ` v<n>` appended to it.  E.g.
 	`--reroll-count=4` may produce `v4-0001-add-makefile.patch`
@@ -233,6 +234,9 @@ configuration options in linkgit:git-notes[1] to use this workflow).
 	signature option is omitted the signature defaults to the Git version
 	number.
 
+--signature-file=<file>::
+	Works just like --signature except the signature is read from a file.
+
 --suffix=.<sfx>::
 	Instead of using `.patch` as the suffix for generated
 	filenames, use specified suffix.  A common alternative is
@@ -269,13 +273,13 @@ attachments, and sign off patches with configuration variables.
 ------------
 [format]
 	headers = "Organization: git-foo\n"
-	subjectprefix = CHANGE
+	subjectPrefix = CHANGE
 	suffix = .txt
 	numbered = auto
 	to = <email>
 	cc = <email>
 	attach [ = mime-boundary-string ]
-	signoff = true
+	signOff = true
 	coverletter = auto
 ------------
 

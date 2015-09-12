@@ -16,7 +16,7 @@ struct tree_desc {
 static inline const unsigned char *tree_entry_extract(struct tree_desc *desc, const char **pathp, unsigned int *modep)
 {
 	*pathp = desc->entry.path;
-	*modep = canon_mode(desc->entry.mode);
+	*modep = desc->entry.mode;
 	return desc->entry.sha1;
 }
 
@@ -39,6 +39,24 @@ void *fill_tree_descriptor(struct tree_desc *desc, const unsigned char *sha1);
 struct traverse_info;
 typedef int (*traverse_callback_t)(int n, unsigned long mask, unsigned long dirmask, struct name_entry *entry, struct traverse_info *);
 int traverse_trees(int n, struct tree_desc *t, struct traverse_info *info);
+
+enum follow_symlinks_result {
+	FOUND = 0, /* This includes out-of-tree links */
+	MISSING_OBJECT = -1, /* The initial symlink is missing */
+	DANGLING_SYMLINK = -2, /*
+				* The initial symlink is there, but
+				* (transitively) points to a missing
+				* in-tree file
+				*/
+	SYMLINK_LOOP = -3,
+	NOT_DIR = -4, /*
+		       * Somewhere along the symlink chain, a path is
+		       * requested which contains a file as a
+		       * non-final element.
+		       */
+};
+
+enum follow_symlinks_result get_tree_entry_follow_symlinks(unsigned char *tree_sha1, const char *name, unsigned char *result, struct strbuf *result_path, unsigned *mode);
 
 struct traverse_info {
 	struct traverse_info *prev;

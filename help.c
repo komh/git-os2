@@ -78,8 +78,7 @@ void exclude_cmds(struct cmdnames *cmds, struct cmdnames *excludes)
 	cmds->cnt = cj;
 }
 
-static void pretty_print_string_list(struct cmdnames *cmds,
-				     unsigned int colopts)
+static void pretty_print_cmdnames(struct cmdnames *cmds, unsigned int colopts)
 {
 	struct string_list list = STRING_LIST_INIT_NODUP;
 	struct column_options copts;
@@ -130,7 +129,6 @@ static void list_commands_in_dir(struct cmdnames *cmds,
 					 const char *path,
 					 const char *prefix)
 {
-	int prefix_len;
 	DIR *dir = opendir(path);
 	struct dirent *de;
 	struct strbuf buf = STRBUF_INIT;
@@ -140,15 +138,15 @@ static void list_commands_in_dir(struct cmdnames *cmds,
 		return;
 	if (!prefix)
 		prefix = "git-";
-	prefix_len = strlen(prefix);
 
 	strbuf_addf(&buf, "%s/", path);
 	len = buf.len;
 
 	while ((de = readdir(dir)) != NULL) {
-		int entlen;
+		const char *ent;
+		size_t entlen;
 
-		if (!starts_with(de->d_name, prefix))
+		if (!skip_prefix(de->d_name, prefix, &ent))
 			continue;
 
 		strbuf_setlen(&buf, len);
@@ -156,11 +154,10 @@ static void list_commands_in_dir(struct cmdnames *cmds,
 		if (!is_executable(buf.buf))
 			continue;
 
-		entlen = strlen(de->d_name) - prefix_len;
-		if (has_extension(de->d_name, ".exe"))
-			entlen -= 4;
+		entlen = strlen(ent);
+		strip_suffix(ent, ".exe", &entlen);
 
-		add_cmdname(cmds, de->d_name + prefix_len, entlen);
+		add_cmdname(cmds, ent, entlen);
 	}
 	closedir(dir);
 	strbuf_release(&buf);
@@ -209,29 +206,51 @@ void list_commands(unsigned int colopts,
 		const char *exec_path = git_exec_path();
 		printf_ln(_("available git commands in '%s'"), exec_path);
 		putchar('\n');
-		pretty_print_string_list(main_cmds, colopts);
+		pretty_print_cmdnames(main_cmds, colopts);
 		putchar('\n');
 	}
 
 	if (other_cmds->cnt) {
 		printf_ln(_("git commands available from elsewhere on your $PATH"));
 		putchar('\n');
-		pretty_print_string_list(other_cmds, colopts);
+		pretty_print_cmdnames(other_cmds, colopts);
 		putchar('\n');
 	}
+}
+
+static int cmd_group_cmp(const void *elem1, const void *elem2)
+{
+	const struct cmdname_help *e1 = elem1;
+	const struct cmdname_help *e2 = elem2;
+
+	if (e1->group < e2->group)
+		return -1;
+	if (e1->group > e2->group)
+		return 1;
+	return strcmp(e1->name, e2->name);
 }
 
 void list_common_cmds_help(void)
 {
 	int i, longest = 0;
+	int current_grp = -1;
 
 	for (i = 0; i < ARRAY_SIZE(common_cmds); i++) {
 		if (longest < strlen(common_cmds[i].name))
 			longest = strlen(common_cmds[i].name);
 	}
 
-	puts(_("The most commonly used git commands are:"));
+	qsort(common_cmds, ARRAY_SIZE(common_cmds),
+		sizeof(common_cmds[0]), cmd_group_cmp);
+
+	puts(_("These are common Git commands used in various situations:"));
+
 	for (i = 0; i < ARRAY_SIZE(common_cmds); i++) {
+		if (common_cmds[i].group != current_grp) {
+			printf("\n%s\n", _(common_cmd_groups[common_cmds[i].group]));
+			current_grp = common_cmds[i].group;
+		}
+
 		printf("   %s   ", common_cmds[i].name);
 		mput_char(' ', longest - strlen(common_cmds[i].name));
 		puts(_(common_cmds[i].help));
@@ -252,11 +271,13 @@ static struct cmdnames aliases;
 
 static int git_unknown_cmd_config(const char *var, const char *value, void *cb)
 {
+	const char *p;
+
 	if (!strcmp(var, "help.autocorrect"))
 		autocorrect = git_config_int(var,value);
 	/* Also use aliases for command lookup */
-	if (starts_with(var, "alias."))
-		add_cmdname(&aliases, var + 6, strlen(var + 6));
+	if (skip_prefix(var, "alias.", &p))
+		add_cmdname(&aliases, p, strlen(p));
 
 	return git_default_config(var, value, cb);
 }
@@ -306,7 +327,7 @@ const char *help_unknown_cmd(const char *cmd)
 	add_cmd_list(&main_cmds, &aliases);
 	add_cmd_list(&main_cmds, &other_cmds);
 	qsort(main_cmds.names, main_cmds.cnt,
-	      sizeof(main_cmds.names), cmdname_compare);
+	      sizeof(*main_cmds.names), cmdname_compare);
 	uniq(&main_cmds);
 
 	/* This abuses cmdname->len for levenshtein distance */
@@ -373,7 +394,7 @@ const char *help_unknown_cmd(const char *cmd)
 		if (autocorrect > 0) {
 			fprintf_ln(stderr, _("in %0.1f seconds automatically..."),
 				(float)autocorrect/10.0);
-			poll(NULL, 0, autocorrect * 100);
+			sleep_millisec(autocorrect * 100);
 		}
 		return assumed;
 	}
@@ -408,16 +429,17 @@ struct similar_ref_cb {
 	struct string_list *similar_refs;
 };
 
-static int append_similar_ref(const char *refname, const unsigned char *sha1,
+static int append_similar_ref(const char *refname, const struct object_id *oid,
 			      int flags, void *cb_data)
 {
 	struct similar_ref_cb *cb = (struct similar_ref_cb *)(cb_data);
 	char *branch = strrchr(refname, '/') + 1;
+	const char *remote;
+
 	/* A remote branch of the same name is deemed similar */
-	if (starts_with(refname, "refs/remotes/") &&
+	if (skip_prefix(refname, "refs/remotes/", &remote) &&
 	    !strcmp(branch, cb->base_ref))
-		string_list_append(cb->similar_refs,
-				   refname + strlen("refs/remotes/"));
+		string_list_append(cb->similar_refs, remote);
 	return 0;
 }
 

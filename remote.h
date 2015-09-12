@@ -2,6 +2,7 @@
 #define REMOTE_H
 
 #include "parse-options.h"
+#include "hashmap.h"
 
 enum {
 	REMOTE_CONFIG,
@@ -10,6 +11,8 @@ enum {
 };
 
 struct remote {
+	struct hashmap_entry ent;  /* must be first */
+
 	const char *name;
 	int origin;
 
@@ -112,7 +115,8 @@ struct ref {
 		REF_STATUS_REJECT_SHALLOW,
 		REF_STATUS_UPTODATE,
 		REF_STATUS_REMOTE_REJECT,
-		REF_STATUS_EXPECTING_REPORT
+		REF_STATUS_EXPECTING_REPORT,
+		REF_STATUS_ATOMIC_PUSH_FAILED
 	} status;
 	char *remote_status;
 	struct ref *peer_ref; /* when renaming */
@@ -166,6 +170,7 @@ extern int query_refspecs(struct refspec *specs, int nr, struct refspec *query);
 char *apply_refspecs(struct refspec *refspecs, int nr_refspec,
 		     const char *name);
 
+int check_push_refs(struct ref *src, int nr_refspec, const char **refspec);
 int match_push_refs(struct ref *src, struct ref **dst,
 		    int nr_refspec, const char **refspec, int all);
 void set_ref_status_for_push(struct ref *remote_refs, int send_mirror,
@@ -198,18 +203,41 @@ struct branch {
 	const char *refname;
 
 	const char *remote_name;
-	struct remote *remote;
+	const char *pushremote_name;
 
 	const char **merge_name;
 	struct refspec **merge;
 	int merge_nr;
 	int merge_alloc;
+
+	const char *push_tracking_ref;
 };
 
 struct branch *branch_get(const char *name);
+const char *remote_for_branch(struct branch *branch, int *explicit);
+const char *pushremote_for_branch(struct branch *branch, int *explicit);
 
 int branch_has_merge_config(struct branch *branch);
 int branch_merge_matches(struct branch *, int n, const char *);
+
+/**
+ * Return the fully-qualified refname of the tracking branch for `branch`.
+ * I.e., what "branch@{upstream}" would give you. Returns NULL if no
+ * upstream is defined.
+ *
+ * If `err` is not NULL and no upstream is defined, a more specific error
+ * message is recorded there (if the function does not return NULL, then
+ * `err` is not touched).
+ */
+const char *branch_get_upstream(struct branch *branch, struct strbuf *err);
+
+/**
+ * Return the tracking branch that corresponds to the ref we would push to
+ * given a bare `git push` while `branch` is checked out.
+ *
+ * The return value and `err` conventions match those of `branch_get_upstream`.
+ */
+const char *branch_get_push(struct branch *branch, struct strbuf *err);
 
 /* Flags to match_refs. */
 enum match_refs_flags {
@@ -221,7 +249,8 @@ enum match_refs_flags {
 };
 
 /* Reporting of tracking info */
-int stat_tracking_info(struct branch *branch, int *num_ours, int *num_theirs);
+int stat_tracking_info(struct branch *branch, int *num_ours, int *num_theirs,
+		       const char **upstream_name);
 int format_tracking_info(struct branch *branch, struct strbuf *sb);
 
 struct ref *get_local_heads(void);
@@ -256,7 +285,6 @@ struct push_cas_option {
 
 extern int parseopt_push_cas_option(const struct option *, const char *arg, int unset);
 extern int parse_push_cas_option(struct push_cas_option *, const char *arg, int unset);
-extern void clear_cas_option(struct push_cas_option *);
 
 extern int is_empty_cas(const struct push_cas_option *);
 void apply_push_cas(struct push_cas_option *, struct remote *, struct ref *);

@@ -3,6 +3,23 @@
 
 #define _FILE_OFFSET_BITS 64
 
+
+/* Derived from Linux "Features Test Macro" header
+ * Convenience macros to test the versions of gcc (or
+ * a compatible compiler).
+ * Use them like this:
+ *  #if GIT_GNUC_PREREQ (2,8)
+ *   ... code requiring gcc 2.8 or later ...
+ *  #endif
+*/
+#if defined(__GNUC__) && defined(__GNUC_MINOR__)
+# define GIT_GNUC_PREREQ(maj, min) \
+	((__GNUC__ << 16) + __GNUC_MINOR__ >= ((maj) << 16) + (min))
+#else
+ #define GIT_GNUC_PREREQ(maj, min) 0
+#endif
+
+
 #ifndef FLEX_ARRAY
 /*
  * See if our compiler is known to support flexible array members.
@@ -25,7 +42,40 @@
 #endif
 #endif
 
-#define ARRAY_SIZE(x) (sizeof(x)/sizeof(x[0]))
+
+/*
+ * BUILD_ASSERT_OR_ZERO - assert a build-time dependency, as an expression.
+ * @cond: the compile-time condition which must be true.
+ *
+ * Your compile will fail if the condition isn't true, or can't be evaluated
+ * by the compiler.  This can be used in an expression: its value is "0".
+ *
+ * Example:
+ *	#define foo_to_char(foo)					\
+ *		 ((char *)(foo)						\
+ *		  + BUILD_ASSERT_OR_ZERO(offsetof(struct foo, string) == 0))
+ */
+#define BUILD_ASSERT_OR_ZERO(cond) \
+	(sizeof(char [1 - 2*!(cond)]) - 1)
+
+#if GIT_GNUC_PREREQ(3, 1)
+ /* &arr[0] degrades to a pointer: a different type from an array */
+# define BARF_UNLESS_AN_ARRAY(arr)						\
+	BUILD_ASSERT_OR_ZERO(!__builtin_types_compatible_p(__typeof__(arr), \
+							   __typeof__(&(arr)[0])))
+#else
+# define BARF_UNLESS_AN_ARRAY(arr) 0
+#endif
+/*
+ * ARRAY_SIZE - get the number of elements in a visible array
+ *  <at> x: the array whose size you want.
+ *
+ * This does not work on pointers, or arrays declared as [], or
+ * function parameters.  With correct compiler support, such usage
+ * will cause a build error (see the build_assert_or_zero macro).
+ */
+#define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]) + BARF_UNLESS_AN_ARRAY(x))
+
 #define bitsizeof(x)  (CHAR_BIT * sizeof(x))
 
 #define maximum_signed_value_of_type(a) \
@@ -75,13 +125,15 @@
 # endif
 #elif !defined(__APPLE__) && !defined(__FreeBSD__) && !defined(__USLC__) && \
       !defined(_M_UNIX) && !defined(__sgi) && !defined(__DragonFly__) && \
-      !defined(__TANDEM) && !defined(__QNX__) && !defined(__MirBSD__)
+      !defined(__TANDEM) && !defined(__QNX__) && !defined(__MirBSD__) && \
+      !defined(__CYGWIN__)
 #define _XOPEN_SOURCE 600 /* glibc2 and AIX 5.3L need 500, OpenBSD needs 600 for S_ISLNK() */
 #define _XOPEN_SOURCE_EXTENDED 1 /* AIX 5.3L needs this */
 #endif
 #define _ALL_SOURCE 1
 #define _GNU_SOURCE 1
 #define _BSD_SOURCE 1
+#define _DEFAULT_SOURCE 1
 #define _NETBSD_SOURCE 1
 #define _SGI_SOURCE 1
 
@@ -116,9 +168,6 @@
 #include <sys/time.h>
 #include <time.h>
 #include <signal.h>
-#ifndef USE_WILDMATCH
-#include <fnmatch.h>
-#endif
 #include <assert.h>
 #include <regex.h>
 #include <utime.h>
@@ -128,6 +177,9 @@
 #else
 #include <poll.h>
 #endif
+#ifdef HAVE_BSD_SYSCTL
+#include <sys/sysctl.h>
+#endif
 
 #if defined(__MINGW32__)
 /* pull in Windows compatibility stuff */
@@ -135,6 +187,7 @@
 #elif defined(_MSC_VER)
 #include "compat/msvc.h"
 #else
+#include <sys/utsname.h>
 #include <sys/wait.h>
 #include <sys/resource.h>
 #include <sys/socket.h>
@@ -165,15 +218,9 @@
 typedef long intptr_t;
 typedef unsigned long uintptr_t;
 #endif
-#if defined(__CYGWIN__)
-#undef _XOPEN_SOURCE
-#include <grp.h>
-#define _XOPEN_SOURCE 600
-#else
 #undef _ALL_SOURCE /* AIX 5.3L defines a struct list with _ALL_SOURCE. */
 #include <grp.h>
 #define _ALL_SOURCE 1
-#endif
 #endif
 
 /* used on Mac OS X */
@@ -194,7 +241,7 @@ extern int compat_mkdir_wo_trailing_slash(const char*, mode_t);
 struct itimerval {
 	struct timeval it_interval;
 	struct timeval it_value;
-}
+};
 #endif
 
 #ifdef NO_SETITIMER
@@ -213,8 +260,18 @@ extern char *gitbasename(char *);
 #endif
 
 #ifndef NO_OPENSSL
+#ifdef __APPLE__
+#define __AVAILABILITY_MACROS_USES_AVAILABILITY 0
+#include <AvailabilityMacros.h>
+#undef DEPRECATED_ATTRIBUTE
+#define DEPRECATED_ATTRIBUTE
+#undef __AVAILABILITY_MACROS_USES_AVAILABILITY
+#endif
 #include <openssl/ssl.h>
 #include <openssl/err.h>
+#ifdef NO_HMAC_CTX_CLEANUP
+#define HMAC_CTX_cleanup HMAC_cleanup
+#endif
 #endif
 
 /* On most systems <netdb.h> would have given us this, but
@@ -267,15 +324,35 @@ extern char *gitbasename(char *);
 #endif
 
 #ifndef has_dos_drive_prefix
-#define has_dos_drive_prefix(path) 0
+static inline int git_has_dos_drive_prefix(const char *path)
+{
+	return 0;
+}
+#define has_dos_drive_prefix git_has_dos_drive_prefix
 #endif
 
 #ifndef is_dir_sep
-#define is_dir_sep(c) ((c) == '/')
+static inline int git_is_dir_sep(int c)
+{
+	return c == '/';
+}
+#define is_dir_sep git_is_dir_sep
+#endif
+
+#ifndef offset_1st_component
+static inline int git_offset_1st_component(const char *path)
+{
+	return is_dir_sep(path[0]);
+}
+#define offset_1st_component git_offset_1st_component
 #endif
 
 #ifndef find_last_dir_sep
-#define find_last_dir_sep(path) strrchr(path, '/')
+static inline char *git_find_last_dir_sep(const char *path)
+{
+	return strrchr(path, '/');
+}
+#define find_last_dir_sep git_find_last_dir_sep
 #endif
 
 #if defined(__HP_cc) && (__HP_cc >= 61000)
@@ -290,8 +367,10 @@ extern char *gitbasename(char *);
 #else
 #define NORETURN
 #define NORETURN_PTR
+#ifndef __GNUC__
 #ifndef __attribute__
 #define __attribute__(x)
+#endif
 #endif
 #endif
 
@@ -304,20 +383,12 @@ extern char *gitbasename(char *);
 
 #include "compat/bswap.h"
 
-#ifdef USE_WILDMATCH
 #include "wildmatch.h"
-#define FNM_PATHNAME WM_PATHNAME
-#define FNM_CASEFOLD WM_CASEFOLD
-#define FNM_NOMATCH  WM_NOMATCH
-static inline int fnmatch(const char *pattern, const char *string, int flags)
-{
-	return wildmatch(pattern, string, flags, NULL);
-}
-#endif
+
+struct strbuf;
 
 /* General helper functions */
 extern void vreportf(const char *prefix, const char *err, va_list params);
-extern void vwritef(int fd, const char *prefix, const char *err, va_list params);
 extern NORETURN void usage(const char *err);
 extern NORETURN void usagef(const char *err, ...) __attribute__((format (printf, 1, 2)));
 extern NORETURN void die(const char *err, ...) __attribute__((format (printf, 1, 2)));
@@ -342,23 +413,80 @@ extern void warning(const char *err, ...) __attribute__((format (printf, 1, 2)))
  * trying to help gcc, anyway, it's OK; other compilers will fall back to
  * using the function as usual.
  */
-#if defined(__GNUC__) && ! defined(__clang__)
-#define error(...) (error(__VA_ARGS__), -1)
+#if defined(__GNUC__)
+static inline int const_error(void)
+{
+	return -1;
+}
+#define error(...) (error(__VA_ARGS__), const_error())
 #endif
 
 extern void set_die_routine(NORETURN_PTR void (*routine)(const char *err, va_list params));
 extern void set_error_routine(void (*routine)(const char *err, va_list params));
 extern void set_die_is_recursing_routine(int (*routine)(void));
+extern void set_error_handle(FILE *);
 
 extern int starts_with(const char *str, const char *prefix);
-extern int prefixcmp(const char *str, const char *prefix);
-extern int ends_with(const char *str, const char *suffix);
-extern int suffixcmp(const char *str, const char *suffix);
 
-static inline const char *skip_prefix(const char *str, const char *prefix)
+/*
+ * If the string "str" begins with the string found in "prefix", return 1.
+ * The "out" parameter is set to "str + strlen(prefix)" (i.e., to the point in
+ * the string right after the prefix).
+ *
+ * Otherwise, return 0 and leave "out" untouched.
+ *
+ * Examples:
+ *
+ *   [extract branch name, fail if not a branch]
+ *   if (!skip_prefix(ref, "refs/heads/", &branch)
+ *	return -1;
+ *
+ *   [skip prefix if present, otherwise use whole string]
+ *   skip_prefix(name, "refs/heads/", &name);
+ */
+static inline int skip_prefix(const char *str, const char *prefix,
+			      const char **out)
 {
-	size_t len = strlen(prefix);
-	return strncmp(str, prefix, len) ? NULL : str + len;
+	do {
+		if (!*prefix) {
+			*out = str;
+			return 1;
+		}
+	} while (*str++ == *prefix++);
+	return 0;
+}
+
+/*
+ * If buf ends with suffix, return 1 and subtract the length of the suffix
+ * from *len. Otherwise, return 0 and leave *len untouched.
+ */
+static inline int strip_suffix_mem(const char *buf, size_t *len,
+				   const char *suffix)
+{
+	size_t suflen = strlen(suffix);
+	if (*len < suflen || memcmp(buf + (*len - suflen), suffix, suflen))
+		return 0;
+	*len -= suflen;
+	return 1;
+}
+
+/*
+ * If str ends with suffix, return 1 and set *len to the size of the string
+ * without the suffix. Otherwise, return 0 and set *len to the size of the
+ * string.
+ *
+ * Note that we do _not_ NUL-terminate str to the new length.
+ */
+static inline int strip_suffix(const char *str, const char *suffix, size_t *len)
+{
+	*len = strlen(str);
+	return strip_suffix_mem(str, len, suffix);
+}
+
+static inline int ends_with(const char *str, const char *suffix)
+{
+	size_t len;
+	return strip_suffix(str, suffix, &len);
 }
 
 #if defined(NO_MMAP) || defined(USE_WIN32_MMAP)
@@ -403,6 +531,40 @@ extern int git_munmap(void *start, size_t length);
 #define on_disk_bytes(st) ((st).st_size)
 #else
 #define on_disk_bytes(st) ((st).st_blocks * 512)
+#endif
+
+#ifdef NEEDS_MODE_TRANSLATION
+#undef S_IFMT
+#undef S_IFREG
+#undef S_IFDIR
+#undef S_IFLNK
+#undef S_IFBLK
+#undef S_IFCHR
+#undef S_IFIFO
+#undef S_IFSOCK
+#define S_IFMT   0170000
+#define S_IFREG  0100000
+#define S_IFDIR  0040000
+#define S_IFLNK  0120000
+#define S_IFBLK  0060000
+#define S_IFCHR  0020000
+#define S_IFIFO  0010000
+#define S_IFSOCK 0140000
+#ifdef stat
+#undef stat
+#endif
+#define stat(path, buf) git_stat(path, buf)
+extern int git_stat(const char *, struct stat *);
+#ifdef fstat
+#undef fstat
+#endif
+#define fstat(fd, buf) git_fstat(fd, buf)
+extern int git_fstat(int, struct stat *);
+#ifdef lstat
+#undef lstat
+#endif
+#define lstat(path, buf) git_lstat(path, buf)
+extern int git_lstat(const char *, struct stat *);
 #endif
 
 #define DEFAULT_PACKED_GIT_LIMIT \
@@ -480,9 +642,15 @@ extern FILE *git_fopen(const char*, const char*);
 #endif
 
 #ifdef SNPRINTF_RETURNS_BOGUS
+#ifdef snprintf
+#undef snprintf
+#endif
 #define snprintf git_snprintf
 extern int git_snprintf(char *str, size_t maxsize,
 			const char *format, ...);
+#ifdef vsnprintf
+#undef vsnprintf
+#endif
 #define vsnprintf git_vsnprintf
 extern int git_vsnprintf(char *str, size_t maxsize,
 			 const char *format, va_list ap);
@@ -521,27 +689,51 @@ int inet_pton(int af, const char *src, void *dst);
 const char *inet_ntop(int af, const void *src, char *dst, size_t size);
 #endif
 
+#ifdef NO_PTHREADS
+#define atexit git_atexit
+extern int git_atexit(void (*handler)(void));
+#endif
+
 extern void release_pack_memory(size_t);
 
 typedef void (*try_to_free_t)(size_t);
 extern try_to_free_t set_try_to_free_routine(try_to_free_t);
 
+#ifdef HAVE_ALLOCA_H
+# include <alloca.h>
+# define xalloca(size)      (alloca(size))
+# define xalloca_free(p)    do {} while (0)
+#else
+# define xalloca(size)      (xmalloc(size))
+# define xalloca_free(p)    (free(p))
+#endif
 extern char *xstrdup(const char *str);
 extern void *xmalloc(size_t size);
 extern void *xmallocz(size_t size);
+extern void *xmallocz_gently(size_t size);
 extern void *xmemdupz(const void *data, size_t len);
 extern char *xstrndup(const char *str, size_t len);
 extern void *xrealloc(void *ptr, size_t size);
 extern void *xcalloc(size_t nmemb, size_t size);
 extern void *xmmap(void *start, size_t length, int prot, int flags, int fd, off_t offset);
+extern void *xmmap_gently(void *start, size_t length, int prot, int flags, int fd, off_t offset);
 extern ssize_t xread(int fd, void *buf, size_t len);
 extern ssize_t xwrite(int fd, const void *buf, size_t len);
+extern ssize_t xpread(int fd, void *buf, size_t len, off_t offset);
 extern int xdup(int fd);
 extern FILE *xfdopen(int fd, const char *mode);
 extern int xmkstemp(char *template);
 extern int xmkstemp_mode(char *template, int mode);
 extern int odb_mkstemp(char *template, size_t limit, const char *pattern);
-extern int odb_pack_keep(char *name, size_t namesz, unsigned char *sha1);
+extern int odb_pack_keep(char *name, size_t namesz, const unsigned char *sha1);
+extern char *xgetcwd(void);
+
+#define REALLOC_ARRAY(x, alloc) (x) = xrealloc((x), (alloc) * sizeof(*(x)))
+
+static inline char *xstrdup_or_null(const char *str)
+{
+	return str ? xstrdup(str) : NULL;
+}
 
 static inline size_t xsize_t(off_t len)
 {
@@ -550,15 +742,8 @@ static inline size_t xsize_t(off_t len)
 	return (size_t)len;
 }
 
-static inline int has_extension(const char *filename, const char *ext)
-{
-	size_t len = strlen(filename);
-	size_t extlen = strlen(ext);
-	return len > extlen && !memcmp(filename + len - extlen, ext, extlen);
-}
-
 /* in ctype.c, for kwset users */
-extern const char tolower_trans_tbl[256];
+extern const unsigned char tolower_trans_tbl[256];
 
 /* Sane ctype - no locale, and works with signed chars */
 #undef isascii
@@ -598,7 +783,7 @@ extern const unsigned char sane_ctype[256];
 #define iscntrl(x) (sane_istest(x,GIT_CNTRL))
 #define ispunct(x) sane_istest(x, GIT_PUNCT | GIT_REGEX_SPECIAL | \
 		GIT_GLOB_SPECIAL | GIT_PATHSPEC_MAGIC)
-#define isxdigit(x) (hexval_table[x] != -1)
+#define isxdigit(x) (hexval_table[(unsigned char)(x)] != -1)
 #define tolower(x) sane_case((unsigned char)(x), 0x20)
 #define toupper(x) sane_case((unsigned char)(x), 0)
 #define is_pathspec_magic(x) sane_istest(x,GIT_PATHSPEC_MAGIC)
@@ -692,13 +877,27 @@ void git_qsort(void *base, size_t nmemb, size_t size,
 #endif
 #endif
 
+#if defined(__GNUC__) || (_MSC_VER >= 1400) || defined(__C99_MACRO_WITH_VA_ARGS)
+#define HAVE_VARIADIC_MACROS 1
+#endif
+
 /*
  * Preserves errno, prints a message, but gives no warning for ENOENT.
- * Always returns the return value of unlink(2).
+ * Returns 0 on success, which includes trying to unlink an object that does
+ * not exist.
  */
 int unlink_or_warn(const char *path);
+ /*
+  * Tries to unlink file.  Returns 0 if unlink succeeded
+  * or the file already didn't exist.  Returns -1 and
+  * appends a message to err suitable for
+  * 'error("%s", err->buf)' on error.
+  */
+int unlink_or_msg(const char *file, struct strbuf *err);
 /*
- * Likewise for rmdir(2).
+ * Preserves errno, prints a message, but gives no warning for ENOENT.
+ * Returns 0 on success, which includes trying to remove a directory that does
+ * not exist.
  */
 int rmdir_or_warn(const char *path);
 /*
@@ -726,6 +925,20 @@ struct tm *git_gmtime(const time_t *);
 struct tm *git_gmtime_r(const time_t *, struct tm *);
 #define gmtime git_gmtime
 #define gmtime_r git_gmtime_r
+#endif
+
+#if !defined(USE_PARENS_AROUND_GETTEXT_N) && defined(__GNUC__)
+#define USE_PARENS_AROUND_GETTEXT_N 1
+#endif
+
+#ifndef SHELL_PATH
+# define SHELL_PATH "/bin/sh"
+#endif
+
+#ifndef _POSIX_THREAD_SAFE_FUNCTIONS
+#define flockfile(fh)
+#define funlockfile(fh)
+#define getc_unlocked(fh) getc(fh)
 #endif
 
 #endif

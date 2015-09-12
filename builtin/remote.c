@@ -10,10 +10,10 @@
 
 static const char * const builtin_remote_usage[] = {
 	N_("git remote [-v | --verbose]"),
-	N_("git remote add [-t <branch>] [-m <master>] [-f] [--tags|--no-tags] [--mirror=<fetch|push>] <name> <url>"),
+	N_("git remote add [-t <branch>] [-m <master>] [-f] [--tags | --no-tags] [--mirror=<fetch|push>] <name> <url>"),
 	N_("git remote rename <old> <new>"),
 	N_("git remote remove <name>"),
-	N_("git remote set-head <name> (-a | --auto | -d | --delete |<branch>)"),
+	N_("git remote set-head <name> (-a | --auto | -d | --delete | <branch>)"),
 	N_("git remote [-v | --verbose] show [-n] <name>"),
 	N_("git remote prune [-n | --dry-run] <name>"),
 	N_("git remote [-v | --verbose] update [-p | --prune] [(<group> | <remote>)...]"),
@@ -180,7 +180,9 @@ static int add(int argc, const char **argv)
 	url = argv[1];
 
 	remote = remote_get(name);
-	if (remote && (remote->url_nr > 1 || strcmp(name, remote->url[0]) ||
+	if (remote && (remote->url_nr > 1 ||
+			(strcmp(name, remote->url[0]) &&
+				strcmp(url, remote->url[0])) ||
 			remote->fetch_refspec_nr))
 		die(_("remote %s already exists."), name);
 
@@ -250,9 +252,7 @@ static struct string_list branch_list;
 
 static const char *abbrev_ref(const char *name, const char *prefix)
 {
-	const char *abbrev = skip_prefix(name, prefix);
-	if (abbrev)
-		return abbrev;
+	skip_prefix(name, prefix, &name);
 	return name;
 }
 #define abbrev_branch(name) abbrev_ref((name), "refs/heads/")
@@ -265,16 +265,17 @@ static int config_read_branches(const char *key, const char *value, void *cb)
 		struct string_list_item *item;
 		struct branch_info *info;
 		enum { REMOTE, MERGE, REBASE } type;
+		size_t key_len;
 
 		key += 7;
-		if (ends_with(key, ".remote")) {
-			name = xstrndup(key, strlen(key) - 7);
+		if (strip_suffix(key, ".remote", &key_len)) {
+			name = xmemdupz(key, key_len);
 			type = REMOTE;
-		} else if (ends_with(key, ".merge")) {
-			name = xstrndup(key, strlen(key) - 6);
+		} else if (strip_suffix(key, ".merge", &key_len)) {
+			name = xmemdupz(key, key_len);
 			type = MERGE;
-		} else if (ends_with(key, ".rebase")) {
-			name = xstrndup(key, strlen(key) - 7);
+		} else if (strip_suffix(key, ".rebase", &key_len)) {
+			name = xmemdupz(key, key_len);
 			type = REBASE;
 		} else
 			return 0;
@@ -282,7 +283,7 @@ static int config_read_branches(const char *key, const char *value, void *cb)
 		item = string_list_insert(&branch_list, name);
 
 		if (!item->util)
-			item->util = xcalloc(sizeof(struct branch_info), 1);
+			item->util = xcalloc(1, sizeof(struct branch_info));
 		info = item->util;
 		if (type == REMOTE) {
 			if (info->remote_name)
@@ -353,9 +354,9 @@ static int get_ref_states(const struct ref *remote_refs, struct ref_states *stat
 	free_refs(stale_refs);
 	free_refs(fetch_map);
 
-	sort_string_list(&states->new);
-	sort_string_list(&states->tracked);
-	sort_string_list(&states->stale);
+	string_list_sort(&states->new);
+	string_list_sort(&states->tracked);
+	string_list_sort(&states->stale);
 
 	return 0;
 }
@@ -398,7 +399,7 @@ static int get_push_ref_states(const struct ref *remote_refs,
 
 		item = string_list_append(&states->push,
 					  abbrev_branch(ref->peer_ref->name));
-		item->util = xcalloc(sizeof(struct push_info), 1);
+		item->util = xcalloc(1, sizeof(struct push_info));
 		info = item->util;
 		info->forced = ref->force;
 		info->dest = xstrdup(abbrev_branch(ref->name));
@@ -433,7 +434,7 @@ static int get_push_ref_states_noquery(struct ref_states *states)
 	states->push.strdup_strings = 1;
 	if (!remote->push_refspec_nr) {
 		item = string_list_append(&states->push, _("(matching)"));
-		info = item->util = xcalloc(sizeof(struct push_info), 1);
+		info = item->util = xcalloc(1, sizeof(struct push_info));
 		info->status = PUSH_STATUS_NOTQUERIED;
 		info->dest = xstrdup(item->string);
 	}
@@ -446,7 +447,7 @@ static int get_push_ref_states_noquery(struct ref_states *states)
 		else
 			item = string_list_append(&states->push, _("(delete)"));
 
-		info = item->util = xcalloc(sizeof(struct push_info), 1);
+		info = item->util = xcalloc(1, sizeof(struct push_info));
 		info->forced = spec->force;
 		info->status = PUSH_STATUS_NOTQUERIED;
 		info->dest = xstrdup(spec->dst ? spec->dst : item->string);
@@ -508,11 +509,10 @@ struct branches_for_remote {
 };
 
 static int add_branch_for_removal(const char *refname,
-	const unsigned char *sha1, int flags, void *cb_data)
+	const struct object_id *oid, int flags, void *cb_data)
 {
 	struct branches_for_remote *branches = cb_data;
 	struct refspec refspec;
-	struct string_list_item *item;
 	struct known_remote *kr;
 
 	memset(&refspec, 0, sizeof(refspec));
@@ -542,9 +542,7 @@ static int add_branch_for_removal(const char *refname,
 	if (flags & REF_ISSYMREF)
 		return unlink(git_path("%s", refname));
 
-	item = string_list_append(branches->branches, refname);
-	item->util = xmalloc(20);
-	hashcpy(item->util, sha1);
+	string_list_append(branches->branches, refname);
 
 	return 0;
 }
@@ -556,19 +554,20 @@ struct rename_info {
 };
 
 static int read_remote_branches(const char *refname,
-	const unsigned char *sha1, int flags, void *cb_data)
+	const struct object_id *oid, int flags, void *cb_data)
 {
 	struct rename_info *rename = cb_data;
 	struct strbuf buf = STRBUF_INIT;
 	struct string_list_item *item;
 	int flag;
-	unsigned char orig_sha1[20];
+	struct object_id orig_oid;
 	const char *symref;
 
 	strbuf_addf(&buf, "refs/remotes/%s/", rename->old);
 	if (starts_with(refname, buf.buf)) {
 		item = string_list_append(rename->remote_branches, xstrdup(refname));
-		symref = resolve_ref_unsafe(refname, orig_sha1, 1, &flag);
+		symref = resolve_ref_unsafe(refname, RESOLVE_REF_READING,
+					    orig_oid.hash, &flag);
 		if (flag & REF_ISSYMREF)
 			item->util = xstrdup(symref);
 		else
@@ -582,7 +581,7 @@ static int migrate_file(struct remote *remote)
 {
 	struct strbuf buf = STRBUF_INIT;
 	int i;
-	char *path = NULL;
+	const char *path = NULL;
 
 	strbuf_addf(&buf, "remote.%s.url", remote->name);
 	for (i = 0; i < remote->url_nr; i++)
@@ -702,9 +701,9 @@ static int mv(int argc, const char **argv)
 	for (i = 0; i < remote_branches.nr; i++) {
 		struct string_list_item *item = remote_branches.items + i;
 		int flag = 0;
-		unsigned char sha1[20];
+		struct object_id oid;
 
-		read_ref_full(item->string, sha1, 1, &flag);
+		read_ref_full(item->string, RESOLVE_REF_READING, oid.hash, &flag);
 		if (!(flag & REF_ISSYMREF))
 			continue;
 		if (delete_ref(item->string, NULL, REF_NODEREF))
@@ -749,15 +748,21 @@ static int mv(int argc, const char **argv)
 
 static int remove_branches(struct string_list *branches)
 {
+	struct strbuf err = STRBUF_INIT;
 	int i, result = 0;
+
+	if (repack_without_refs(branches, &err))
+		result |= error("%s", err.buf);
+	strbuf_release(&err);
+
 	for (i = 0; i < branches->nr; i++) {
 		struct string_list_item *item = branches->items + i;
 		const char *refname = item->string;
-		unsigned char *sha1 = item->util;
 
-		if (delete_ref(refname, sha1, 0))
+		if (delete_ref(refname, NULL, 0))
 			result |= error(_("Could not remove branch %s"), refname);
 	}
+
 	return result;
 }
 
@@ -789,10 +794,6 @@ static int rm(int argc, const char **argv)
 	known_remotes.to_delete = remote;
 	for_each_remote(add_known_remote, &known_remotes);
 
-	strbuf_addf(&buf, "remote.%s", remote->name);
-	if (git_config_rename_section(buf.buf, NULL) < 1)
-		return error(_("Could not remove config section '%s'"), buf.buf);
-
 	read_branches();
 	for (i = 0; i < branch_list.nr; i++) {
 		struct string_list_item *item = branch_list.items + i;
@@ -822,7 +823,7 @@ static int rm(int argc, const char **argv)
 
 	if (!result)
 		result = remove_branches(&branches);
-	string_list_clear(&branches, 1);
+	string_list_clear(&branches, 0);
 
 	if (skipped.nr) {
 		fprintf_ln(stderr,
@@ -836,6 +837,12 @@ static int rm(int argc, const char **argv)
 				skipped.items[i].string);
 	}
 	string_list_clear(&skipped, 0);
+
+	if (!result) {
+		strbuf_addf(&buf, "remote.%s", remote->name);
+		if (git_config_rename_section(buf.buf, NULL) < 1)
+			return error(_("Could not remove config section '%s'"), buf.buf);
+	}
 
 	return result;
 }
@@ -857,7 +864,7 @@ static void free_remote_ref_states(struct ref_states *states)
 }
 
 static int append_ref_to_tracked_list(const char *refname,
-	const unsigned char *sha1, int flags, void *cb_data)
+	const struct object_id *oid, int flags, void *cb_data)
 {
 	struct ref_states *states = cb_data;
 	struct refspec refspec;
@@ -901,7 +908,7 @@ static int get_remote_ref_states(const char *name,
 			get_push_ref_states(remote_refs, states);
 	} else {
 		for_each_ref(append_ref_to_tracked_list, states);
-		sort_string_list(&states->tracked);
+		string_list_sort(&states->tracked);
 		get_push_ref_states_noquery(states);
 	}
 
@@ -1120,7 +1127,7 @@ static int show_all(void)
 	if (!result) {
 		int i;
 
-		sort_string_list(&list);
+		string_list_sort(&list);
 		for (i = 0; i < list.nr; i++) {
 			struct string_list_item *item = list.items + i;
 			if (verbose)
@@ -1301,8 +1308,10 @@ static int set_head(int argc, const char **argv)
 
 static int prune_remote(const char *remote, int dry_run)
 {
-	int result = 0, i;
+	int result = 0;
 	struct ref_states states;
+	struct string_list refs_to_prune = STRING_LIST_INIT_NODUP;
+	struct string_list_item *item;
 	const char *dangling_msg = dry_run
 		? _(" %s will become dangling!")
 		: _(" %s has become dangling!");
@@ -1310,16 +1319,30 @@ static int prune_remote(const char *remote, int dry_run)
 	memset(&states, 0, sizeof(states));
 	get_remote_ref_states(remote, &states, GET_REF_STATES);
 
-	if (states.stale.nr) {
-		printf_ln(_("Pruning %s"), remote);
-		printf_ln(_("URL: %s"),
-		       states.remote->url_nr
-		       ? states.remote->url[0]
-		       : _("(no URL)"));
+	if (!states.stale.nr) {
+		free_remote_ref_states(&states);
+		return 0;
 	}
 
-	for (i = 0; i < states.stale.nr; i++) {
-		const char *refname = states.stale.items[i].util;
+	printf_ln(_("Pruning %s"), remote);
+	printf_ln(_("URL: %s"),
+		  states.remote->url_nr
+		  ? states.remote->url[0]
+		  : _("(no URL)"));
+
+	for_each_string_list_item(item, &states.stale)
+		string_list_append(&refs_to_prune, item->util);
+	string_list_sort(&refs_to_prune);
+
+	if (!dry_run) {
+		struct strbuf err = STRBUF_INIT;
+		if (repack_without_refs(&refs_to_prune, &err))
+			result |= error("%s", err.buf);
+		strbuf_release(&err);
+	}
+
+	for_each_string_list_item(item, &states.stale) {
+		const char *refname = item->util;
 
 		if (!dry_run)
 			result |= delete_ref(refname, NULL, 0);
@@ -1330,9 +1353,11 @@ static int prune_remote(const char *remote, int dry_run)
 		else
 			printf_ln(_(" * [pruned] %s"),
 			       abbrev_ref(refname, "refs/remotes/"));
-		warn_dangling_symref(stdout, dangling_msg, refname);
 	}
 
+	warn_dangling_symrefs(stdout, dangling_msg, &refs_to_prune);
+
+	string_list_clear(&refs_to_prune, 0);
 	free_remote_ref_states(&states);
 	return result;
 }

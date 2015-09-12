@@ -4,9 +4,12 @@
 #include "sigchain.h"
 #include "argv-array.h"
 
-#ifndef SHELL_PATH
-# define SHELL_PATH "/bin/sh"
-#endif
+void child_process_init(struct child_process *child)
+{
+	memset(child, 0, sizeof(*child));
+	argv_array_init(&child->args);
+	argv_array_init(&child->env_array);
+}
 
 struct child_to_clean {
 	pid_t pid;
@@ -197,7 +200,6 @@ static int execv_shell_cmd(const char **argv)
 #endif
 
 #ifndef GIT_WINDOWS_NATIVE
-static int child_err = 2;
 static int child_notifier = -1;
 
 static void notify_parent(void)
@@ -208,17 +210,6 @@ static void notify_parent(void)
 	 * otherwise, finish_command will still report the error.
 	 */
 	xwrite(child_notifier, "", 1);
-}
-
-static NORETURN void die_child(const char *err, va_list params)
-{
-	vwritef(child_err, "fatal: ", err, params);
-	exit(128);
-}
-
-static void error_child(const char *err, va_list params)
-{
-	vwritef(child_err, "error: ", err, params);
 }
 #endif
 
@@ -279,6 +270,11 @@ int start_command(struct child_process *cmd)
 	int failed_errno;
 	char *str;
 
+	if (!cmd->argv)
+		cmd->argv = cmd->args.argv;
+	if (!cmd->env)
+		cmd->env = cmd->env_array.argv;
+
 	/*
 	 * In case of errors we must keep the promise to close FDs
 	 * that have been passed in via ->in and ->out.
@@ -328,6 +324,8 @@ int start_command(struct child_process *cmd)
 fail_pipe:
 			error("cannot create %s pipe for %s: %s",
 				str, cmd->argv[0], strerror(failed_errno));
+			argv_array_clear(&cmd->args);
+			argv_array_clear(&cmd->env_array);
 			errno = failed_errno;
 			return -1;
 		}
@@ -352,11 +350,10 @@ fail_pipe:
 		 * in subsequent call paths use the parent's stderr.
 		 */
 		if (cmd->no_stderr || need_err) {
-			child_err = dup(2);
+			int child_err = dup(2);
 			set_cloexec(child_err);
+			set_error_handle(fdopen(child_err, "w"));
 		}
-		set_die_routine(die_child);
-		set_error_routine(error_child);
 
 		close(notify_pipe[0]);
 		set_cloexec(notify_pipe[1]);
@@ -450,7 +447,6 @@ fail_pipe:
 {
 	int fhin = 0, fhout = 1, fherr = 2;
 	const char **sargv = cmd->argv;
-	char **env = environ;
 
 	if (cmd->no_stdin)
 		fhin = open("/dev/null", O_RDWR);
@@ -475,24 +471,19 @@ fail_pipe:
 	else if (cmd->out > 1)
 		fhout = dup(cmd->out);
 
-	if (cmd->env)
-		env = make_augmented_environ(cmd->env);
-
 	if (cmd->git_cmd)
 		cmd->argv = prepare_git_cmd(cmd->argv);
 	else if (cmd->use_shell)
 		cmd->argv = prepare_shell_cmd(cmd->argv);
 
-	cmd->pid = mingw_spawnvpe(cmd->argv[0], cmd->argv, env, cmd->dir,
-				  fhin, fhout, fherr);
+	cmd->pid = mingw_spawnvpe(cmd->argv[0], cmd->argv, (char**) cmd->env,
+			cmd->dir, fhin, fhout, fherr);
 	failed_errno = errno;
 	if (cmd->pid < 0 && (!cmd->silent_exec_failure || errno != ENOENT))
 		error("cannot spawn %s: %s", cmd->argv[0], strerror(errno));
 	if (cmd->clean_on_exit && cmd->pid >= 0)
 		mark_child_for_cleanup(cmd->pid);
 
-	if (cmd->env)
-		free_environ(env);
 	if (cmd->git_cmd)
 		free(cmd->argv);
 
@@ -519,6 +510,8 @@ fail_pipe:
 			close_pair(fderr);
 		else if (cmd->err)
 			close(cmd->err);
+		argv_array_clear(&cmd->args);
+		argv_array_clear(&cmd->env_array);
 		errno = failed_errno;
 		return -1;
 	}
@@ -543,42 +536,40 @@ fail_pipe:
 
 int finish_command(struct child_process *cmd)
 {
-	return wait_or_whine(cmd->pid, cmd->argv[0]);
+	int ret = wait_or_whine(cmd->pid, cmd->argv[0]);
+	argv_array_clear(&cmd->args);
+	argv_array_clear(&cmd->env_array);
+	return ret;
 }
 
 int run_command(struct child_process *cmd)
 {
-	int code = start_command(cmd);
+	int code;
+
+	if (cmd->out < 0 || cmd->err < 0)
+		die("BUG: run_command with a pipe can cause deadlock");
+
+	code = start_command(cmd);
 	if (code)
 		return code;
 	return finish_command(cmd);
 }
 
-static void prepare_run_command_v_opt(struct child_process *cmd,
-				      const char **argv,
-				      int opt)
-{
-	memset(cmd, 0, sizeof(*cmd));
-	cmd->argv = argv;
-	cmd->no_stdin = opt & RUN_COMMAND_NO_STDIN ? 1 : 0;
-	cmd->git_cmd = opt & RUN_GIT_CMD ? 1 : 0;
-	cmd->stdout_to_stderr = opt & RUN_COMMAND_STDOUT_TO_STDERR ? 1 : 0;
-	cmd->silent_exec_failure = opt & RUN_SILENT_EXEC_FAILURE ? 1 : 0;
-	cmd->use_shell = opt & RUN_USING_SHELL ? 1 : 0;
-	cmd->clean_on_exit = opt & RUN_CLEAN_ON_EXIT ? 1 : 0;
-}
-
 int run_command_v_opt(const char **argv, int opt)
 {
-	struct child_process cmd;
-	prepare_run_command_v_opt(&cmd, argv, opt);
-	return run_command(&cmd);
+	return run_command_v_opt_cd_env(argv, opt, NULL, NULL);
 }
 
 int run_command_v_opt_cd_env(const char **argv, int opt, const char *dir, const char *const *env)
 {
-	struct child_process cmd;
-	prepare_run_command_v_opt(&cmd, argv, opt);
+	struct child_process cmd = CHILD_PROCESS_INIT;
+	cmd.argv = argv;
+	cmd.no_stdin = opt & RUN_COMMAND_NO_STDIN ? 1 : 0;
+	cmd.git_cmd = opt & RUN_GIT_CMD ? 1 : 0;
+	cmd.stdout_to_stderr = opt & RUN_COMMAND_STDOUT_TO_STDERR ? 1 : 0;
+	cmd.silent_exec_failure = opt & RUN_SILENT_EXEC_FAILURE ? 1 : 0;
+	cmd.use_shell = opt & RUN_USING_SHELL ? 1 : 0;
+	cmd.clean_on_exit = opt & RUN_CLEAN_ON_EXIT ? 1 : 0;
 	cmd.dir = dir;
 	cmd.env = env;
 	return run_command(&cmd);
@@ -622,6 +613,45 @@ static int async_die_is_recursing(void)
 	pthread_setspecific(async_die_counter, (void *)1);
 	return ret != NULL;
 }
+
+#else
+
+static struct {
+	void (**handlers)(void);
+	size_t nr;
+	size_t alloc;
+} git_atexit_hdlrs;
+
+static int git_atexit_installed;
+
+static void git_atexit_dispatch(void)
+{
+	size_t i;
+
+	for (i=git_atexit_hdlrs.nr ; i ; i--)
+		git_atexit_hdlrs.handlers[i-1]();
+}
+
+static void git_atexit_clear(void)
+{
+	free(git_atexit_hdlrs.handlers);
+	memset(&git_atexit_hdlrs, 0, sizeof(git_atexit_hdlrs));
+	git_atexit_installed = 0;
+}
+
+#undef atexit
+int git_atexit(void (*handler)(void))
+{
+	ALLOC_GROW(git_atexit_hdlrs.handlers, git_atexit_hdlrs.nr + 1, git_atexit_hdlrs.alloc);
+	git_atexit_hdlrs.handlers[git_atexit_hdlrs.nr++] = handler;
+	if (!git_atexit_installed) {
+		if (atexit(&git_atexit_dispatch))
+			return -1;
+		git_atexit_installed = 1;
+	}
+	return 0;
+}
+#define atexit git_atexit
 
 #endif
 
@@ -681,6 +711,7 @@ int start_async(struct async *async)
 			close(fdin[1]);
 		if (need_out)
 			close(fdout[0]);
+		git_atexit_clear();
 		exit(!!async->proc(proc_in, proc_out, async->data));
 	}
 
@@ -751,9 +782,9 @@ int finish_async(struct async *async)
 #endif
 }
 
-char *find_hook(const char *name)
+const char *find_hook(const char *name)
 {
-	char *path = git_path("hooks/%s", name);
+	const char *path = git_path("hooks/%s", name);
 	if (access(path, X_OK) < 0)
 		path = NULL;
 
@@ -762,29 +793,21 @@ char *find_hook(const char *name)
 
 int run_hook_ve(const char *const *env, const char *name, va_list args)
 {
-	struct child_process hook;
-	struct argv_array argv = ARGV_ARRAY_INIT;
+	struct child_process hook = CHILD_PROCESS_INIT;
 	const char *p;
-	int ret;
 
 	p = find_hook(name);
 	if (!p)
 		return 0;
 
-	argv_array_push(&argv, p);
-
+	argv_array_push(&hook.args, p);
 	while ((p = va_arg(args, const char *)))
-		argv_array_push(&argv, p);
-
-	memset(&hook, 0, sizeof(hook));
-	hook.argv = argv.argv;
+		argv_array_push(&hook.args, p);
 	hook.env = env;
 	hook.no_stdin = 1;
 	hook.stdout_to_stderr = 1;
 
-	ret = run_command(&hook);
-	argv_array_clear(&argv);
-	return ret;
+	return run_command(&hook);
 }
 
 int run_hook_le(const char *const *env, const char *name, ...)
@@ -799,19 +822,18 @@ int run_hook_le(const char *const *env, const char *name, ...)
 	return ret;
 }
 
-int run_hook_with_custom_index(const char *index_file, const char *name, ...)
+int capture_command(struct child_process *cmd, struct strbuf *buf, size_t hint)
 {
-	const char *hook_env[3] =  { NULL };
-	char index[PATH_MAX];
-	va_list args;
-	int ret;
+	cmd->out = -1;
+	if (start_command(cmd) < 0)
+		return -1;
 
-	snprintf(index, sizeof(index), "GIT_INDEX_FILE=%s", index_file);
-	hook_env[0] = index;
+	if (strbuf_read(buf, cmd->out, hint) < 0) {
+		close(cmd->out);
+		finish_command(cmd); /* throw away exit code */
+		return -1;
+	}
 
-	va_start(args, name);
-	ret = run_hook_ve(hook_env, name, args);
-	va_end(args);
-
-	return ret;
+	close(cmd->out);
+	return finish_command(cmd);
 }

@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include "string-list.h"
 #include "color.h"
+#include "pathspec.h"
 
 enum color_wt_status {
 	WT_STATUS_HEADER = 0,
@@ -84,6 +85,7 @@ struct wt_status_state {
 	int cherry_pick_in_progress;
 	int bisect_in_progress;
 	int revert_in_progress;
+	int detached_at;
 	char *branch;
 	char *onto;
 	char *detached_from;
@@ -93,6 +95,7 @@ struct wt_status_state {
 };
 
 void wt_status_truncate_message_at_cut_line(struct strbuf *);
+void wt_status_add_cut_line(FILE *fp);
 void wt_status_prepare(struct wt_status *s);
 void wt_status_print(struct wt_status *s);
 void wt_status_collect(struct wt_status *s);

@@ -10,7 +10,7 @@ SYNOPSIS
 --------
 [verse]
 'git merge' [-n] [--stat] [--no-commit] [--squash] [--[no-]edit]
-	[-s <strategy>] [-X <strategy-option>] [-S[<keyid>]]
+	[-s <strategy>] [-X <strategy-option>] [-S[<key-id>]]
 	[--[no-]rerere-autoupdate] [-m <msg>] [<commit>...]
 'git merge' <msg> HEAD <commit>...
 'git merge' --abort
@@ -101,10 +101,13 @@ commit or stash your changes before running 'git merge'.
 	Specifying more than one commit will create a merge with
 	more than two parents (affectionately called an Octopus merge).
 +
-If no commit is given from the command line, and if `merge.defaultToUpstream`
-configuration variable is set, merge the remote-tracking branches
-that the current branch is configured to use as its upstream.
+If no commit is given from the command line, merge the remote-tracking
+branches that the current branch is configured to use as its upstream.
 See also the configuration section of this manual page.
++
+When `FETCH_HEAD` (and no other commit) is specified, the branches
+recorded in the `.git/FETCH_HEAD` file by the previous invocation
+of `git fetch` for merging are merged to the current branch.
 
 
 PRE-MERGE CHECKS
@@ -233,7 +236,7 @@ Barbie's remark on your side.  The only thing you can tell is that your
 side wants to say it is hard and you'd prefer to go shopping, while the
 other side wants to claim it is easy.
 
-An alternative style can be used by setting the "merge.conflictstyle"
+An alternative style can be used by setting the "merge.conflictStyle"
 configuration variable to "diff3".  In "diff3" style, the above conflict
 may look like this:
 
@@ -330,7 +333,7 @@ CONFIGURATION
 -------------
 include::merge-config.txt[]
 
-branch.<name>.mergeoptions::
+branch.<name>.mergeOptions::
 	Sets default options for merging into branch <name>. The syntax and
 	supported options are the same as those of 'git merge', but option
 	values containing whitespace characters are currently not supported.

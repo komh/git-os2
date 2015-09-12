@@ -13,18 +13,20 @@ static const char content_type[] = "Content-Type";
 static const char content_length[] = "Content-Length";
 static const char last_modified[] = "Last-Modified";
 static int getanyfile = 1;
+static unsigned long max_request_buffer = 10 * 1024 * 1024;
 
 static struct string_list *query_params;
 
 struct rpc_service {
 	const char *name;
 	const char *config_name;
+	unsigned buffer_input : 1;
 	signed enabled : 2;
 };
 
 static struct rpc_service rpc_service[] = {
-	{ "upload-pack", "uploadpack", 1 },
-	{ "receive-pack", "receivepack", -1 },
+	{ "upload-pack", "uploadpack", 1, 1 },
+	{ "receive-pack", "receivepack", 0, -1 },
 };
 
 static struct string_list *get_parameters(void)
@@ -219,40 +221,37 @@ static void get_idx_file(char *name)
 	send_local_file("application/x-git-packed-objects-toc", name);
 }
 
-static int http_config(const char *var, const char *value, void *cb)
+static void http_config(void)
 {
-	if (!strcmp(var, "http.getanyfile")) {
-		getanyfile = git_config_bool(var, value);
-		return 0;
+	int i, value = 0;
+	struct strbuf var = STRBUF_INIT;
+
+	git_config_get_bool("http.getanyfile", &getanyfile);
+	git_config_get_ulong("http.maxrequestbuffer", &max_request_buffer);
+
+	for (i = 0; i < ARRAY_SIZE(rpc_service); i++) {
+		struct rpc_service *svc = &rpc_service[i];
+		strbuf_addf(&var, "http.%s", svc->config_name);
+		if (!git_config_get_bool(var.buf, &value))
+			svc->enabled = value;
+		strbuf_reset(&var);
 	}
 
-	if (starts_with(var, "http.")) {
-		int i;
-
-		for (i = 0; i < ARRAY_SIZE(rpc_service); i++) {
-			struct rpc_service *svc = &rpc_service[i];
-			if (!strcmp(var + 5, svc->config_name)) {
-				svc->enabled = git_config_bool(var, value);
-				return 0;
-			}
-		}
-	}
-
-	/* we are not interested in parsing any other configuration here */
-	return 0;
+	strbuf_release(&var);
 }
 
 static struct rpc_service *select_service(const char *name)
 {
+	const char *svc_name;
 	struct rpc_service *svc = NULL;
 	int i;
 
-	if (!starts_with(name, "git-"))
+	if (!skip_prefix(name, "git-", &svc_name))
 		forbidden("Unsupported service: '%s'", name);
 
 	for (i = 0; i < ARRAY_SIZE(rpc_service); i++) {
 		struct rpc_service *s = &rpc_service[i];
-		if (!strcmp(s->name, name + 4)) {
+		if (!strcmp(s->name, svc_name)) {
 			svc = s;
 			break;
 		}
@@ -270,9 +269,52 @@ static struct rpc_service *select_service(const char *name)
 	return svc;
 }
 
-static void inflate_request(const char *prog_name, int out)
+/*
+ * This is basically strbuf_read(), except that if we
+ * hit max_request_buffer we die (we'd rather reject a
+ * maliciously large request than chew up infinite memory).
+ */
+static ssize_t read_request(int fd, unsigned char **out)
+{
+	size_t len = 0, alloc = 8192;
+	unsigned char *buf = xmalloc(alloc);
+
+	if (max_request_buffer < alloc)
+		max_request_buffer = alloc;
+
+	while (1) {
+		ssize_t cnt;
+
+		cnt = read_in_full(fd, buf + len, alloc - len);
+		if (cnt < 0) {
+			free(buf);
+			return -1;
+		}
+
+		/* partial read from read_in_full means we hit EOF */
+		len += cnt;
+		if (len < alloc) {
+			*out = buf;
+			return len;
+		}
+
+		/* otherwise, grow and try again (if we can) */
+		if (alloc == max_request_buffer)
+			die("request was larger than our maximum size (%lu);"
+			    " try setting GIT_HTTP_MAX_REQUEST_BUFFER",
+			    max_request_buffer);
+
+		alloc = alloc_nr(alloc);
+		if (alloc > max_request_buffer)
+			alloc = max_request_buffer;
+		REALLOC_ARRAY(buf, alloc);
+	}
+}
+
+static void inflate_request(const char *prog_name, int out, int buffer_input)
 {
 	git_zstream stream;
+	unsigned char *full_request = NULL;
 	unsigned char in_buf[8192];
 	unsigned char out_buf[8192];
 	unsigned long cnt = 0;
@@ -281,11 +323,21 @@ static void inflate_request(const char *prog_name, int out)
 	git_inflate_init_gzip_only(&stream);
 
 	while (1) {
-		ssize_t n = xread(0, in_buf, sizeof(in_buf));
+		ssize_t n;
+
+		if (buffer_input) {
+			if (full_request)
+				n = 0; /* nothing left to read */
+			else
+				n = read_request(0, &full_request);
+			stream.next_in = full_request;
+		} else {
+			n = xread(0, in_buf, sizeof(in_buf));
+			stream.next_in = in_buf;
+		}
+
 		if (n <= 0)
 			die("request ended in the middle of the gzip stream");
-
-		stream.next_in = in_buf;
 		stream.avail_in = n;
 
 		while (0 < stream.avail_in) {
@@ -311,16 +363,28 @@ static void inflate_request(const char *prog_name, int out)
 done:
 	git_inflate_end(&stream);
 	close(out);
+	free(full_request);
 }
 
-static void run_service(const char **argv)
+static void copy_request(const char *prog_name, int out)
+{
+	unsigned char *buf;
+	ssize_t n = read_request(0, &buf);
+	if (n < 0)
+		die_errno("error reading request body");
+	if (write_in_full(out, buf, n) != n)
+		die("%s aborted reading request", prog_name);
+	close(out);
+	free(buf);
+}
+
+static void run_service(const char **argv, int buffer_input)
 {
 	const char *encoding = getenv("HTTP_CONTENT_ENCODING");
 	const char *user = getenv("REMOTE_USER");
 	const char *host = getenv("REMOTE_ADDR");
-	struct argv_array env = ARGV_ARRAY_INIT;
 	int gzipped_request = 0;
-	struct child_process cld;
+	struct child_process cld = CHILD_PROCESS_INIT;
 
 	if (encoding && !strcmp(encoding, "gzip"))
 		gzipped_request = 1;
@@ -333,15 +397,13 @@ static void run_service(const char **argv)
 		host = "(none)";
 
 	if (!getenv("GIT_COMMITTER_NAME"))
-		argv_array_pushf(&env, "GIT_COMMITTER_NAME=%s", user);
+		argv_array_pushf(&cld.env_array, "GIT_COMMITTER_NAME=%s", user);
 	if (!getenv("GIT_COMMITTER_EMAIL"))
-		argv_array_pushf(&env, "GIT_COMMITTER_EMAIL=%s@http.%s",
-				 user, host);
+		argv_array_pushf(&cld.env_array,
+				 "GIT_COMMITTER_EMAIL=%s@http.%s", user, host);
 
-	memset(&cld, 0, sizeof(cld));
 	cld.argv = argv;
-	cld.env = env.argv;
-	if (gzipped_request)
+	if (buffer_input || gzipped_request)
 		cld.in = -1;
 	cld.git_cmd = 1;
 	if (start_command(&cld))
@@ -349,25 +411,26 @@ static void run_service(const char **argv)
 
 	close(1);
 	if (gzipped_request)
-		inflate_request(argv[0], cld.in);
+		inflate_request(argv[0], cld.in, buffer_input);
+	else if (buffer_input)
+		copy_request(argv[0], cld.in);
 	else
 		close(0);
 
 	if (finish_command(&cld))
 		exit(1);
-	argv_array_clear(&env);
 }
 
-static int show_text_ref(const char *name, const unsigned char *sha1,
-	int flag, void *cb_data)
+static int show_text_ref(const char *name, const struct object_id *oid,
+			 int flag, void *cb_data)
 {
 	const char *name_nons = strip_namespace(name);
 	struct strbuf *buf = cb_data;
-	struct object *o = parse_object(sha1);
+	struct object *o = parse_object(oid->hash);
 	if (!o)
 		return 0;
 
-	strbuf_addf(buf, "%s\t%s\n", sha1_to_hex(sha1), name_nons);
+	strbuf_addf(buf, "%s\t%s\n", oid_to_hex(oid), name_nons);
 	if (o->type == OBJ_TAG) {
 		o = deref_tag(o, name, 0);
 		if (!o)
@@ -400,7 +463,7 @@ static void get_info_refs(char *arg)
 		packet_flush(1);
 
 		argv[0] = svc->name;
-		run_service(argv);
+		run_service(argv, 0);
 
 	} else {
 		select_getanyfile();
@@ -410,19 +473,21 @@ static void get_info_refs(char *arg)
 	strbuf_release(&buf);
 }
 
-static int show_head_ref(const char *refname, const unsigned char *sha1,
-	int flag, void *cb_data)
+static int show_head_ref(const char *refname, const struct object_id *oid,
+			 int flag, void *cb_data)
 {
 	struct strbuf *buf = cb_data;
 
 	if (flag & REF_ISSYMREF) {
-		unsigned char unused[20];
-		const char *target = resolve_ref_unsafe(refname, unused, 1, NULL);
+		struct object_id unused;
+		const char *target = resolve_ref_unsafe(refname,
+							RESOLVE_REF_READING,
+							unused.hash, NULL);
 		const char *target_nons = strip_namespace(target);
 
 		strbuf_addf(buf, "ref: %s\n", target_nons);
 	} else {
-		strbuf_addf(buf, "%s\n", sha1_to_hex(sha1));
+		strbuf_addf(buf, "%s\n", oid_to_hex(oid));
 	}
 
 	return 0;
@@ -502,23 +567,26 @@ static void service_rpc(char *service_name)
 	end_headers();
 
 	argv[0] = svc->name;
-	run_service(argv);
+	run_service(argv, svc->buffer_input);
 	strbuf_release(&buf);
 }
 
+static int dead;
 static NORETURN void die_webcgi(const char *err, va_list params)
 {
-	static int dead;
+	if (dead <= 1) {
+		vreportf("fatal: ", err, params);
 
-	if (!dead) {
-		dead = 1;
 		http_status(500, "Internal Server Error");
 		hdr_nocache();
 		end_headers();
-
-		vreportf("fatal: ", err, params);
 	}
 	exit(0); /* we successfully reported a failure ;-) */
+}
+
+static int die_webcgi_recursing(void)
+{
+	return dead++ > 1;
 }
 
 static char* getdir(void)
@@ -575,6 +643,7 @@ int main(int argc, char **argv)
 
 	git_extract_argv0_path(argv[0]);
 	set_die_routine(die_webcgi);
+	set_die_is_recursing_routine(die_webcgi_recursing);
 
 	if (!method)
 		die("No REQUEST_METHOD from server");
@@ -607,9 +676,7 @@ int main(int argc, char **argv)
 
 			cmd = c;
 			n = out[0].rm_eo - out[0].rm_so;
-			cmd_arg = xmalloc(n);
-			memcpy(cmd_arg, dir + out[0].rm_so + 1, n-1);
-			cmd_arg[n-1] = '\0';
+			cmd_arg = xmemdupz(dir + out[0].rm_so + 1, n - 1);
 			dir[out[0].rm_so] = 0;
 			break;
 		}
@@ -626,7 +693,10 @@ int main(int argc, char **argv)
 	    access("git-daemon-export-ok", F_OK) )
 		not_found("Repository not exported: '%s'", dir);
 
-	git_config(http_config, NULL);
+	http_config();
+	max_request_buffer = git_env_ulong("GIT_HTTP_MAX_REQUEST_BUFFER",
+					   max_request_buffer);
+
 	cmd->imp(cmd_arg);
 	return 0;
 }

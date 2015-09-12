@@ -35,7 +35,8 @@ Apart from supporting file annotation, Git also supports searching the
 development history for when a code snippet occurred in a change. This makes it
 possible to track when a code snippet was added to a file, moved or copied
 between files, and eventually deleted or replaced. It works by searching for
-a text string in the diff. A small example:
+a text string in the diff. A small example of the pickaxe interface
+that searches for `blame_usage`:
 
 -----------------------------------------------------------------------------
 $ git log --pretty=oneline -S'blame_usage'
@@ -75,6 +76,8 @@ include::blame-options.txt[]
 -e::
 --show-email::
 	Show the author email instead of author name (Default: off).
+	This can also be controlled via the `blame.showEmail` config
+	option.
 
 -w::
 	Ignore whitespace when comparing the parent's version and

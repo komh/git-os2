@@ -15,32 +15,27 @@ SYNOPSIS
 'git submodule' [--quiet] init [--] [<path>...]
 'git submodule' [--quiet] deinit [-f|--force] [--] <path>...
 'git submodule' [--quiet] update [--init] [--remote] [-N|--no-fetch]
-	      [-f|--force] [--rebase] [--reference <repository>] [--depth <depth>]
-	      [--merge] [--recursive] [--] [<path>...]
+	      [-f|--force] [--rebase|--merge] [--reference <repository>]
+	      [--depth <depth>] [--recursive] [--] [<path>...]
 'git submodule' [--quiet] summary [--cached|--files] [(-n|--summary-limit) <n>]
 	      [commit] [--] [<path>...]
 'git submodule' [--quiet] foreach [--recursive] <command>
-'git submodule' [--quiet] sync [--] [<path>...]
+'git submodule' [--quiet] sync [--recursive] [--] [<path>...]
 
 
 DESCRIPTION
 -----------
-Submodules allow foreign repositories to be embedded within
-a dedicated subdirectory of the source tree, always pointed
-at a particular commit.
+Inspects, updates and manages submodules.
 
-They are not to be confused with remotes, which are meant mainly
-for branches of the same project; submodules are meant for
-different projects you would like to make part of your source tree,
-while the history of the two projects still stays completely
-independent and you cannot modify the contents of the submodule
-from within the main project.
-If you want to merge the project histories and want to treat the
-aggregated whole as a single project from then on, you may want to
-add a remote for the other project and use the 'subtree' merge strategy,
-instead of treating the other project as a submodule. Directories
-that come from both projects can be cloned and checked out as a whole
-if you choose to go that route.
+A submodule allows you to keep another Git repository in a subdirectory
+of your repository. The other repository has its own history, which does not
+interfere with the history of the current repository. This can be used to
+have external dependencies such as third party libraries for example.
+
+When cloning or pulling a repository containing submodules however,
+these will not be checked out by default; the 'init' and 'update'
+subcommands will maintain submodules checked out and at
+appropriate revision in your working tree.
 
 Submodules are composed from a so-called `gitlink` tree entry
 in the main repository that refers to a particular commit object
@@ -51,19 +46,18 @@ describes the default URL the submodule shall be cloned from.
 The logical name can be used for overriding this URL within your
 local repository configuration (see 'submodule init').
 
-This command will manage the tree entries and contents of the
-gitmodules file for you, as well as inspect the status of your
-submodules and update them.
-When adding a new submodule to the tree, the 'add' subcommand
-is to be used.  However, when pulling a tree containing submodules,
-these will not be checked out by default;
-the 'init' and 'update' subcommands will maintain submodules
-checked out and at appropriate revision in your working tree.
-You can briefly inspect the up-to-date status of your submodules
-using the 'status' subcommand and get a detailed overview of the
-difference between the index and checkouts using the 'summary'
-subcommand.
-
+Submodules are not to be confused with remotes, which are other
+repositories of the same project; submodules are meant for
+different projects you would like to make part of your source tree,
+while the history of the two projects still stays completely
+independent and you cannot modify the contents of the submodule
+from within the main project.
+If you want to merge the project histories and want to treat the
+aggregated whole as a single project from then on, you may want to
+add a remote for the other project and use the 'subtree' merge strategy,
+instead of treating the other project as a submodule. Directories
+that come from both projects can be cloned and checked out as a whole
+if you choose to go that route.
 
 COMMANDS
 --------
@@ -154,27 +148,51 @@ If `--force` is specified, the submodule's work tree will be removed even if
 it contains local modifications.
 
 update::
-	Update the registered submodules, i.e. clone missing submodules and
-	checkout the commit specified in the index of the containing repository.
-	This will make the submodules HEAD be detached unless `--rebase` or
-	`--merge` is specified or the key `submodule.$name.update` is set to
-	`rebase`, `merge` or `none`. `none` can be overridden by specifying
-	`--checkout`. Setting the key `submodule.$name.update` to `!command`
-	will cause `command` to be run. `command` can be any arbitrary shell
-	command that takes a single argument, namely the sha1 to update to.
 +
+--
+Update the registered submodules to match what the superproject
+expects by cloning missing submodules and updating the working tree of
+the submodules. The "updating" can be done in several ways depending
+on command line options and the value of `submodule.<name>.update`
+configuration variable. Supported update procedures are:
+
+	checkout;; the commit recorded in the superproject will be
+	    checked out in the submodule on a detached HEAD. This is
+	    done when `--checkout` option is given, or no option is
+	    given, and `submodule.<name>.update` is unset, or if it is
+	    set to 'checkout'.
++
+If `--force` is specified, the submodule will be checked out (using
+`git checkout --force` if appropriate), even if the commit specified
+in the index of the containing repository already matches the commit
+checked out in the submodule.
+
+	rebase;; the current branch of the submodule will be rebased
+	    onto the commit recorded in the superproject. This is done
+	    when `--rebase` option is given, or no option is given, and
+	    `submodule.<name>.update` is set to 'rebase'.
+
+	merge;; the commit recorded in the superproject will be merged
+	    into the current branch in the submodule. This is done
+	    when `--merge` option is given, or no option is given, and
+	    `submodule.<name>.update` is set to 'merge'.
+
+	custom command;; arbitrary shell command that takes a single
+	    argument (the sha1 of the commit recorded in the
+	    superproject) is executed. This is done when no option is
+	    given, and `submodule.<name>.update` has the form of
+	    '!command'.
+
+When no option is given and `submodule.<name>.update` is set to 'none',
+the submodule is not updated.
+
 If the submodule is not yet initialized, and you just want to use the
 setting as stored in .gitmodules, you can automatically initialize the
 submodule with the `--init` option.
-+
+
 If `--recursive` is specified, this command will recurse into the
 registered submodules, and update any nested submodules within.
-+
-If `--force` is specified, the submodule will be checked out (using
-`git checkout --force` if appropriate), even if the commit specified in the
-index of the containing repository already matches the commit checked out in
-the submodule.
-
+--
 summary::
 	Show commit summary between the given commit (defaults to HEAD) and
 	working tree/index. For a submodule in question, a series of commits
@@ -229,7 +247,7 @@ OPTIONS
 -b::
 --branch::
 	Branch of repository to add as submodule.
-	The name of the branch is recorded as `submodule.<path>.branch` in
+	The name of the branch is recorded as `submodule.<name>.branch` in
 	`.gitmodules` for `update --remote`.
 
 -f::
@@ -238,10 +256,12 @@ OPTIONS
 	When running add, allow adding an otherwise ignored submodule path.
 	When running deinit the submodule work trees will be removed even if
 	they contain local changes.
-	When running update, throw away local changes in submodules when
-	switching to a different commit; and always run a checkout operation
-	in the submodule, even if the commit listed in the index of the
-	containing repository matches the commit checked out in the submodule.
+	When running update (only effective with the checkout procedure),
+	throw away local changes in submodules when switching to a
+	different commit; and always run a checkout operation in the
+	submodule, even if the commit listed in the index of the
+	containing repository matches the commit checked out in the
+	submodule.
 
 --cached::
 	This option is only valid for status and summary commands.  These
@@ -281,11 +301,30 @@ In order to ensure a current tracking branch state, `update --remote`
 fetches the submodule's remote repository before calculating the
 SHA-1.  If you don't want to fetch, you should use `submodule update
 --remote --no-fetch`.
++
+Use this option to integrate changes from the upstream subproject with
+your submodule's current HEAD.  Alternatively, you can run `git pull`
+from the submodule, which is equivalent except for the remote branch
+name: `update --remote` uses the default upstream repository and
+`submodule.<name>.branch`, while `git pull` uses the submodule's
+`branch.<name>.merge`.  Prefer `submodule.<name>.branch` if you want
+to distribute the default upstream branch with the superproject and
+`branch.<name>.merge` if you want a more native feel while working in
+the submodule itself.
 
 -N::
 --no-fetch::
 	This option is only valid for the update command.
 	Don't fetch new objects from the remote site.
+
+--checkout::
+	This option is only valid for the update command.
+	Checkout the commit recorded in the superproject on a detached HEAD
+	in the submodule. This is the default behavior, the main use of
+	this option is to override `submodule.$name.update` when set to
+	a value other than `checkout`.
+	If the key `submodule.$name.update` is either not explicitly set or
+	set to `checkout`, this option is implicit.
 
 --merge::
 	This option is only valid for the update command.

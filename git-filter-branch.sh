@@ -332,7 +332,13 @@ while read commit parents; do
 	parentstr=
 	for parent in $parents; do
 		for reparent in $(map "$parent"); do
-			parentstr="$parentstr -p $reparent"
+			case "$parentstr " in
+			*" -p $reparent "*)
+				;;
+			*)
+				parentstr="$parentstr -p $reparent"
+				;;
+			esac
 		done
 	done
 	if [ "$filter_parent" ]; then
@@ -340,7 +346,15 @@ while read commit parents; do
 				die "parent filter failed: $filter_parent"
 	fi
 
-	sed -e '1,/^$/d' <../commit | \
+	{
+		while read -r header_line && test -n "$header_line"
+		do
+			# skip header lines...
+			:;
+		done
+		# and output the actual commit message
+		cat
+	} <../commit |
 		eval "$filter_msg" > ../message ||
 			die "msg filter failed: $filter_msg"
 	workdir=$workdir @SHELL_PATH@ -c "$filter_commit" "git commit-tree" \

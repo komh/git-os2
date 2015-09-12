@@ -54,14 +54,14 @@ canned_test "-L 4:a.c -L 8,12:a.c simple" multiple-superset
 canned_test "-L 8,12:a.c -L 4:a.c simple" multiple-superset
 
 test_bad_opts "-L" "switch.*requires a value"
-test_bad_opts "-L b.c" "argument.*not of the form"
-test_bad_opts "-L 1:" "argument.*not of the form"
+test_bad_opts "-L b.c" "argument not .start,end:file"
+test_bad_opts "-L 1:" "argument not .start,end:file"
 test_bad_opts "-L 1:nonexistent" "There is no path"
 test_bad_opts "-L 1:simple" "There is no path"
-test_bad_opts "-L '/foo:b.c'" "argument.*not of the form"
+test_bad_opts "-L '/foo:b.c'" "argument not .start,end:file"
 test_bad_opts "-L 1000:b.c" "has only.*lines"
 test_bad_opts "-L 1,1000:b.c" "has only.*lines"
-test_bad_opts "-L :b.c" "argument.*not of the form"
+test_bad_opts "-L :b.c" "argument not .start,end:file"
 test_bad_opts "-L :foo:b.c" "no match"
 
 test_expect_success '-L X (X == nlines)' '
@@ -92,6 +92,11 @@ test_expect_success '-L ,Y (Y == nlines + 1)' '
 test_expect_success '-L ,Y (Y == nlines + 2)' '
 	n=$(expr $(wc -l <b.c) + 2) &&
 	test_must_fail git log -L ,$n:b.c
+'
+
+test_expect_success '-L with --first-parent and a merge' '
+	git checkout parallel-change &&
+	git log --first-parent -L 1,1:b.c
 '
 
 test_done

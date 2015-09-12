@@ -237,7 +237,7 @@ static void diff_ranges_release(struct diff_ranges *diff)
 	range_set_release(&diff->target);
 }
 
-void line_log_data_init(struct line_log_data *r)
+static void line_log_data_init(struct line_log_data *r)
 {
 	memset(r, 0, sizeof(struct line_log_data));
 	range_set_init(&r->ranges, 0);
@@ -533,7 +533,7 @@ static void fill_line_ends(struct diff_filespec *spec, long *lines,
 	}
 
 	/* shrink the array to fit the elements */
-	ends = xrealloc(ends, cur * sizeof(*ends));
+	REALLOC_ARRAY(ends, cur);
 	*lines = cur-1;
 	*line_ends = ends;
 }
@@ -575,7 +575,7 @@ parse_lines(struct commit *commit, const char *prefix, struct string_list *args)
 
 		name_part = skip_range_arg(item->string);
 		if (!name_part || *name_part != ':' || !name_part[1])
-			die("-L argument '%s' not of the form start,end:file",
+			die("-L argument not 'start,end:file' or ':funcname:file': %s",
 			    item->string);
 		range_part = xstrndup(item->string, name_part - item->string);
 		name_part++;
@@ -766,27 +766,6 @@ void line_log_init(struct rev_info *rev, const char *prefix, struct string_list 
 	}
 }
 
-static void load_tree_desc(struct tree_desc *desc, void **tree,
-			   const unsigned char *sha1)
-{
-	unsigned long size;
-	*tree = read_object_with_reference(sha1, tree_type, &size, NULL);
-	if (!*tree)
-		die("Unable to read tree (%s)", sha1_to_hex(sha1));
-	init_tree_desc(desc, *tree, size);
-}
-
-static int count_parents(struct commit *commit)
-{
-	struct commit_list *parents = commit->parents;
-	int count = 0;
-	while (parents) {
-		count++;
-		parents = parents->next;
-	}
-	return count;
-}
-
 static void move_diff_queue(struct diff_queue_struct *dst,
 			    struct diff_queue_struct *src)
 {
@@ -842,18 +821,11 @@ static void queue_diffs(struct line_log_data *range,
 			struct diff_queue_struct *queue,
 			struct commit *commit, struct commit *parent)
 {
-	void *tree1 = NULL, *tree2 = NULL;
-	struct tree_desc desc1, desc2;
-
 	assert(commit);
-	load_tree_desc(&desc2, &tree2, commit->tree->object.sha1);
-	if (parent)
-		load_tree_desc(&desc1, &tree1, parent->tree->object.sha1);
-	else
-		init_tree_desc(&desc1, "", 0);
 
 	DIFF_QUEUE_CLEAR(&diff_queued_diff);
-	diff_tree(&desc1, &desc2, "", opt);
+	diff_tree_sha1(parent ? parent->tree->object.sha1 : NULL,
+			commit->tree->object.sha1, "", opt);
 	if (opt->detect_rename) {
 		filter_diffs_for_paths(range, 1);
 		if (diff_might_be_rename())
@@ -861,11 +833,6 @@ static void queue_diffs(struct line_log_data *range,
 		filter_diffs_for_paths(range, 0);
 	}
 	move_diff_queue(queue, &diff_queued_diff);
-
-	if (tree1)
-		free(tree1);
-	if (tree2)
-		free(tree2);
 }
 
 static char *get_nth_line(long line, unsigned long *ends, void *data)
@@ -926,7 +893,7 @@ static void dump_diff_hacky_one(struct rev_info *rev, struct line_log_data *rang
 	const char *c_meta = diff_get_color(opt->use_color, DIFF_METAINFO);
 	const char *c_old = diff_get_color(opt->use_color, DIFF_FILE_OLD);
 	const char *c_new = diff_get_color(opt->use_color, DIFF_FILE_NEW);
-	const char *c_plain = diff_get_color(opt->use_color, DIFF_PLAIN);
+	const char *c_context = diff_get_color(opt->use_color, DIFF_CONTEXT);
 
 	if (!pair || !diff)
 		return;
@@ -990,7 +957,7 @@ static void dump_diff_hacky_one(struct rev_info *rev, struct line_log_data *rang
 			int k;
 			for (; t_cur < diff->target.ranges[j].start; t_cur++)
 				print_line(prefix, ' ', t_cur, t_ends, pair->two->data,
-					   c_plain, c_reset);
+					   c_context, c_reset);
 			for (k = diff->parent.ranges[j].start; k < diff->parent.ranges[j].end; k++)
 				print_line(prefix, '-', k, p_ends, pair->one->data,
 					   c_old, c_reset);
@@ -1001,7 +968,7 @@ static void dump_diff_hacky_one(struct rev_info *rev, struct line_log_data *rang
 		}
 		for (; t_cur < t_end; t_cur++)
 			print_line(prefix, ' ', t_cur, t_ends, pair->two->data,
-				   c_plain, c_reset);
+				   c_context, c_reset);
 	}
 
 	free(p_ends);
@@ -1132,6 +1099,7 @@ static int process_all_files(struct line_log_data **range_out,
 			rg->pair = diff_filepair_dup(queue->queue[i]);
 			memcpy(&rg->diff, pairdiff, sizeof(struct diff_ranges));
 		}
+		free(pairdiff);
 	}
 
 	return changed;
@@ -1172,7 +1140,10 @@ static int process_ranges_merge_commit(struct rev_info *rev, struct commit *comm
 	struct commit **parents;
 	struct commit_list *p;
 	int i;
-	int nparents = count_parents(commit);
+	int nparents = commit_list_count(commit->parents);
+
+	if (nparents > 1 && rev->first_parent_only)
+		nparents = 1;
 
 	diffqueues = xmalloc(nparents * sizeof(*diffqueues));
 	cand = xmalloc(nparents * sizeof(*cand));
@@ -1196,9 +1167,7 @@ static int process_ranges_merge_commit(struct rev_info *rev, struct commit *comm
 			 */
 			add_line_range(rev, parents[i], cand[i]);
 			clear_commit_line_range(rev, commit);
-			commit->parents = xmalloc(sizeof(struct commit_list));
-			commit->parents->item = parents[i];
-			commit->parents->next = NULL;
+			commit_list_append(parents[i], &commit->parents);
 			free(parents);
 			free(cand);
 			free_diffqueues(nparents, diffqueues);

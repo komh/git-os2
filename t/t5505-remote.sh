@@ -579,7 +579,7 @@ test_expect_success 'update with arguments' '
 		cd one &&
 		for b in $(git branch -r)
 		do
-		git branch -r -d $b || break
+		git branch -r -d $b || exit 1
 		done &&
 		git remote add manduca ../mirror &&
 		git remote add megaloprepus ../mirror &&
@@ -622,7 +622,7 @@ test_expect_success 'update default' '
 		cd one &&
 		for b in $(git branch -r)
 		do
-		git branch -r -d $b || break
+		git branch -r -d $b || exit 1
 		done &&
 		git config remote.drosophila.skipDefaultUpdate true &&
 		git remote update default &&
@@ -642,7 +642,7 @@ test_expect_success 'update default (overridden, with funny whitespace)' '
 		cd one &&
 		for b in $(git branch -r)
 		do
-		git branch -r -d $b || break
+		git branch -r -d $b || exit 1
 		done &&
 		git config remotes.default "$(printf "\t drosophila  \n")" &&
 		git remote update default &&
@@ -656,7 +656,7 @@ test_expect_success 'update (with remotes.default defined)' '
 		cd one &&
 		for b in $(git branch -r)
 		do
-		git branch -r -d $b || break
+		git branch -r -d $b || exit 1
 		done &&
 		git config remotes.default "drosophila" &&
 		git remote update &&
@@ -1112,5 +1112,10 @@ test_extra_arg set-url origin newurl oldurl
 # show takes any number of args
 # prune takes any number of args
 # update takes any number of args
+
+test_expect_success 'add remote matching the "insteadOf" URL' '
+	git config url.xyz@example.com.insteadOf backup &&
+	git remote add backup xyz@example.com
+'
 
 test_done

@@ -62,9 +62,9 @@ produced by `--stat`, etc.
 	output by allowing them to allocate space in advance.
 
 -L <start>,<end>:<file>::
--L :<regex>:<file>::
+-L :<funcname>:<file>::
 	Trace the evolution of the line range given by "<start>,<end>"
-	(or the funcname regex <regex>) within the <file>.  You may
+	(or the function name regex <funcname>) within the <file>.  You may
 	not give any pathspec limiters.  This is currently limited to
 	a walk starting from a single revision, i.e., you may only
 	give zero or one positive revision arguments.
@@ -184,7 +184,7 @@ log.date::
 	`--date` option.)  Defaults to "default", which means to write
 	dates like `Sat May 8 19:35:34 2010 -0500`.
 
-log.showroot::
+log.showRoot::
 	If `false`, `git log` and related commands will not treat the
 	initial commit as a big creation event.  Any root commits in
 	`git log -p` output would be shown without a diff attached.

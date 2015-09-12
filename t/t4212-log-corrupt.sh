@@ -14,7 +14,7 @@ test_expect_success 'setup' '
 '
 
 test_expect_success 'fsck notices broken commit' '
-	git fsck 2>actual &&
+	test_must_fail git fsck 2>actual &&
 	test_i18ngrep invalid.author actual
 '
 
@@ -61,7 +61,7 @@ test_expect_success 'unparsable dates produce sentinel value' '
 test_expect_success 'unparsable dates produce sentinel value (%ad)' '
 	commit=$(munge_author_date HEAD totally_bogus) &&
 	echo >expect &&
-	git log -1 --format=%ad $commit >actual
+	git log -1 --format=%ad $commit >actual &&
 	test_cmp expect actual
 '
 

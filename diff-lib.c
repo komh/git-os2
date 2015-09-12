@@ -91,20 +91,17 @@ int run_diff_files(struct rev_info *revs, unsigned int option)
 	unsigned ce_option = ((option & DIFF_RACY_IS_MODIFIED)
 			      ? CE_MATCH_RACY_IS_DIRTY : 0);
 
-	if (option & DIFF_SILENT_ON_REMOVED)
-		handle_deprecated_show_diff_q(&revs->diffopt);
-
 	diff_set_mnemonic_prefix(&revs->diffopt, "i/", "w/");
 
 	if (diff_unmerged_stage < 0)
 		diff_unmerged_stage = 2;
 	entries = active_nr;
 	for (i = 0; i < entries; i++) {
-		struct stat st;
 		unsigned int oldmode, newmode;
 		struct cache_entry *ce = active_cache[i];
 		int changed;
 		unsigned dirty_submodule = 0;
+		const unsigned char *old_sha1, *new_sha1;
 
 		if (diff_can_quit_early(&revs->diffopt))
 			break;
@@ -118,6 +115,7 @@ int run_diff_files(struct rev_info *revs, unsigned int option)
 			unsigned int wt_mode = 0;
 			int num_compare_stages = 0;
 			size_t path_len;
+			struct stat st;
 
 			path_len = ce_namelen(ce);
 
@@ -125,10 +123,9 @@ int run_diff_files(struct rev_info *revs, unsigned int option)
 			dpath->path = (char *) &(dpath->parent[5]);
 
 			dpath->next = NULL;
-			dpath->len = path_len;
 			memcpy(dpath->path, ce->name, path_len);
 			dpath->path[path_len] = '\0';
-			hashclr(dpath->sha1);
+			oidclr(&dpath->oid);
 			memset(&(dpath->parent[0]), 0,
 			       sizeof(struct combine_diff_parent)*5);
 
@@ -158,7 +155,7 @@ int run_diff_files(struct rev_info *revs, unsigned int option)
 				if (2 <= stage) {
 					int mode = nce->ce_mode;
 					num_compare_stages++;
-					hashcpy(dpath->parent[stage-2].sha1, nce->sha1);
+					hashcpy(dpath->parent[stage-2].oid.hash, nce->sha1);
 					dpath->parent[stage-2].mode = ce_mode_from_stat(nce, mode);
 					dpath->parent[stage-2].status =
 						DIFF_STATUS_MODIFIED;
@@ -199,29 +196,41 @@ int run_diff_files(struct rev_info *revs, unsigned int option)
 			continue;
 
 		/* If CE_VALID is set, don't look at workdir for file removal */
-		changed = (ce->ce_flags & CE_VALID) ? 0 : check_removed(ce, &st);
-		if (changed) {
-			if (changed < 0) {
-				perror(ce->name);
+		if (ce->ce_flags & CE_VALID) {
+			changed = 0;
+			newmode = ce->ce_mode;
+		} else {
+			struct stat st;
+
+			changed = check_removed(ce, &st);
+			if (changed) {
+				if (changed < 0) {
+					perror(ce->name);
+					continue;
+				}
+				diff_addremove(&revs->diffopt, '-', ce->ce_mode,
+					       ce->sha1, !is_null_sha1(ce->sha1),
+					       ce->name, 0);
 				continue;
 			}
-			diff_addremove(&revs->diffopt, '-', ce->ce_mode,
-				       ce->sha1, !is_null_sha1(ce->sha1),
-				       ce->name, 0);
-			continue;
+
+			changed = match_stat_with_submodule(&revs->diffopt, ce, &st,
+							    ce_option, &dirty_submodule);
+			newmode = ce_mode_from_stat(ce, st.st_mode);
 		}
-		changed = match_stat_with_submodule(&revs->diffopt, ce, &st,
-						    ce_option, &dirty_submodule);
+
 		if (!changed && !dirty_submodule) {
 			ce_mark_uptodate(ce);
 			if (!DIFF_OPT_TST(&revs->diffopt, FIND_COPIES_HARDER))
 				continue;
 		}
 		oldmode = ce->ce_mode;
-		newmode = ce_mode_from_stat(ce, st.st_mode);
+		old_sha1 = ce->sha1;
+		new_sha1 = changed ? null_sha1 : ce->sha1;
 		diff_change(&revs->diffopt, oldmode, newmode,
-			    ce->sha1, (changed ? null_sha1 : ce->sha1),
-			    !is_null_sha1(ce->sha1), (changed ? 0 : !is_null_sha1(ce->sha1)),
+			    old_sha1, new_sha1,
+			    !is_null_sha1(old_sha1),
+			    !is_null_sha1(new_sha1),
 			    ce->name, 0, dirty_submodule);
 
 	}
@@ -327,18 +336,17 @@ static int show_modified(struct rev_info *revs,
 		p = xmalloc(combine_diff_path_size(2, pathlen));
 		p->path = (char *) &p->parent[2];
 		p->next = NULL;
-		p->len = pathlen;
 		memcpy(p->path, new->name, pathlen);
 		p->path[pathlen] = 0;
 		p->mode = mode;
-		hashclr(p->sha1);
+		oidclr(&p->oid);
 		memset(p->parent, 0, 2 * sizeof(struct combine_diff_parent));
 		p->parent[0].status = DIFF_STATUS_MODIFIED;
 		p->parent[0].mode = new->ce_mode;
-		hashcpy(p->parent[0].sha1, new->sha1);
+		hashcpy(p->parent[0].oid.hash, new->sha1);
 		p->parent[1].status = DIFF_STATUS_MODIFIED;
 		p->parent[1].mode = old->ce_mode;
-		hashcpy(p->parent[1].sha1, old->sha1);
+		hashcpy(p->parent[1].oid.hash, old->sha1);
 		show_combined_diff(p, 2, revs->dense_combined_merges, revs);
 		free(p);
 		return 0;

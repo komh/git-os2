@@ -212,9 +212,18 @@ test_expect_success '__gitdir - non-existing $GIT_DIR' '
 	)
 '
 
+function pwd_P_W () {
+	if test_have_prereq MINGW
+	then
+		pwd -W
+	else
+		pwd -P
+	fi
+}
+
 test_expect_success '__gitdir - gitfile in cwd' '
-	echo "$(pwd -P)/otherrepo/.git" >expected &&
-	echo "gitdir: $TRASH_DIRECTORY/otherrepo/.git" >subdir/.git &&
+	echo "$(pwd_P_W)/otherrepo/.git" >expected &&
+	echo "gitdir: $(pwd_P_W)/otherrepo/.git" >subdir/.git &&
 	test_when_finished "rm -f subdir/.git" &&
 	(
 		cd subdir &&
@@ -224,8 +233,8 @@ test_expect_success '__gitdir - gitfile in cwd' '
 '
 
 test_expect_success '__gitdir - gitfile in parent' '
-	echo "$(pwd -P)/otherrepo/.git" >expected &&
-	echo "gitdir: $TRASH_DIRECTORY/otherrepo/.git" >subdir/.git &&
+	echo "$(pwd_P_W)/otherrepo/.git" >expected &&
+	echo "gitdir: $(pwd_P_W)/otherrepo/.git" >subdir/.git &&
 	test_when_finished "rm -f subdir/.git" &&
 	(
 		cd subdir/subsubdir &&
@@ -340,6 +349,59 @@ test_expect_success '__gitcomp_nl - no suffix' '
 
 test_expect_success '__gitcomp_nl - doesnt fail because of invalid variable name' '
 	__gitcomp_nl "$invalid_variable_name"
+'
+
+test_expect_success '__git_remotes - list remotes from $GIT_DIR/remotes and from config file' '
+	cat >expect <<-EOF &&
+	remote_from_file_1
+	remote_from_file_2
+	remote_in_config_1
+	remote_in_config_2
+	EOF
+	test_when_finished "rm -rf .git/remotes" &&
+	mkdir -p .git/remotes &&
+	>.git/remotes/remote_from_file_1 &&
+	>.git/remotes/remote_from_file_2 &&
+	test_when_finished "git remote remove remote_in_config_1" &&
+	git remote add remote_in_config_1 git://remote_1 &&
+	test_when_finished "git remote remove remote_in_config_2" &&
+	git remote add remote_in_config_2 git://remote_2 &&
+	__git_remotes >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success '__git_get_config_variables' '
+	cat >expect <<-EOF &&
+	name-1
+	name-2
+	EOF
+	test_config interesting.name-1 good &&
+	test_config interesting.name-2 good &&
+	test_config subsection.interesting.name-3 bad &&
+	__git_get_config_variables interesting >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success '__git_pretty_aliases' '
+	cat >expect <<-EOF &&
+	author
+	hash
+	EOF
+	test_config pretty.author "%an %ae" &&
+	test_config pretty.hash %H &&
+	__git_pretty_aliases >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success '__git_aliases' '
+	cat >expect <<-EOF &&
+	ci
+	co
+	EOF
+	test_config alias.ci commit &&
+	test_config alias.co checkout &&
+	__git_aliases >actual &&
+	test_cmp expect actual
 '
 
 test_expect_success 'basic' '
@@ -540,7 +602,7 @@ test_expect_success 'complete files' '
 	test_completion "git commit " "modified" &&
 
 	: TODO .gitignore should not be here &&
-	test_completion "git ls-files " <<-\EOF
+	test_completion "git ls-files " <<-\EOF &&
 	.gitignore
 	dir
 	modified
@@ -548,6 +610,33 @@ test_expect_success 'complete files' '
 
 	touch momified &&
 	test_completion "git add mom" "momified"
+'
+
+test_expect_success "completion uses <cmd> completion for alias: !sh -c 'git <cmd> ...'" '
+	test_config alias.co "!sh -c '"'"'git checkout ...'"'"'" &&
+	test_completion "git co m" <<-\EOF
+	master Z
+	mybranch Z
+	mytag Z
+	EOF
+'
+
+test_expect_success 'completion uses <cmd> completion for alias: !f () { VAR=val git <cmd> ... }' '
+	test_config alias.co "!f () { VAR=val git checkout ... ; } f" &&
+	test_completion "git co m" <<-\EOF
+	master Z
+	mybranch Z
+	mytag Z
+	EOF
+'
+
+test_expect_success 'completion used <cmd> completion for alias: !f() { : git <cmd> ; ... }' '
+	test_config alias.co "!f() { : git checkout ; if ... } f" &&
+	test_completion "git co m" <<-\EOF
+	master Z
+	mybranch Z
+	mytag Z
+	EOF
 '
 
 test_expect_failure 'complete with tilde expansion' '

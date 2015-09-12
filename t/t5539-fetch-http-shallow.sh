@@ -3,12 +3,6 @@
 test_description='fetch/clone from a shallow clone over http'
 
 . ./test-lib.sh
-
-if test -n "$NO_CURL"; then
-	skip_all='skipping test, git built without http support'
-	test_done
-fi
-
 . "$TEST_DIRECTORY"/lib-httpd.sh
 start_httpd
 
@@ -54,6 +48,7 @@ EOF
 test_expect_success 'no shallow lines after receiving ACK ready' '
 	(
 		cd shallow &&
+		test_tick &&
 		for i in $(test_seq 15)
 		do
 			git checkout --orphan unrelated$i &&

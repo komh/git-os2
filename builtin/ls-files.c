@@ -354,51 +354,8 @@ void overlay_tree_on_cache(const char *tree_name, const char *prefix)
 	}
 }
 
-int report_path_error(const char *ps_matched,
-		      const struct pathspec *pathspec,
-		      const char *prefix)
-{
-	/*
-	 * Make sure all pathspec matched; otherwise it is an error.
-	 */
-	struct strbuf sb = STRBUF_INIT;
-	int num, errors = 0;
-	for (num = 0; num < pathspec->nr; num++) {
-		int other, found_dup;
-
-		if (ps_matched[num])
-			continue;
-		/*
-		 * The caller might have fed identical pathspec
-		 * twice.  Do not barf on such a mistake.
-		 * FIXME: parse_pathspec should have eliminated
-		 * duplicate pathspec.
-		 */
-		for (found_dup = other = 0;
-		     !found_dup && other < pathspec->nr;
-		     other++) {
-			if (other == num || !ps_matched[other])
-				continue;
-			if (!strcmp(pathspec->items[other].original,
-				    pathspec->items[num].original))
-				/*
-				 * Ok, we have a match already.
-				 */
-				found_dup = 1;
-		}
-		if (found_dup)
-			continue;
-
-		error("pathspec '%s' did not match any file(s) known to git.",
-		      pathspec->items[num].original);
-		errors++;
-	}
-	strbuf_release(&sb);
-	return errors;
-}
-
 static const char * const ls_files_usage[] = {
-	N_("git ls-files [options] [<file>...]"),
+	N_("git ls-files [<options>] [<file>...]"),
 	NULL
 };
 
@@ -474,7 +431,7 @@ int cmd_ls_files(int argc, const char **argv, const char *cmd_prefix)
 		OPT_BOOL('k', "killed", &show_killed,
 			N_("show files on the filesystem that need to be removed")),
 		OPT_BIT(0, "directory", &dir.flags,
-			N_("show 'other' directories' name only"),
+			N_("show 'other' directories' names only"),
 			DIR_SHOW_OTHER_DIRECTORIES),
 		OPT_NEGBIT(0, "empty-directory", &dir.flags,
 			N_("don't show empty directories"),
@@ -559,7 +516,7 @@ int cmd_ls_files(int argc, const char **argv, const char *cmd_prefix)
 
 	/* Treat unmatching pathspec elements as errors */
 	if (pathspec.nr && error_unmatch)
-		ps_matched = xcalloc(1, pathspec.nr);
+		ps_matched = xcalloc(pathspec.nr, 1);
 
 	if ((dir.flags & DIR_SHOW_IGNORED) && !exc_given)
 		die("ls-files --ignored needs some exclude pattern");

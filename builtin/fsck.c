@@ -25,7 +25,7 @@ static int include_reflogs = 1;
 static int check_full = 1;
 static int check_strict;
 static int keep_cache_objects;
-static unsigned char head_sha1[20];
+static struct object_id head_oid;
 static const char *head_points_at;
 static int errors_found;
 static int write_lost_and_found;
@@ -144,7 +144,7 @@ static int traverse_reachable(void)
 	unsigned int nr = 0;
 	int result = 0;
 	if (show_progress)
-		progress = start_progress_delay("Checking connectivity", 0, 0, 2);
+		progress = start_progress_delay(_("Checking connectivity"), 0, 0, 2);
 	while (pending.nr) {
 		struct object_array_entry *entry;
 		struct object *obj;
@@ -225,12 +225,12 @@ static void check_unreachable_object(struct object *obj)
 			printf("dangling %s %s\n", typename(obj->type),
 			       sha1_to_hex(obj->sha1));
 		if (write_lost_and_found) {
-			char *filename = git_path("lost-found/%s/%s",
+			const char *filename = git_path("lost-found/%s/%s",
 				obj->type == OBJ_COMMIT ? "commit" : "other",
 				sha1_to_hex(obj->sha1));
 			FILE *f;
 
-			if (safe_create_leading_directories(filename)) {
+			if (safe_create_leading_directories_const(filename)) {
 				error("Could not create lost-found");
 				return;
 			}
@@ -298,7 +298,7 @@ static int fsck_obj(struct object *obj)
 
 	if (fsck_walk(obj, mark_used, NULL))
 		objerror(obj, "broken links");
-	if (fsck_object(obj, check_strict, fsck_error_func))
+	if (fsck_object(obj, NULL, 0, check_strict, fsck_error_func))
 		return -1;
 
 	if (obj->type == OBJ_TREE) {
@@ -310,8 +310,7 @@ static int fsck_obj(struct object *obj)
 	if (obj->type == OBJ_COMMIT) {
 		struct commit *commit = (struct commit *) obj;
 
-		free(commit->buffer);
-		commit->buffer = NULL;
+		free_commit_buffer(commit);
 
 		if (!commit->parents && show_root)
 			printf("root %s\n", sha1_to_hex(commit->object.sha1));
@@ -389,7 +388,8 @@ static void fsck_sha1_list(void)
 		unsigned char *sha1 = entry->sha1;
 
 		sha1_list.entry[i] = NULL;
-		fsck_sha1(sha1);
+		if (fsck_sha1(sha1))
+			errors_found |= ERROR_OBJECT;
 		free(entry);
 	}
 	sha1_list.nr = 0;
@@ -451,49 +451,53 @@ static void fsck_dir(int i, char *path)
 
 static int default_refs;
 
+static void fsck_handle_reflog_sha1(const char *refname, unsigned char *sha1)
+{
+	struct object *obj;
+
+	if (!is_null_sha1(sha1)) {
+		obj = lookup_object(sha1);
+		if (obj) {
+			obj->used = 1;
+			mark_object_reachable(obj);
+		} else {
+			error("%s: invalid reflog entry %s", refname, sha1_to_hex(sha1));
+			errors_found |= ERROR_REACHABLE;
+		}
+	}
+}
+
 static int fsck_handle_reflog_ent(unsigned char *osha1, unsigned char *nsha1,
 		const char *email, unsigned long timestamp, int tz,
 		const char *message, void *cb_data)
 {
-	struct object *obj;
+	const char *refname = cb_data;
 
 	if (verbose)
 		fprintf(stderr, "Checking reflog %s->%s\n",
 			sha1_to_hex(osha1), sha1_to_hex(nsha1));
 
-	if (!is_null_sha1(osha1)) {
-		obj = lookup_object(osha1);
-		if (obj) {
-			obj->used = 1;
-			mark_object_reachable(obj);
-		}
-	}
-	obj = lookup_object(nsha1);
-	if (obj) {
-		obj->used = 1;
-		mark_object_reachable(obj);
-	}
+	fsck_handle_reflog_sha1(refname, osha1);
+	fsck_handle_reflog_sha1(refname, nsha1);
 	return 0;
 }
 
-static int fsck_handle_reflog(const char *logname, const unsigned char *sha1, int flag, void *cb_data)
+static int fsck_handle_reflog(const char *logname, const struct object_id *oid,
+			      int flag, void *cb_data)
 {
-	for_each_reflog_ent(logname, fsck_handle_reflog_ent, NULL);
+	for_each_reflog_ent(logname, fsck_handle_reflog_ent, (void *)logname);
 	return 0;
 }
 
-static int is_branch(const char *refname)
-{
-	return !strcmp(refname, "HEAD") || starts_with(refname, "refs/heads/");
-}
-
-static int fsck_handle_ref(const char *refname, const unsigned char *sha1, int flag, void *cb_data)
+static int fsck_handle_ref(const char *refname, const struct object_id *oid,
+			   int flag, void *cb_data)
 {
 	struct object *obj;
 
-	obj = parse_object(sha1);
+	obj = parse_object(oid->hash);
 	if (!obj) {
-		error("%s: invalid sha1 pointer %s", refname, sha1_to_hex(sha1));
+		error("%s: invalid sha1 pointer %s", refname, oid_to_hex(oid));
+		errors_found |= ERROR_REACHABLE;
 		/* We'll continue with the rest despite the error.. */
 		return 0;
 	}
@@ -508,9 +512,9 @@ static int fsck_handle_ref(const char *refname, const unsigned char *sha1, int f
 
 static void get_default_heads(void)
 {
-	if (head_points_at && !is_null_sha1(head_sha1))
-		fsck_handle_ref("HEAD", head_sha1, 0, NULL);
-	for_each_ref(fsck_handle_ref, NULL);
+	if (head_points_at && !is_null_oid(&head_oid))
+		fsck_handle_ref("HEAD", &head_oid, 0, NULL);
+	for_each_rawref(fsck_handle_ref, NULL);
 	if (include_reflogs)
 		for_each_reflog(fsck_handle_reflog, NULL);
 
@@ -541,7 +545,7 @@ static void fsck_object_dir(const char *path)
 		fprintf(stderr, "Checking object directory\n");
 
 	if (show_progress)
-		progress = start_progress("Checking object directories", 256);
+		progress = start_progress(_("Checking object directories"), 256);
 	for (i = 0; i < 256; i++) {
 		static char dir[4096];
 		sprintf(dir, "%s/%02x", path, i);
@@ -560,7 +564,7 @@ static int fsck_head_link(void)
 	if (verbose)
 		fprintf(stderr, "Checking HEAD link\n");
 
-	head_points_at = resolve_ref_unsafe("HEAD", head_sha1, 0, &flag);
+	head_points_at = resolve_ref_unsafe("HEAD", 0, head_oid.hash, &flag);
 	if (!head_points_at)
 		return error("Invalid HEAD");
 	if (!strcmp(head_points_at, "HEAD"))
@@ -569,7 +573,7 @@ static int fsck_head_link(void)
 	else if (!starts_with(head_points_at, "refs/heads/"))
 		return error("HEAD points to something strange (%s)",
 			     head_points_at);
-	if (is_null_sha1(head_sha1)) {
+	if (is_null_oid(&head_oid)) {
 		if (null_is_error)
 			return error("HEAD: detached HEAD points at nothing");
 		fprintf(stderr, "notice: HEAD points to an unborn branch (%s)\n",
@@ -604,7 +608,7 @@ static int fsck_cache_tree(struct cache_tree *it)
 }
 
 static char const * const fsck_usage[] = {
-	N_("git fsck [options] [<object>...]"),
+	N_("git fsck [<options>] [<object>...]"),
 	NULL
 };
 
@@ -630,7 +634,7 @@ int cmd_fsck(int argc, const char **argv, const char *prefix)
 	struct alternate_object_database *alt;
 
 	errors_found = 0;
-	read_replace_refs = 0;
+	check_replace_refs = 0;
 
 	argc = parse_options(argc, argv, prefix, fsck_opts, fsck_usage, 0);
 
@@ -670,7 +674,7 @@ int cmd_fsck(int argc, const char **argv, const char *prefix)
 				total += p->num_objects;
 			}
 
-			progress = start_progress("Checking objects", total);
+			progress = start_progress(_("Checking objects"), total);
 		}
 		for (p = packed_git; p; p = p->next) {
 			/* verify gives error messages itself */

@@ -1,7 +1,7 @@
 [[def_alternate_object_database]]alternate object database::
 	Via the alternates mechanism, a <<def_repository,repository>>
 	can inherit part of its <<def_object_database,object database>>
-	from another object database, which is called "alternate".
+	from another object database, which is called an "alternate".
 
 [[def_bare_repository]]bare repository::
 	A bare repository is normally an appropriately
@@ -176,6 +176,10 @@ current branch integrates with) obviously do not work, as there is no
 	you can make Git pretend the set of <<def_parent,parents>> a <<def_commit,commit>> has
 	is different from what was recorded when the commit was
 	created. Configured via the `.git/info/grafts` file.
++
+Note that the grafts mechanism is outdated and can lead to problems
+transferring objects between repositories; see linkgit:git-replace[1]
+for a more flexible and robust system to do the same thing.
 
 [[def_hash]]hash::
 	In Git's context, synonym for <<def_object_name,object name>>.
@@ -325,7 +329,7 @@ short form, the leading colon `:` is followed by zero or more "magic
 signature" letters (which optionally is terminated by another colon `:`),
 and the remainder is the pattern to match against the path.
 The "magic signature" consists of ASCII symbols that are neither
-alphanumeric, glob, regex special charaters nor colon.
+alphanumeric, glob, regex special characters nor colon.
 The optional colon that terminates the "magic signature" can be
 omitted if the pattern begins with a character that does not belong to
 "magic signature" symbol set and is not a colon.
@@ -465,6 +469,11 @@ The most notable example is `HEAD`.
 	<<def_push,push>> to describe the mapping between remote
 	<<def_ref,ref>> and local ref.
 
+[[def_remote]]remote repository::
+	A <<def_repository,repository>> which is used to track the same
+	project but resides somewhere else. To communicate with remotes,
+	see <<def_fetch,fetch>> or <<def_push,push>>.
+
 [[def_remote_tracking_branch]]remote-tracking branch::
 	A <<def_ref,ref>> that is used to follow changes from another
 	<<def_repository,repository>>. It typically looks like
@@ -510,6 +519,17 @@ The most notable example is `HEAD`.
 	upstream is much larger. A shallow repository
 	is created by giving the `--depth` option to linkgit:git-clone[1], and
 	its history can be later deepened with linkgit:git-fetch[1].
+
+[[def_submodule]]submodule::
+	A <<def_repository,repository>> that holds the history of a
+	separate project inside another repository (the latter of
+	which is called <<def_superproject, superproject>>).
+
+[[def_superproject]]superproject::
+	A <<def_repository,repository>> that references repositories
+	of other projects in its working tree as <<def_submodule,submodules>>.
+	The superproject knows about the names of (but does not hold
+	copies of) commit objects of the contained submodules.
 
 [[def_symref]]symref::
 	Symbolic reference: instead of containing the <<def_SHA1,SHA-1>>

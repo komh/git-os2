@@ -4,13 +4,53 @@
 #
 # Fetch one or more remote refs and merge it/them into the current HEAD.
 
-USAGE='[-n | --no-stat] [--[no-]commit] [--[no-]squash] [--[no-]ff] [--[no-]rebase|--rebase=preserve] [-s strategy]... [<fetch-options>] <repo> <head>...'
-LONG_USAGE='Fetch one or more remote refs and integrate it/them with the current HEAD.'
 SUBDIRECTORY_OK=Yes
-OPTIONS_SPEC=
+OPTIONS_KEEPDASHDASH=
+OPTIONS_STUCKLONG=Yes
+OPTIONS_SPEC="\
+git pull [options] [<repository> [<refspec>...]]
+
+Fetch one or more remote refs and integrate it/them with the current HEAD.
+--
+v,verbose                  be more verbose
+q,quiet                    be more quiet
+progress                   force progress reporting
+
+  Options related to merging
+r,rebase?false|true|preserve incorporate changes by rebasing rather than merging
+n!                         do not show a diffstat at the end of the merge
+stat                       show a diffstat at the end of the merge
+summary                    (synonym to --stat)
+log?n                      add (at most <n>) entries from shortlog to merge commit message
+squash                     create a single commit instead of doing a merge
+commit                     perform a commit if the merge succeeds (default)
+e,edit                       edit message before committing
+ff                         allow fast-forward
+ff-only!                   abort if fast-forward is not possible
+verify-signatures          verify that the named commit has a valid GPG signature
+s,strategy=strategy        merge strategy to use
+X,strategy-option=option   option for selected merge strategy
+S,gpg-sign?key-id          GPG sign commit
+
+  Options related to fetching
+all                        fetch from all remotes
+a,append                   append to .git/FETCH_HEAD instead of overwriting
+upload-pack=path           path to upload pack on remote end
+f,force                    force overwrite of local branch
+t,tags                     fetch all tags and associated objects
+p,prune                    prune remote-tracking branches no longer on remote
+recurse-submodules?on-demand control recursive fetching of submodules
+dry-run                    dry run
+k,keep                     keep downloaded pack
+depth=depth                deepen history of shallow clone
+unshallow                  convert to a complete repository
+update-shallow             accept refs that update .git/shallow
+refmap=refmap              specify fetch refmap
+"
+test $# -gt 0 && args="$*"
 . git-sh-setup
 . git-sh-i18n
-set_reflog_action "pull${1+ $*}"
+set_reflog_action "pull${args+ $args}"
 require_work_tree_exists
 cd_to_toplevel
 
@@ -20,7 +60,7 @@ die_conflict () {
     if [ $(git config --bool --get advice.resolveConflict || echo true) = "true" ]; then
 	die "$(gettext "Pull is not possible because you have unmerged files.
 Please, fix them up in the work tree, and then use 'git add/rm <file>'
-as appropriate to mark resolution, or use 'git commit -a'.")"
+as appropriate to mark resolution and make a commit.")"
     else
 	die "$(gettext "Pull is not possible because you have unmerged files.")"
     fi
@@ -44,7 +84,8 @@ bool_or_string_config () {
 
 strategy_args= diffstat= no_commit= squash= no_ff= ff_only=
 log_arg= verbosity= progress= recurse_submodules= verify_signatures=
-merge_args= edit= rebase_args=
+merge_args= edit= rebase_args= all= append= upload_pack= force= tags= prune=
+keep= depth= unshallow= update_shallow= refmap=
 curr_branch=$(git symbolic-ref -q HEAD)
 curr_branch_short="${curr_branch#refs/heads/}"
 rebase=$(bool_or_string_config branch.$curr_branch_short.rebase)
@@ -52,6 +93,22 @@ if test -z "$rebase"
 then
 	rebase=$(bool_or_string_config pull.rebase)
 fi
+
+# Setup default fast-forward options via `pull.ff`
+pull_ff=$(bool_or_string_config pull.ff)
+case "$pull_ff" in
+true)
+	no_ff=--ff
+	;;
+false)
+	no_ff=--no-ff
+	;;
+only)
+	ff_only=--ff-only
+	;;
+esac
+
+
 dry_run=
 while :
 do
@@ -68,19 +125,19 @@ do
 		diffstat=--no-stat ;;
 	--stat|--summary)
 		diffstat=--stat ;;
-	--log|--no-log)
-		log_arg=$1 ;;
-	--no-c|--no-co|--no-com|--no-comm|--no-commi|--no-commit)
+	--log|--log=*|--no-log)
+		log_arg="$1" ;;
+	--no-commit)
 		no_commit=--no-commit ;;
-	--c|--co|--com|--comm|--commi|--commit)
+	--commit)
 		no_commit=--commit ;;
 	-e|--edit)
 		edit=--edit ;;
 	--no-edit)
 		edit=--no-edit ;;
-	--sq|--squ|--squa|--squas|--squash)
+	--squash)
 		squash=--squash ;;
-	--no-sq|--no-squ|--no-squa|--no-squas|--no-squash)
+	--no-squash)
 		squash=--no-squash ;;
 	--ff)
 		no_ff=--ff ;;
@@ -88,39 +145,19 @@ do
 		no_ff=--no-ff ;;
 	--ff-only)
 		ff_only=--ff-only ;;
-	-s=*|--s=*|--st=*|--str=*|--stra=*|--strat=*|--strate=*|\
-		--strateg=*|--strategy=*|\
-	-s|--s|--st|--str|--stra|--strat|--strate|--strateg|--strategy)
-		case "$#,$1" in
-		*,*=*)
-			strategy=`expr "z$1" : 'z-[^=]*=\(.*\)'` ;;
-		1,*)
-			usage ;;
-		*)
-			strategy="$2"
-			shift ;;
-		esac
-		strategy_args="${strategy_args}-s $strategy "
+	-s*|--strategy=*)
+		strategy_args="$strategy_args $1"
 		;;
-	-X*)
-		case "$#,$1" in
-		1,-X)
-			usage ;;
-		*,-X)
-			xx="-X $(git rev-parse --sq-quote "$2")"
-			shift ;;
-		*,*)
-			xx=$(git rev-parse --sq-quote "$1") ;;
-		esac
-		merge_args="$merge_args$xx "
+	-X*|--strategy-option=*)
+		merge_args="$merge_args $(git rev-parse --sq-quote "$1")"
 		;;
-	-r=*|--r=*|--re=*|--reb=*|--reba=*|--rebas=*|--rebase=*)
+	-r*|--rebase=*)
 		rebase="${1#*=}"
 		;;
-	-r|--r|--re|--reb|--reba|--rebas|--rebase)
+	--rebase)
 		rebase=true
 		;;
-	--no-r|--no-re|--no-reb|--no-reba|--no-rebas|--no-rebase)
+	--no-rebase)
 		rebase=false
 		;;
 	--recurse-submodules)
@@ -138,15 +175,49 @@ do
 	--no-verify-signatures)
 		verify_signatures=--no-verify-signatures
 		;;
-	--d|--dr|--dry|--dry-|--dry-r|--dry-ru|--dry-run)
+	--gpg-sign|-S)
+		gpg_sign_args=-S
+		;;
+	--gpg-sign=*)
+		gpg_sign_args=$(git rev-parse --sq-quote "-S${1#--gpg-sign=}")
+		;;
+	-S*)
+		gpg_sign_args=$(git rev-parse --sq-quote "$1")
+		;;
+	--dry-run)
 		dry_run=--dry-run
 		;;
+	--all|--no-all)
+		all=$1 ;;
+	-a|--append|--no-append)
+		append=$1 ;;
+	--upload-pack=*|--no-upload-pack)
+		upload_pack=$1 ;;
+	-f|--force|--no-force)
+		force="$force $1" ;;
+	-t|--tags|--no-tags)
+		tags=$1 ;;
+	-p|--prune|--no-prune)
+		prune=$1 ;;
+	-k|--keep|--no-keep)
+		keep=$1 ;;
+	--depth=*|--no-depth)
+		depth=$1 ;;
+	--unshallow|--no-unshallow)
+		unshallow=$1 ;;
+	--update-shallow|--no-update-shallow)
+		update_shallow=$1 ;;
+	--refmap=*|--no-refmap)
+		refmap=$1 ;;
 	-h|--help-all)
 		usage
 		;;
-	*)
-		# Pass thru anything that may be meant for fetch.
+	--)
+		shift
 		break
+		;;
+	*)
+		usage
 		;;
 	esac
 	shift
@@ -168,15 +239,6 @@ esac
 
 error_on_no_merge_candidates () {
 	exec >&2
-	for opt
-	do
-		case "$opt" in
-		-t|--t|--ta|--tag|--tags)
-			echo "It doesn't make sense to pull all tags; you probably meant:"
-			echo "  git fetch --tags"
-			exit 1
-		esac
-	done
 
 	if test true = "$rebase"
 	then
@@ -218,7 +280,7 @@ test true = "$rebase" && {
 	if ! git rev-parse -q --verify HEAD >/dev/null
 	then
 		# On an unborn branch
-		if test -f "$GIT_DIR/index"
+		if test -f "$(git rev-parse --git-path index)"
 		then
 			die "$(gettext "updating an unborn branch with changes added to the index")"
 		fi
@@ -232,7 +294,9 @@ test true = "$rebase" && {
 	oldremoteref=$(git merge-base --fork-point "$remoteref" $curr_branch 2>/dev/null)
 }
 orig_head=$(git rev-parse -q --verify HEAD)
-git fetch $verbosity $progress $dry_run $recurse_submodules --update-head-ok "$@" || exit 1
+git fetch $verbosity $progress $dry_run $recurse_submodules $all $append \
+${upload_pack:+"$upload_pack"} $force $tags $prune $keep $depth $unshallow $update_shallow \
+$refmap --update-head-ok "$@" || exit 1
 test -z "$dry_run" || exit 0
 
 curr_head=$(git rev-parse -q --verify HEAD)
@@ -301,16 +365,17 @@ then
 	fi
 fi
 
-merge_name=$(git fmt-merge-msg $log_arg <"$GIT_DIR/FETCH_HEAD") || exit
 case "$rebase" in
 true)
 	eval="git-rebase $diffstat $strategy_args $merge_args $rebase_args $verbosity"
+	eval="$eval $gpg_sign_args"
 	eval="$eval --onto $merge_head ${oldremoteref:-$merge_head}"
 	;;
 *)
 	eval="git-merge $diffstat $no_commit $verify_signatures $edit $squash $no_ff $ff_only"
-	eval="$eval  $log_arg $strategy_args $merge_args $verbosity $progress"
-	eval="$eval \"\$merge_name\" HEAD $merge_head"
+	eval="$eval $log_arg $strategy_args $merge_args $verbosity $progress"
+	eval="$eval $gpg_sign_args"
+	eval="$eval FETCH_HEAD"
 	;;
 esac
 eval "exec $eval"

@@ -57,7 +57,7 @@ compare_mtimes ()
 {
 	read tref rest &&
 	while read t rest; do
-		test "$tref" = "$t" || break
+		test "$tref" = "$t" || return 1
 	done
 }
 
@@ -107,6 +107,19 @@ test_expect_success 'do not bother loosening old objects' '
 	git repack -A -d --unpack-unreachable=1.hour.ago &&
 	git cat-file -p $obj1 &&
 	test_must_fail git cat-file -p $obj2
+'
+
+test_expect_success 'keep packed objects found only in index' '
+	echo my-unique-content >file &&
+	git add file &&
+	git commit -m "make it reachable" &&
+	git gc &&
+	git reset HEAD^ &&
+	git reflog expire --expire=now --all &&
+	git add file &&
+	test-chmtime =-86400 .git/objects/pack/* &&
+	git gc --prune=1.hour.ago &&
+	git cat-file blob :file
 '
 
 test_done

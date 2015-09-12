@@ -10,6 +10,8 @@ test_description='Test git stash'
 test_expect_success 'stash some dirty working directory' '
 	echo 1 > file &&
 	git add file &&
+	echo unrelated >other-file &&
+	git add other-file &&
 	test_tick &&
 	git commit -m initial &&
 	echo 2 > file &&
@@ -45,8 +47,6 @@ test_expect_success 'applying bogus stash does nothing' '
 
 test_expect_success 'apply does not need clean working directory' '
 	echo 4 >other-file &&
-	git add other-file &&
-	echo 5 >other-file &&
 	git stash apply &&
 	echo 3 >expect &&
 	test_cmp expect file
@@ -91,6 +91,10 @@ test_expect_success 'unstashing in a subdirectory' '
 		cd subdir &&
 		git stash apply
 	)
+'
+
+test_expect_success 'stash drop complains of extra options' '
+	test_must_fail git stash drop --foo
 '
 
 test_expect_success 'drop top stash' '
@@ -683,6 +687,48 @@ test_expect_success 'handle stash specification with spaces' '
 	git stash &&
 	git stash apply "stash@{$stamp}" &&
 	grep pig file
+'
+
+test_expect_success 'setup stash with index and worktree changes' '
+	git stash clear &&
+	git reset --hard &&
+	echo index >file &&
+	git add file &&
+	echo working >file &&
+	git stash
+'
+
+test_expect_success 'stash list implies --first-parent -m' '
+	cat >expect <<-EOF &&
+	stash@{0}
+
+	diff --git a/file b/file
+	index 257cc56..d26b33d 100644
+	--- a/file
+	+++ b/file
+	@@ -1 +1 @@
+	-foo
+	+working
+	EOF
+	git stash list --format=%gd -p >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'stash list --cc shows combined diff' '
+	cat >expect <<-\EOF &&
+	stash@{0}
+
+	diff --cc file
+	index 257cc56,9015a7a..d26b33d
+	--- a/file
+	+++ b/file
+	@@@ -1,1 -1,1 +1,1 @@@
+	- foo
+	 -index
+	++working
+	EOF
+	git stash list --format=%gd -p --cc >actual &&
+	test_cmp expect actual
 '
 
 test_done

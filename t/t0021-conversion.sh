@@ -153,17 +153,23 @@ test_expect_success 'filter shell-escaped filenames' '
 	:
 '
 
-test_expect_success 'required filter success' '
-	git config filter.required.smudge cat &&
-	git config filter.required.clean cat &&
+test_expect_success 'required filter should filter data' '
+	git config filter.required.smudge ./rot13.sh &&
+	git config filter.required.clean ./rot13.sh &&
 	git config filter.required.required true &&
 
 	echo "*.r filter=required" >.gitattributes &&
 
-	echo test >test.r &&
+	cat test.o >test.r &&
 	git add test.r &&
+
 	rm -f test.r &&
-	git checkout -- test.r
+	git checkout -- test.r &&
+	cmp test.o test.r &&
+
+	./rot13.sh <test.o >expected &&
+	git cat-file blob :test.r >actual &&
+	cmp expected actual
 '
 
 test_expect_success 'required filter smudge failure' '
@@ -190,7 +196,23 @@ test_expect_success 'required filter clean failure' '
 	test_must_fail git add test.fc
 '
 
-test -n "$GIT_TEST_LONG" && test_set_prereq EXPENSIVE
+test_expect_success 'filtering large input to small output should use little memory' '
+	git config filter.devnull.clean "cat >/dev/null" &&
+	git config filter.devnull.required true &&
+	for i in $(test_seq 1 30); do printf "%1048576d" 1; done >30MB &&
+	echo "30MB filter=devnull" >.gitattributes &&
+	GIT_MMAP_LIMIT=1m GIT_ALLOC_LIMIT=1m git add 30MB
+'
+
+test_expect_success 'filter that does not read is fine' '
+	test-genrandom foo $((128 * 1024 + 1)) >big &&
+	echo "big filter=epipe" >.gitattributes &&
+	git config filter.epipe.clean "echo xyzzy" &&
+	git add big &&
+	git cat-file blob :big >actual &&
+	echo xyzzy >expect &&
+	test_cmp expect actual
+'
 
 test_expect_success EXPENSIVE 'filter large file' '
 	git config filter.largefile.smudge cat &&
@@ -202,6 +224,32 @@ test_expect_success EXPENSIVE 'filter large file' '
 	rm -f 2GB &&
 	git checkout -- 2GB 2>err &&
 	! test -s err
+'
+
+test_expect_success "filter: clean empty file" '
+	git config filter.in-repo-header.clean  "echo cleaned && cat" &&
+	git config filter.in-repo-header.smudge "sed 1d" &&
+
+	echo "empty-in-worktree    filter=in-repo-header" >>.gitattributes &&
+	>empty-in-worktree &&
+
+	echo cleaned >expected &&
+	git add empty-in-worktree &&
+	git show :empty-in-worktree >actual &&
+	test_cmp expected actual
+'
+
+test_expect_success "filter: smudge empty file" '
+	git config filter.empty-in-repo.clean "cat >/dev/null" &&
+	git config filter.empty-in-repo.smudge "echo smudged && cat" &&
+
+	echo "empty-in-repo filter=empty-in-repo" >>.gitattributes &&
+	echo dead data walking >empty-in-repo &&
+	git add empty-in-repo &&
+
+	echo smudged >expected &&
+	git checkout-index --prefix=filtered- empty-in-repo &&
+	test_cmp expected filtered-empty-in-repo
 '
 
 test_done

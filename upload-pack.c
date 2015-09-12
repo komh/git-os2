@@ -17,7 +17,7 @@
 
 static const char upload_pack_usage[] = "git upload-pack [--strict] [--timeout=<n>] <dir>";
 
-/* bits #0..7 in revision.h, #8..10 in commit.c */
+/* Remember to update object flag allocation in object.h */
 #define THEY_HAVE	(1u << 11)
 #define OUR_REF		(1u << 12)
 #define WANTED		(1u << 13)
@@ -35,7 +35,11 @@ static int multi_ack;
 static int no_done;
 static int use_thin_pack, use_ofs_delta, use_include_tag;
 static int no_progress, daemon_mode;
-static int allow_tip_sha1_in_want;
+/* Allow specifying sha1 if it is a ref tip. */
+#define ALLOW_TIP_SHA1	01
+/* Allow request of a sha1 if it is reachable from a ref (possibly hidden ref). */
+#define ALLOW_REACHABLE_SHA1	02
+static unsigned int allow_unadvertised_object_request;
 static int shallow_nr;
 static struct object_array have_obj;
 static struct object_array want_obj;
@@ -70,23 +74,29 @@ static ssize_t send_client_data(int fd, const char *data, ssize_t sz)
 	return sz;
 }
 
+static int write_one_shallow(const struct commit_graft *graft, void *cb_data)
+{
+	FILE *fp = cb_data;
+	if (graft->nr_parent == -1)
+		fprintf(fp, "--shallow %s\n", oid_to_hex(&graft->oid));
+	return 0;
+}
+
 static void create_pack_file(void)
 {
-	struct child_process pack_objects;
+	struct child_process pack_objects = CHILD_PROCESS_INIT;
 	char data[8193], progress[128];
 	char abort_msg[] = "aborting due to possible repository "
 		"corruption on the remote side.";
 	int buffered = -1;
 	ssize_t sz;
-	const char *argv[12];
+	const char *argv[13];
 	int i, arg = 0;
 	FILE *pipe_fd;
-	const char *shallow_file = NULL;
 
 	if (shallow_nr) {
-		shallow_file = setup_temporary_shallow(NULL);
 		argv[arg++] = "--shallow-file";
-		argv[arg++] = shallow_file;
+		argv[arg++] = "";
 	}
 	argv[arg++] = "pack-objects";
 	argv[arg++] = "--revs";
@@ -94,6 +104,8 @@ static void create_pack_file(void)
 		argv[arg++] = "--thin";
 
 	argv[arg++] = "--stdout";
+	if (shallow_nr)
+		argv[arg++] = "--shallow";
 	if (!no_progress)
 		argv[arg++] = "--progress";
 	if (use_ofs_delta)
@@ -102,7 +114,6 @@ static void create_pack_file(void)
 		argv[arg++] = "--include-tag";
 	argv[arg++] = NULL;
 
-	memset(&pack_objects, 0, sizeof(pack_objects));
 	pack_objects.in = -1;
 	pack_objects.out = -1;
 	pack_objects.err = -1;
@@ -113,6 +124,9 @@ static void create_pack_file(void)
 		die("git upload-pack: unable to fork git-pack-objects");
 
 	pipe_fd = xfdopen(pack_objects.in, "w");
+
+	if (shallow_nr)
+		for_each_commit_graft(write_one_shallow, pipe_fd);
 
 	for (i = 0; i < want_obj.nr; i++)
 		fprintf(pipe_fd, "%s\n",
@@ -158,7 +172,9 @@ static void create_pack_file(void)
 		if (!pollsize)
 			break;
 
-		ret = poll(pfd, pollsize, 1000 * keepalive);
+		ret = poll(pfd, pollsize,
+			keepalive < 0 ? -1 : 1000 * keepalive);
+
 		if (ret < 0) {
 			if (errno != EINTR) {
 				error("poll failed, resuming: %s",
@@ -430,8 +446,9 @@ static int get_common_commits(void)
 
 static int is_our_ref(struct object *o)
 {
-	return o->flags &
-		((allow_tip_sha1_in_want ? HIDDEN_REF : 0) | OUR_REF);
+	int allow_hidden_ref = (allow_unadvertised_object_request &
+			(ALLOW_TIP_SHA1 | ALLOW_REACHABLE_SHA1));
+	return o->flags & ((allow_hidden_ref ? HIDDEN_REF : 0) | OUR_REF);
 }
 
 static void check_non_tip(void)
@@ -439,13 +456,17 @@ static void check_non_tip(void)
 	static const char *argv[] = {
 		"rev-list", "--stdin", NULL,
 	};
-	static struct child_process cmd;
+	static struct child_process cmd = CHILD_PROCESS_INIT;
 	struct object *o;
 	char namebuf[42]; /* ^ + SHA-1 + LF */
 	int i;
 
-	/* In the normal in-process case non-tip request can never happen */
-	if (!stateless_rpc)
+	/*
+	 * In the normal in-process case without
+	 * uploadpack.allowReachableSHA1InWant,
+	 * non-tip requests can never happen.
+	 */
+	if (!stateless_rpc && !(allow_unadvertised_object_request & ALLOW_REACHABLE_SHA1))
 		goto error;
 
 	cmd.argv = argv;
@@ -669,17 +690,22 @@ static void receive_needs(void)
 }
 
 /* return non-zero if the ref is hidden, otherwise 0 */
-static int mark_our_ref(const char *refname, const unsigned char *sha1, int flag, void *cb_data)
+static int mark_our_ref(const char *refname, const struct object_id *oid)
 {
-	struct object *o = lookup_unknown_object(sha1);
+	struct object *o = lookup_unknown_object(oid->hash);
 
 	if (ref_is_hidden(refname)) {
 		o->flags |= HIDDEN_REF;
 		return 1;
 	}
-	if (!o)
-		die("git upload-pack: cannot find object %s:", sha1_to_hex(sha1));
 	o->flags |= OUR_REF;
+	return 0;
+}
+
+static int check_ref(const char *refname, const struct object_id *oid,
+		     int flag, void *cb_data)
+{
+	mark_our_ref(refname, oid);
 	return 0;
 }
 
@@ -693,48 +719,52 @@ static void format_symref_info(struct strbuf *buf, struct string_list *symref)
 		strbuf_addf(buf, " symref=%s:%s", item->string, (char *)item->util);
 }
 
-static int send_ref(const char *refname, const unsigned char *sha1, int flag, void *cb_data)
+static int send_ref(const char *refname, const struct object_id *oid,
+		    int flag, void *cb_data)
 {
 	static const char *capabilities = "multi_ack thin-pack side-band"
 		" side-band-64k ofs-delta shallow no-progress"
 		" include-tag multi_ack_detailed";
 	const char *refname_nons = strip_namespace(refname);
-	unsigned char peeled[20];
+	struct object_id peeled;
 
-	if (mark_our_ref(refname, sha1, flag, NULL))
+	if (mark_our_ref(refname, oid))
 		return 0;
 
 	if (capabilities) {
 		struct strbuf symref_info = STRBUF_INIT;
 
 		format_symref_info(&symref_info, cb_data);
-		packet_write(1, "%s %s%c%s%s%s%s agent=%s\n",
-			     sha1_to_hex(sha1), refname_nons,
+		packet_write(1, "%s %s%c%s%s%s%s%s agent=%s\n",
+			     oid_to_hex(oid), refname_nons,
 			     0, capabilities,
-			     allow_tip_sha1_in_want ? " allow-tip-sha1-in-want" : "",
+			     (allow_unadvertised_object_request & ALLOW_TIP_SHA1) ?
+				     " allow-tip-sha1-in-want" : "",
+			     (allow_unadvertised_object_request & ALLOW_REACHABLE_SHA1) ?
+				     " allow-reachable-sha1-in-want" : "",
 			     stateless_rpc ? " no-done" : "",
 			     symref_info.buf,
 			     git_user_agent_sanitized());
 		strbuf_release(&symref_info);
 	} else {
-		packet_write(1, "%s %s\n", sha1_to_hex(sha1), refname_nons);
+		packet_write(1, "%s %s\n", oid_to_hex(oid), refname_nons);
 	}
 	capabilities = NULL;
-	if (!peel_ref(refname, peeled))
-		packet_write(1, "%s %s^{}\n", sha1_to_hex(peeled), refname_nons);
+	if (!peel_ref(refname, peeled.hash))
+		packet_write(1, "%s %s^{}\n", oid_to_hex(&peeled), refname_nons);
 	return 0;
 }
 
-static int find_symref(const char *refname, const unsigned char *sha1, int flag,
-		       void *cb_data)
+static int find_symref(const char *refname, const struct object_id *oid,
+		       int flag, void *cb_data)
 {
 	const char *symref_target;
 	struct string_list_item *item;
-	unsigned char unused[20];
+	struct object_id unused;
 
 	if ((flag & REF_ISSYMREF) == 0)
 		return 0;
-	symref_target = resolve_ref_unsafe(refname, unused, 0, &flag);
+	symref_target = resolve_ref_unsafe(refname, 0, unused.hash, &flag);
 	if (!symref_target || (flag & REF_ISSYMREF) == 0)
 		die("'%s' is a symref but it is not?", refname);
 	item = string_list_append(cb_data, refname);
@@ -755,8 +785,8 @@ static void upload_pack(void)
 		advertise_shallow_grafts(1);
 		packet_flush(1);
 	} else {
-		head_ref_namespaced(mark_our_ref, NULL);
-		for_each_namespaced_ref(mark_our_ref, NULL);
+		head_ref_namespaced(check_ref, NULL);
+		for_each_namespaced_ref(check_ref, NULL);
 	}
 	string_list_clear(&symref, 1);
 	if (advertise_refs)
@@ -771,9 +801,17 @@ static void upload_pack(void)
 
 static int upload_pack_config(const char *var, const char *value, void *unused)
 {
-	if (!strcmp("uploadpack.allowtipsha1inwant", var))
-		allow_tip_sha1_in_want = git_config_bool(var, value);
-	else if (!strcmp("uploadpack.keepalive", var)) {
+	if (!strcmp("uploadpack.allowtipsha1inwant", var)) {
+		if (git_config_bool(var, value))
+			allow_unadvertised_object_request |= ALLOW_TIP_SHA1;
+		else
+			allow_unadvertised_object_request &= ~ALLOW_TIP_SHA1;
+	} else if (!strcmp("uploadpack.allowreachablesha1inwant", var)) {
+		if (git_config_bool(var, value))
+			allow_unadvertised_object_request |= ALLOW_REACHABLE_SHA1;
+		else
+			allow_unadvertised_object_request &= ~ALLOW_REACHABLE_SHA1;
+	} else if (!strcmp("uploadpack.keepalive", var)) {
 		keepalive = git_config_int(var, value);
 		if (!keepalive)
 			keepalive = -1;
@@ -791,7 +829,7 @@ int main(int argc, char **argv)
 
 	packet_trace_identity("upload-pack");
 	git_extract_argv0_path(argv[0]);
-	read_replace_refs = 0;
+	check_replace_refs = 0;
 
 	for (i = 1; i < argc; i++) {
 		char *arg = argv[i];

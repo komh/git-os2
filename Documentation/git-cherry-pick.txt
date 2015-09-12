@@ -8,7 +8,8 @@ git-cherry-pick - Apply the changes introduced by some existing commits
 SYNOPSIS
 --------
 [verse]
-'git cherry-pick' [--edit] [-n] [-m parent-number] [-s] [-x] [--ff] <commit>...
+'git cherry-pick' [--edit] [-n] [-m parent-number] [-s] [-x] [--ff]
+		  [-S[<key-id>]] <commit>...
 'git cherry-pick' --continue
 'git cherry-pick' --quit
 'git cherry-pick' --abort
@@ -100,6 +101,10 @@ effect to your index in a row.
 --signoff::
 	Add Signed-off-by line at the end of the commit message.
 
+-S[<key-id>]::
+--gpg-sign[=<key-id>]::
+	GPG-sign commits.
+
 --ff::
 	If the current HEAD is the same as the parent of the
 	cherry-pick'ed commit, then a fast forward to this commit will
@@ -126,7 +131,8 @@ effect to your index in a row.
 --keep-redundant-commits::
 	If a commit being cherry picked duplicates a commit already in the
 	current history, it will become empty.  By default these
-	redundant commits are ignored.  This option overrides that behavior and
+	redundant commits cause `cherry-pick` to stop so the user can
+	examine the commit. This option overrides that behavior and
 	creates an empty commit object.  Implies `--allow-empty`.
 
 --strategy=<strategy>::

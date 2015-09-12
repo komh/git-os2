@@ -98,8 +98,16 @@ test_foobar_foobar() {
 	'
 }
 
-if ! test_have_prereq POSIXPERM || ! [ -w / ]; then
-	skip_all="Dangerous test skipped. Read this test if you want to execute it"
+if ! test -w /
+then
+	skip_all="Test requiring writable / skipped. Read this test if you want to run it"
+	test_done
+fi
+
+if  test -e /refs || test -e /objects || test -e /info || test -e /hooks ||
+    test -e /.git || test -e /foo || test -e /me
+then
+	skip_all="Skip test that clobbers existing files in /"
 	test_done
 fi
 
@@ -108,15 +116,16 @@ if [ "$IKNOWWHATIAMDOING" != "YES" ]; then
 	test_done
 fi
 
-if [ "$UID" = 0 ]; then
-	skip_all="No you can't run this with root"
+if ! test_have_prereq NOT_ROOT
+then
+	skip_all="No you can't run this as root"
 	test_done
 fi
 
 ONE_SHA1=d00491fd7e5bb6fa28c517a0bb32b8b506539d4d
 
 test_expect_success 'setup' '
-	rm -rf /foo
+	rm -rf /foo &&
 	mkdir /foo &&
 	mkdir /foo/bar &&
 	echo 1 > /foo/foome &&
@@ -209,7 +218,7 @@ unset GIT_WORK_TREE
 
 test_expect_success 'go to /' 'cd /'
 test_expect_success 'setup' '
-	rm -rf /.git
+	rm -rf /.git &&
 	echo "Initialized empty Git repository in /.git/" > expected &&
 	git init > result &&
 	test_cmp expected result
@@ -232,8 +241,8 @@ say "auto bare gitdir"
 
 # DESTROYYYYY!!!!!
 test_expect_success 'setup' '
-	rm -rf /refs /objects /info /hooks
-	rm /*
+	rm -rf /refs /objects /info /hooks &&
+	rm -f /expected /ls.expected /me /result &&
 	cd / &&
 	echo "Initialized empty Git repository in /" > expected &&
 	git init --bare > result &&

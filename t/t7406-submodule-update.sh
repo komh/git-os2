@@ -754,7 +754,7 @@ test_expect_success SYMLINKS 'submodule update can handle symbolic links in pwd'
 
 test_expect_success 'submodule update clone shallow submodule' '
 	git clone cloned super3 &&
-	pwd=$(pwd)
+	pwd=$(pwd) &&
 	(cd super3 &&
 	 sed -e "s#url = ../#url = file://$pwd/#" <.gitmodules >.gitmodules.tmp &&
 	 mv -f .gitmodules.tmp .gitmodules &&
@@ -774,5 +774,4 @@ test_expect_success 'submodule update --recursive drops module name before recur
 	 test_i18ngrep "Submodule path .deeper/submodule/subsubmodule.: checked out" actual
 	)
 '
-
 test_done

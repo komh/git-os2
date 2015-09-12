@@ -74,6 +74,7 @@
 /git-index-pack
 /git-init
 /git-init-db
+/git-interpret-trailers
 /git-instaweb
 /git-log
 /git-ls-files
@@ -165,10 +166,12 @@
 /git-upload-archive
 /git-upload-pack
 /git-var
+/git-verify-commit
 /git-verify-pack
 /git-verify-tag
 /git-web--browse
 /git-whatchanged
+/git-worktree
 /git-write-tree
 /git-core-*/?*
 /gitweb/GITWEB-BUILD-OPTIONS
@@ -177,11 +180,15 @@
 /gitweb/static/gitweb.min.*
 /test-chmtime
 /test-ctype
+/test-config
 /test-date
 /test-delta
 /test-dump-cache-tree
+/test-dump-split-index
+/test-dump-untracked-cache
 /test-scrap-cache-tree
 /test-genrandom
+/test-hashmap
 /test-index-version
 /test-line-buffer
 /test-match-trees
@@ -195,6 +202,7 @@
 /test-revision-walking
 /test-run-command
 /test-sha1
+/test-sha1-array
 /test-sigchain
 /test-string-list
 /test-subprocess
@@ -225,6 +233,7 @@
 /config.mak.autogen
 /config.mak.append
 /configure
+/unicode
 /tags
 /TAGS
 /cscope*

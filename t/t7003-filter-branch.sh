@@ -308,6 +308,17 @@ test_expect_success 'Prune empty commits' '
 	test_cmp expect actual
 '
 
+test_expect_success 'prune empty collapsed merges' '
+	test_config merge.ff false &&
+	git rev-list HEAD >expect &&
+	test_commit to_remove_2 &&
+	git reset --hard HEAD^ &&
+	test_merge non-ff to_remove_2 &&
+	git filter-branch -f --index-filter "git update-index --remove to_remove_2.t" --prune-empty HEAD &&
+	git rev-list HEAD >actual &&
+	test_cmp expect actual
+'
+
 test_expect_success '--remap-to-ancestor with filename filters' '
 	git checkout master &&
 	git reset --hard A &&
@@ -381,6 +392,16 @@ test_expect_success 'replace submodule revision' '
 	     then git update-index --cacheinfo 160000 0123456789012345678901234567890123456789 submod
 	     fi" HEAD &&
 	test $orig_head != `git show-ref --hash --head HEAD`
+'
+
+test_expect_success 'filter commit message without trailing newline' '
+	git reset --hard original &&
+	commit=$(printf "no newline" | git commit-tree HEAD^{tree}) &&
+	git update-ref refs/heads/no-newline $commit &&
+	git filter-branch -f refs/heads/no-newline &&
+	echo $commit >expect &&
+	git rev-parse refs/heads/no-newline >actual &&
+	test_cmp expect actual
 '
 
 test_done

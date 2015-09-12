@@ -26,7 +26,7 @@ b,branch=     create a new branch from the split subtree
 ignore-joins  ignore prior --rejoin commits
 onto=         try connecting new tree to an existing one
 rejoin        merge the new branch back into HEAD
- options for 'add', 'merge', 'pull' and 'push'
+ options for 'add', 'merge', and 'pull'
 squash        merge subtree changes as a single commit
 "
 eval "$(echo "$OPTS_SPEC" | git rev-parse --parseopt -- "$@" || echo exit $?)"
@@ -46,18 +46,26 @@ ignore_joins=
 annotate=
 squash=
 message=
+prefix=
 
 debug()
 {
 	if [ -n "$debug" ]; then
-		echo "$@" >&2
+		printf "%s\n" "$*" >&2
 	fi
 }
 
 say()
 {
 	if [ -z "$quiet" ]; then
-		echo "$@" >&2
+		printf "%s\n" "$*" >&2
+	fi
+}
+
+progress()
+{
+	if [ -z "$quiet" ]; then
+		printf "%s\r" "$*" >&2
 	fi
 }
 
@@ -297,7 +305,7 @@ copy_commit()
 	# We're going to set some environment vars here, so
 	# do it in a subshell to get rid of them safely later
 	debug copy_commit "{$1}" "{$2}" "{$3}"
-	git log -1 --pretty=format:'%an%n%ae%n%ad%n%cn%n%ce%n%cd%n%B' "$1" |
+	git log -1 --pretty=format:'%an%n%ae%n%aD%n%cn%n%ce%n%cD%n%B' "$1" |
 	(
 		read GIT_AUTHOR_NAME
 		read GIT_AUTHOR_EMAIL
@@ -557,8 +565,9 @@ cmd_add_commit()
 		commit=$(add_squashed_msg "$rev" "$dir" |
 			 git commit-tree $tree $headp -p "$rev") || exit $?
 	else
+		revp=$(peel_committish "$rev") &&
 		commit=$(add_msg "$dir" "$headrev" "$rev" |
-			 git commit-tree $tree $headp -p "$rev") || exit $?
+			 git commit-tree $tree $headp -p "$revp") || exit $?
 	fi
 	git reset "$commit" || exit $?
 	
@@ -597,7 +606,7 @@ cmd_split()
 	eval "$grl" |
 	while read rev parents; do
 		revcount=$(($revcount + 1))
-		say -n "$revcount/$revmax ($createcount)"
+		progress "$revcount/$revmax ($createcount)"
 		debug "Processing commit: $rev"
 		exists=$(cache_get $rev)
 		if [ -n "$exists" ]; then

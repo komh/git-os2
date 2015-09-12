@@ -146,11 +146,7 @@ test_expect_success 'no color when stdout is a regular file' '
 test_expect_success TTY 'color when writing to a pager' '
 	rm -f paginated.out &&
 	test_config color.ui auto &&
-	(
-		TERM=vt100 &&
-		export TERM &&
-		test_terminal git log
-	) &&
+	test_terminal env TERM=vt100 git log &&
 	colorful paginated.out
 '
 
@@ -158,11 +154,7 @@ test_expect_success TTY 'colors are suppressed by color.pager' '
 	rm -f paginated.out &&
 	test_config color.ui auto &&
 	test_config color.pager false &&
-	(
-		TERM=vt100 &&
-		export TERM &&
-		test_terminal git log
-	) &&
+	test_terminal env TERM=vt100 git log &&
 	! colorful paginated.out
 '
 
@@ -181,11 +173,7 @@ test_expect_success 'color when writing to a file intended for a pager' '
 test_expect_success TTY 'colors are sent to pager for external commands' '
 	test_config alias.externallog "!git log" &&
 	test_config color.ui auto &&
-	(
-		TERM=vt100 &&
-		export TERM &&
-		test_terminal git -p externallog
-	) &&
+	test_terminal env TERM=vt100 git -p externallog &&
 	colorful paginated.out
 '
 
@@ -408,7 +396,7 @@ test_expect_success TTY 'command-specific pager overrides core.pager' '
 	sane_unset PAGER GIT_PAGER &&
 	echo "foo:initial" >expect &&
 	>actual &&
-	test_config core.pager "exit 1"
+	test_config core.pager "exit 1" &&
 	test_config pager.log "sed s/^/foo:/ >actual" &&
 	test_terminal git log --format=%s -1 &&
 	test_cmp expect actual
@@ -456,6 +444,15 @@ test_expect_success TTY 'external command pagers override sub-commands' '
 	test_config pager.external false &&
 	test_config pager.log "sed s/^/log:/ >actual" &&
 	test_terminal git --exec-path=. external log --format=%s -1 &&
+	test_cmp expect actual
+'
+
+test_expect_success 'command with underscores does not complain' '
+	write_script git-under_score <<-\EOF &&
+	echo ok
+	EOF
+	git --exec-path=. under_score >actual 2>&1 &&
+	echo ok >expect &&
 	test_cmp expect actual
 '
 

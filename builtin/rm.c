@@ -3,8 +3,8 @@
  *
  * Copyright (C) Linus Torvalds 2006
  */
-#include "cache.h"
 #include "builtin.h"
+#include "lockfile.h"
 #include "dir.h"
 #include "cache-tree.h"
 #include "tree-walk.h"
@@ -14,7 +14,7 @@
 #include "pathspec.h"
 
 static const char * const builtin_rm_usage[] = {
-	N_("git rm [options] [--] <file>..."),
+	N_("git rm [<options>] [--] <file>..."),
 	NULL
 };
 
@@ -65,7 +65,7 @@ static void error_removing_concrete_submodules(struct string_list *files, int *e
 			  Q_("the following submodule (or one of its nested "
 			     "submodules)\n"
 			     "uses a .git directory:",
-			     "the following submodules (or one of its nested "
+			     "the following submodules (or one of their nested "
 			     "submodules)\n"
 			     "use a .git directory:", files->nr),
 			  _("\n(use 'rm -rf' if you really want to remove "
@@ -84,7 +84,6 @@ static int check_submodules_use_gitfiles(void)
 		const char *name = list.entry[i].name;
 		int pos;
 		const struct cache_entry *ce;
-		struct stat st;
 
 		pos = cache_name_pos(name, strlen(name));
 		if (pos < 0) {
@@ -95,7 +94,7 @@ static int check_submodules_use_gitfiles(void)
 		ce = active_cache[pos];
 
 		if (!S_ISGITLINK(ce->ce_mode) ||
-		    (lstat(ce->name, &st) < 0) ||
+		    !file_exists(ce->name) ||
 		    is_empty_dir(name))
 			continue;
 
@@ -278,7 +277,7 @@ static struct option builtin_rm_options[] = {
 
 int cmd_rm(int argc, const char **argv, const char *prefix)
 {
-	int i, newfd;
+	int i;
 	struct pathspec pathspec;
 	char *seen;
 
@@ -293,7 +292,7 @@ int cmd_rm(int argc, const char **argv, const char *prefix)
 	if (!index_only)
 		setup_work_tree();
 
-	newfd = hold_locked_index(&lock_file, 1);
+	hold_locked_index(&lock_file, 1);
 
 	if (read_cache() < 0)
 		die(_("index file corrupt"));
@@ -311,7 +310,7 @@ int cmd_rm(int argc, const char **argv, const char *prefix)
 		if (!ce_path_match(ce, &pathspec, seen))
 			continue;
 		ALLOC_GROW(list.entry, list.nr + 1, list.alloc);
-		list.entry[list.nr].name = ce->name;
+		list.entry[list.nr].name = xstrdup(ce->name);
 		list.entry[list.nr].is_submodule = S_ISGITLINK(ce->ce_mode);
 		if (list.entry[list.nr++].is_submodule &&
 		    !is_staging_gitmodules_ok())
@@ -427,8 +426,7 @@ int cmd_rm(int argc, const char **argv, const char *prefix)
 	}
 
 	if (active_cache_changed) {
-		if (write_cache(newfd, active_cache, active_nr) ||
-		    commit_locked_index(&lock_file))
+		if (write_locked_index(&the_index, &lock_file, COMMIT_LOCK))
 			die(_("Unable to write new index file"));
 	}
 

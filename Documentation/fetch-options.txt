@@ -68,10 +68,18 @@ endif::git-pull[]
 	By default, tags that point at objects that are downloaded
 	from the remote repository are fetched and stored locally.
 	This option disables this automatic tag following. The default
-	behavior for a remote may be specified with the remote.<name>.tagopt
+	behavior for a remote may be specified with the remote.<name>.tagOpt
 	setting. See linkgit:git-config[1].
 
 ifndef::git-pull[]
+--refmap=<refspec>::
+	When fetching refs listed on the command line, use the
+	specified refspec (can be given more than once) to map the
+	refs to remote-tracking branches, instead of the values of
+	`remote.*.fetch` configuration variables for the remote
+	repository.  See section on "Configured Remote-tracking
+	Branches" for details.
+
 -t::
 --tags::
 	Fetch all tags from the remote (i.e., fetch remote tags

@@ -119,10 +119,7 @@ test_expect_success C_LOCALE_OUTPUT 'git clean with relative prefix' '
 		git clean -n ../src |
 		sed -n -e "s|^Would remove ||p"
 	) &&
-	test "$would_clean" = ../src/part3.c || {
-		echo "OOps <$would_clean>"
-		false
-	}
+	verbose test "$would_clean" = ../src/part3.c
 '
 
 test_expect_success C_LOCALE_OUTPUT 'git clean with absolute path' '
@@ -134,10 +131,7 @@ test_expect_success C_LOCALE_OUTPUT 'git clean with absolute path' '
 		git clean -n "$(pwd)/../src" |
 		sed -n -e "s|^Would remove ||p"
 	) &&
-	test "$would_clean" = ../src/part3.c || {
-		echo "OOps <$would_clean>"
-		false
-	}
+	verbose test "$would_clean" = ../src/part3.c
 '
 
 test_expect_success 'git clean with out of work tree relative path' '
@@ -438,9 +432,7 @@ test_expect_success 'nested git work tree' '
 	(
 		cd foo &&
 		git init &&
-		>hello.world
-		git add . &&
-		git commit -a -m nested
+		test_commit nested hello.world
 	) &&
 	(
 		cd bar &&
@@ -449,9 +441,7 @@ test_expect_success 'nested git work tree' '
 	(
 		cd baz/boo &&
 		git init &&
-		>deeper.world
-		git add . &&
-		git commit -a -m deeply.nested
+		test_commit deeply.nested deeper.world
 	) &&
 	git clean -f -d &&
 	test -f foo/.git/index &&
@@ -467,9 +457,7 @@ test_expect_success 'force removal of nested git work tree' '
 	(
 		cd foo &&
 		git init &&
-		>hello.world
-		git add . &&
-		git commit -a -m nested
+		test_commit nested hello.world
 	) &&
 	(
 		cd bar &&
@@ -478,9 +466,7 @@ test_expect_success 'force removal of nested git work tree' '
 	(
 		cd baz/boo &&
 		git init &&
-		>deeper.world
-		git add . &&
-		git commit -a -m deeply.nested
+		test_commit deeply.nested deeper.world
 	) &&
 	git clean -f -f -d &&
 	! test -d foo &&

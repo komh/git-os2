@@ -14,7 +14,6 @@ SYNOPSIS
 'git tag' -d <tagname>...
 'git tag' [-n[<num>]] -l [--contains <commit>] [--points-at <object>]
 	[--column[=<options>] | --no-column] [<pattern>...]
-	[<pattern>...]
 'git tag' -v <tagname>...
 
 DESCRIPTION
@@ -95,6 +94,17 @@ OPTIONS
 	using fnmatch(3)).  Multiple patterns may be given; if any of
 	them matches, the tag is shown.
 
+--sort=<type>::
+	Sort in a specific order. Supported type is "refname"
+	(lexicographic order), "version:refname" or "v:refname" (tag
+	names are treated as versions). The "version:refname" sort
+	order can also be affected by the
+	"versionsort.prereleaseSuffix" configuration variable. Prepend
+	"-" to reverse sort order. When this option is not given, the
+	sort order defaults to the value configured for the 'tag.sort'
+	variable if it exists, or lexicographic order otherwise. See
+	linkgit:git-config[1].
+
 --column[=<options>]::
 --no-column::
 	Display tag listing in columns. See configuration variable
@@ -147,13 +157,13 @@ This option is only applicable when listing tags without annotation lines.
 CONFIGURATION
 -------------
 By default, 'git tag' in sign-with-default mode (-s) will use your
-committer identity (of the form "Your Name <\your@email.address>") to
+committer identity (of the form `Your Name <your@email.address>`) to
 find a key.  If you want to use a different default key, you can specify
 it in the repository configuration as follows:
 
 -------------------------------------
 [user]
-    signingkey = <gpg-key-id>
+    signingKey = <gpg-key-id>
 -------------------------------------
 
 
@@ -311,6 +321,7 @@ include::date-formats.txt[]
 SEE ALSO
 --------
 linkgit:git-check-ref-format[1].
+linkgit:git-config[1].
 
 GIT
 ---
