@@ -2840,7 +2840,12 @@ int git_config_set_multivar_in_file_gently(const char *config_filename,
 		close(in_fd);
 		in_fd = -1;
 
+#ifndef __OS2__
 		if (chmod(get_lock_file_path(&lock), st.st_mode & 07777) < 0) {
+#else
+		/* On OS/2, chmod() does not work on an opened file. */
+		if (fchmod(fd, st.st_mode & 07777) < 0) {
+#endif
 			error_errno(_("chmod on %s failed"), get_lock_file_path(&lock));
 			ret = CONFIG_NO_WRITE;
 			goto out_free;
@@ -3078,7 +3083,12 @@ static int git_config_copy_or_rename_section_in_file(const char *config_filename
 		goto out;
 	}
 
+#ifndef __OS2__
 	if (chmod(get_lock_file_path(&lock), st.st_mode & 07777) < 0) {
+#else
+	/* On OS/2, chmod() does not work on an opened file. */
+	if (fchmod(out_fd, st.st_mode & 07777) < 0) {
+#endif
 		ret = error_errno(_("chmod on %s failed"),
 				  get_lock_file_path(&lock));
 		goto out;
