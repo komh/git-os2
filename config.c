@@ -2122,11 +2122,14 @@ int git_config_set_multivar_in_file_gently(const char *config_filename,
 		close(in_fd);
 		in_fd = -1;
 
+		/* FIXME: On OS/2, chmod() does not work on a opened file. */
+#ifndef __OS2__
 		if (chmod(get_lock_file_path(lock), st.st_mode & 07777) < 0) {
 			error_errno("chmod on %s failed", get_lock_file_path(lock));
 			ret = CONFIG_NO_WRITE;
 			goto out_free;
 		}
+#endif
 
 		if (store.seen == 0)
 			store.seen = 1;
@@ -2329,11 +2332,14 @@ int git_config_rename_section_in_file(const char *config_filename,
 
 	fstat(fileno(config_file), &st);
 
+	/* FIXME: On OS/2, chmod() does not work on a opened file. */
+#ifndef __OS2__
 	if (chmod(get_lock_file_path(lock), st.st_mode & 07777) < 0) {
 		ret = error_errno("chmod on %s failed",
 				  get_lock_file_path(lock));
 		goto out;
 	}
+#endif
 
 	while (fgets(buf, sizeof(buf), config_file)) {
 		int i;
