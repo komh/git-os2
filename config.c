@@ -618,7 +618,7 @@ unsigned long git_config_ulong(const char *name, const char *value)
 	return ret;
 }
 
-static int git_config_maybe_bool_text(const char *name, const char *value)
+int git_parse_maybe_bool(const char *value)
 {
 	if (!value)
 		return 1;
@@ -637,7 +637,7 @@ static int git_config_maybe_bool_text(const char *name, const char *value)
 
 int git_config_maybe_bool(const char *name, const char *value)
 {
-	int v = git_config_maybe_bool_text(name, value);
+	int v = git_parse_maybe_bool(value);
 	if (0 <= v)
 		return v;
 	if (git_parse_int(value, &v))
@@ -647,7 +647,7 @@ int git_config_maybe_bool(const char *name, const char *value)
 
 int git_config_bool_or_int(const char *name, const char *value, int *is_bool)
 {
-	int v = git_config_maybe_bool_text(name, value);
+	int v = git_parse_maybe_bool(value);
 	if (0 <= v) {
 		*is_bool = 1;
 		return v;
@@ -2086,9 +2086,9 @@ int git_config_set_multivar_in_file(const char *config_filename,
 		close(in_fd);
 		in_fd = -1;
 
-		if (chmod(lock->filename.buf, st.st_mode & 07777) < 0) {
+		if (chmod(get_lock_file_path(lock), st.st_mode & 07777) < 0) {
 			error("chmod on %s failed: %s",
-				lock->filename.buf, strerror(errno));
+			      get_lock_file_path(lock), strerror(errno));
 			ret = CONFIG_NO_WRITE;
 			goto out_free;
 		}
@@ -2173,7 +2173,7 @@ out_free:
 	return ret;
 
 write_err_out:
-	ret = write_error(lock->filename.buf);
+	ret = write_error(get_lock_file_path(lock));
 	goto out_free;
 
 }
@@ -2274,9 +2274,9 @@ int git_config_rename_section_in_file(const char *config_filename,
 
 	fstat(fileno(config_file), &st);
 
-	if (chmod(lock->filename.buf, st.st_mode & 07777) < 0) {
+	if (chmod(get_lock_file_path(lock), st.st_mode & 07777) < 0) {
 		ret = error("chmod on %s failed: %s",
-				lock->filename.buf, strerror(errno));
+			    get_lock_file_path(lock), strerror(errno));
 		goto out;
 	}
 
@@ -2297,7 +2297,7 @@ int git_config_rename_section_in_file(const char *config_filename,
 				}
 				store.baselen = strlen(new_name);
 				if (!store_write_section(out_fd, new_name)) {
-					ret = write_error(lock->filename.buf);
+					ret = write_error(get_lock_file_path(lock));
 					goto out;
 				}
 				/*
@@ -2323,7 +2323,7 @@ int git_config_rename_section_in_file(const char *config_filename,
 			continue;
 		length = strlen(output);
 		if (write_in_full(out_fd, output, length) != length) {
-			ret = write_error(lock->filename.buf);
+			ret = write_error(get_lock_file_path(lock));
 			goto out;
 		}
 	}
