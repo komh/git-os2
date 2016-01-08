@@ -590,6 +590,7 @@ ifneq (,$(findstring OS/2,$(uname_S)))
 #	NO_R_TO_GCC_LINKER = YesPlease
 #	INTERNAL_QSORT = YesPlease
 #	NO_CURL = YesPlease
+	NO_TRUSTABLE_FILEMODE = UnfortunatelyPlease
 endif
 ifeq ($(uname_S),QNX)
 	COMPAT_CFLAGS += -DSA_RESTART=0
