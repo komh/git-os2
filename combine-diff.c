@@ -419,8 +419,10 @@ static void combine_diff(const struct object_id *parent, unsigned int mode,
 	state.num_parent = num_parent;
 	state.n = n;
 
-	xdi_diff_outf(&parent_file, result_file, consume_line, &state,
-		      &xpp, &xecfg);
+	if (xdi_diff_outf(&parent_file, result_file, consume_line, &state,
+			  &xpp, &xecfg))
+		die("unable to generate combined diff for %s",
+		    oid_to_hex(parent));
 	free(parent_file.ptr);
 
 	/* Assign line numbers for this parent.
@@ -1538,9 +1540,9 @@ void diff_tree_combined_merge(const struct commit *commit, int dense,
 	struct sha1_array parents = SHA1_ARRAY_INIT;
 
 	while (parent) {
-		sha1_array_append(&parents, parent->item->object.sha1);
+		sha1_array_append(&parents, parent->item->object.oid.hash);
 		parent = parent->next;
 	}
-	diff_tree_combined(commit->object.sha1, &parents, dense, rev);
+	diff_tree_combined(commit->object.oid.hash, &parents, dense, rev);
 	sha1_array_clear(&parents);
 }

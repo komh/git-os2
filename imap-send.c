@@ -889,9 +889,8 @@ static char *cram(const char *challenge_64, const char *user, const char *pass)
 	}
 
 	/* response: "<user> <digest in hex>" */
-	resp_len = strlen(user) + 1 + strlen(hex) + 1;
-	response = xmalloc(resp_len);
-	sprintf(response, "%s %s", user, hex);
+	response = xstrfmt("%s %s", user, hex);
+	resp_len = strlen(response) + 1;
 
 	response_64 = xmalloc(ENCODED_SIZE(resp_len) + 1);
 	encoded_len = EVP_EncodeBlock((unsigned char *)response_64,
@@ -1422,11 +1421,15 @@ static CURL *setup_curl(struct imap_server_conf *srvc)
 	curl_easy_setopt(curl, CURLOPT_PORT, server.port);
 
 	if (server.auth_method) {
+#if LIBCURL_VERSION_NUM < 0x072200
+		warning("No LOGIN_OPTIONS support in this cURL version");
+#else
 		struct strbuf auth = STRBUF_INIT;
 		strbuf_addstr(&auth, "AUTH=");
 		strbuf_addstr(&auth, server.auth_method);
 		curl_easy_setopt(curl, CURLOPT_LOGIN_OPTIONS, auth.buf);
 		strbuf_release(&auth);
+#endif
 	}
 
 	if (!server.use_ssl)

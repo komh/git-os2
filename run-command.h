@@ -47,9 +47,11 @@ struct child_process {
 
 #define CHILD_PROCESS_INIT { NULL, ARGV_ARRAY_INIT, ARGV_ARRAY_INIT }
 void child_process_init(struct child_process *);
+void child_process_clear(struct child_process *);
 
 int start_command(struct child_process *);
 int finish_command(struct child_process *);
+int finish_command_in_signal(struct child_process *);
 int run_command(struct child_process *);
 
 /*
@@ -118,5 +120,6 @@ struct async {
 
 int start_async(struct async *async);
 int finish_async(struct async *async);
+int in_async(void);
 
 #endif

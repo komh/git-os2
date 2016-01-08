@@ -173,6 +173,7 @@ typedef int each_ref_fn(const char *refname,
 extern int head_ref(each_ref_fn fn, void *cb_data);
 extern int for_each_ref(each_ref_fn fn, void *cb_data);
 extern int for_each_ref_in(const char *prefix, each_ref_fn fn, void *cb_data);
+extern int for_each_fullref_in(const char *prefix, each_ref_fn fn, void *cb_data, unsigned int broken);
 extern int for_each_tag_ref(each_ref_fn fn, void *cb_data);
 extern int for_each_branch_ref(each_ref_fn fn, void *cb_data);
 extern int for_each_remote_ref(each_ref_fn fn, void *cb_data);
@@ -443,7 +444,15 @@ int update_ref(const char *msg, const char *refname,
 
 extern int parse_hide_refs_config(const char *var, const char *value, const char *);
 
-extern int ref_is_hidden(const char *);
+/*
+ * Check whether a ref is hidden. If no namespace is set, both the first and
+ * the second parameter point to the full ref name. If a namespace is set and
+ * the ref is inside that namespace, the first parameter is a pointer to the
+ * name of the ref with the namespace prefix removed. If a namespace is set and
+ * the ref is outside that namespace, the first parameter is NULL. The second
+ * parameter always points to the full ref name.
+ */
+extern int ref_is_hidden(const char *, const char *);
 
 enum ref_type {
 	REF_TYPE_PER_WORKTREE,

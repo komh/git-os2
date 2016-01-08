@@ -122,29 +122,25 @@ static int add_submodule_odb(const char *path)
 	struct strbuf objects_directory = STRBUF_INIT;
 	struct alternate_object_database *alt_odb;
 	int ret = 0;
-	const char *git_dir;
+	int alloc;
 
-	strbuf_addf(&objects_directory, "%s/.git", path);
-	git_dir = read_gitfile(objects_directory.buf);
-	if (git_dir) {
-		strbuf_reset(&objects_directory);
-		strbuf_addstr(&objects_directory, git_dir);
-	}
-	strbuf_addstr(&objects_directory, "/objects/");
+	strbuf_git_path_submodule(&objects_directory, path, "objects/");
 	if (!is_directory(objects_directory.buf)) {
 		ret = -1;
 		goto done;
 	}
 	/* avoid adding it twice */
+	prepare_alt_odb();
 	for (alt_odb = alt_odb_list; alt_odb; alt_odb = alt_odb->next)
 		if (alt_odb->name - alt_odb->base == objects_directory.len &&
 				!strncmp(alt_odb->base, objects_directory.buf,
 					objects_directory.len))
 			goto done;
 
-	alt_odb = xmalloc(objects_directory.len + 42 + sizeof(*alt_odb));
+	alloc = objects_directory.len + 42; /* for "12/345..." sha1 */
+	alt_odb = xmalloc(sizeof(*alt_odb) + alloc);
 	alt_odb->next = alt_odb_list;
-	strcpy(alt_odb->base, objects_directory.buf);
+	xsnprintf(alt_odb->base, alloc, "%s", objects_directory.buf);
 	alt_odb->name = alt_odb->base + objects_directory.len;
 	alt_odb->name[2] = '/';
 	alt_odb->name[40] = '\0';
@@ -153,7 +149,6 @@ static int add_submodule_odb(const char *path)
 
 	/* add possible alternates from the submodule */
 	read_info_alternates(objects_directory.buf, 0);
-	prepare_alt_odb();
 done:
 	strbuf_release(&objects_directory);
 	return ret;
@@ -254,7 +249,7 @@ static int prepare_submodule_summary(struct rev_info *rev, const char *path,
 	for (list = merge_bases; list; list = list->next) {
 		list->item->object.flags |= UNINTERESTING;
 		add_pending_object(rev, &list->item->object,
-			sha1_to_hex(list->item->object.sha1));
+			oid_to_hex(&list->item->object.oid));
 	}
 	return prepare_revision_walk(rev);
 }
@@ -602,7 +597,7 @@ static void calculate_changed_submodule_paths(void)
 			diff_opts.output_format |= DIFF_FORMAT_CALLBACK;
 			diff_opts.format_callback = submodule_collect_changed_cb;
 			diff_setup_done(&diff_opts);
-			diff_tree_sha1(parent->item->object.sha1, commit->object.sha1, "", &diff_opts);
+			diff_tree_sha1(parent->item->object.oid.hash, commit->object.oid.hash, "", &diff_opts);
 			diffcore_std(&diff_opts);
 			diff_flush(&diff_opts);
 			parent = parent->next;
@@ -880,7 +875,7 @@ static int find_first_merges(struct object_array *result, const char *path,
 
 	/* get all revisions that merge commit a */
 	snprintf(merged_revision, sizeof(merged_revision), "^%s",
-			sha1_to_hex(a->object.sha1));
+			oid_to_hex(&a->object.oid));
 	init_revisions(&revs, NULL);
 	rev_opts.submodule = path;
 	setup_revisions(ARRAY_SIZE(rev_args)-1, rev_args, &revs, &rev_opts);
@@ -1011,7 +1006,7 @@ int merge_submodule(unsigned char result[20], const char *path,
 			"by using:\n\n"
 			"  git update-index --cacheinfo 160000 %s \"%s\"\n\n"
 			"which will accept this suggestion.\n",
-			sha1_to_hex(merges.objects[0].item->sha1), path);
+			oid_to_hex(&merges.objects[0].item->oid), path);
 		break;
 
 	default:

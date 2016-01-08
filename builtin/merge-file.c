@@ -75,7 +75,8 @@ int cmd_merge_file(int argc, const char **argv, const char *prefix)
 			names[i] = argv[i];
 		if (read_mmfile(mmfs + i, fname))
 			return -1;
-		if (buffer_is_binary(mmfs[i].ptr, mmfs[i].size))
+		if (mmfs[i].size > MAX_XDIFF_SIZE ||
+		    buffer_is_binary(mmfs[i].ptr, mmfs[i].size))
 			return error("Cannot merge binary files: %s",
 					argv[i]);
 	}
@@ -102,6 +103,9 @@ int cmd_merge_file(int argc, const char **argv, const char *prefix)
 			ret = error("Could not close %s", filename);
 		free(result.ptr);
 	}
+
+	if (ret > 127)
+		ret = 127;
 
 	return ret;
 }

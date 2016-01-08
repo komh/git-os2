@@ -294,9 +294,14 @@ static int add_one_reference(struct string_list_item *item, void *cb_data)
 		char *ref_git_git = mkpathdup("%s/.git", ref_git);
 		free(ref_git);
 		ref_git = ref_git_git;
-	} else if (!is_directory(mkpath("%s/objects", ref_git)))
+	} else if (!is_directory(mkpath("%s/objects", ref_git))) {
+		struct strbuf sb = STRBUF_INIT;
+		if (get_common_dir(&sb, ref_git))
+			die(_("reference repository '%s' as a linked checkout is not supported yet."),
+			    item->string);
 		die(_("reference repository '%s' is not a local repository."),
 		    item->string);
+	}
 
 	if (!access(mkpath("%s/shallow", ref_git), F_OK))
 		die(_("reference repository '%s' is shallow"), item->string);
@@ -424,8 +429,10 @@ static void clone_local(const char *src_repo, const char *dest_repo)
 	} else {
 		struct strbuf src = STRBUF_INIT;
 		struct strbuf dest = STRBUF_INIT;
-		strbuf_addf(&src, "%s/objects", src_repo);
-		strbuf_addf(&dest, "%s/objects", dest_repo);
+		get_common_dir(&src, src_repo);
+		get_common_dir(&dest, dest_repo);
+		strbuf_addstr(&src, "/objects");
+		strbuf_addstr(&dest, "/objects");
 		copy_or_link_directory(&src, &dest, src_repo, src.len);
 		strbuf_release(&src);
 		strbuf_release(&dest);
@@ -552,7 +559,7 @@ static void write_remote_refs(const struct ref *local_refs)
 	for (r = local_refs; r; r = r->next) {
 		if (!r->peer_ref)
 			continue;
-		if (ref_transaction_create(t, r->peer_ref->name, r->old_sha1,
+		if (ref_transaction_create(t, r->peer_ref->name, r->old_oid.hash,
 					   0, NULL, &err))
 			die("%s", err.buf);
 	}
@@ -572,9 +579,9 @@ static void write_followtags(const struct ref *refs, const char *msg)
 			continue;
 		if (ends_with(ref->name, "^{}"))
 			continue;
-		if (!has_sha1_file(ref->old_sha1))
+		if (!has_object_file(&ref->old_oid))
 			continue;
-		update_ref(msg, ref->name, ref->old_sha1,
+		update_ref(msg, ref->name, ref->old_oid.hash,
 			   NULL, 0, UPDATE_REFS_DIE_ON_ERR);
 	}
 }
@@ -594,7 +601,7 @@ static int iterate_ref_map(void *cb_data, unsigned char sha1[20])
 	if (!ref)
 		return -1;
 
-	hashcpy(sha1, ref->old_sha1);
+	hashcpy(sha1, ref->old_oid.hash);
 	*rm = ref->next;
 	return 0;
 }
@@ -643,14 +650,14 @@ static void update_head(const struct ref *our, const struct ref *remote,
 		/* Local default branch link */
 		create_symref("HEAD", our->name, NULL);
 		if (!option_bare) {
-			update_ref(msg, "HEAD", our->old_sha1, NULL, 0,
+			update_ref(msg, "HEAD", our->old_oid.hash, NULL, 0,
 				   UPDATE_REFS_DIE_ON_ERR);
 			install_branch_config(0, head, option_origin, our->name);
 		}
 	} else if (our) {
-		struct commit *c = lookup_commit_reference(our->old_sha1);
+		struct commit *c = lookup_commit_reference(our->old_oid.hash);
 		/* --branch specifies a non-branch (i.e. tags), detach HEAD */
-		update_ref(msg, "HEAD", c->object.sha1,
+		update_ref(msg, "HEAD", c->object.oid.hash,
 			   NULL, REF_NODEREF, UPDATE_REFS_DIE_ON_ERR);
 	} else if (remote) {
 		/*
@@ -658,7 +665,7 @@ static void update_head(const struct ref *our, const struct ref *remote,
 		 * HEAD points to a branch but we don't know which one.
 		 * Detach HEAD in all these cases.
 		 */
-		update_ref(msg, "HEAD", remote->old_sha1,
+		update_ref(msg, "HEAD", remote->old_oid.hash,
 			   NULL, REF_NODEREF, UPDATE_REFS_DIE_ON_ERR);
 	}
 }
@@ -794,11 +801,15 @@ static void write_refspec_config(const char *src_ref_prefix,
 static void dissociate_from_references(void)
 {
 	static const char* argv[] = { "repack", "-a", "-d", NULL };
+	char *alternates = git_pathdup("objects/info/alternates");
 
-	if (run_command_v_opt(argv, RUN_GIT_CMD|RUN_COMMAND_NO_STDIN))
-		die(_("cannot repack to clean up"));
-	if (unlink(git_path("objects/info/alternates")) && errno != ENOENT)
-		die_errno(_("cannot unlink temporary alternates file"));
+	if (!access(alternates, F_OK)) {
+		if (run_command_v_opt(argv, RUN_GIT_CMD|RUN_COMMAND_NO_STDIN))
+			die(_("cannot repack to clean up"));
+		if (unlink(alternates) && errno != ENOENT)
+			die_errno(_("cannot unlink temporary alternates file"));
+	}
+	free(alternates);
 }
 
 int cmd_clone(int argc, const char **argv, const char *prefix)
@@ -947,10 +958,6 @@ int cmd_clone(int argc, const char **argv, const char *prefix)
 
 	if (option_reference.nr)
 		setup_reference();
-	else if (option_dissociate) {
-		warning(_("--dissociate given, but there is no --reference"));
-		option_dissociate = 0;
-	}
 
 	fetch_pattern = value.buf;
 	refspec = parse_fetch_refspec(1, &fetch_pattern);
@@ -1009,7 +1016,7 @@ int cmd_clone(int argc, const char **argv, const char *prefix)
 		 * remote HEAD check.
 		 */
 		for (ref = refs; ref; ref = ref->next)
-			if (is_null_sha1(ref->old_sha1)) {
+			if (is_null_oid(&ref->old_oid)) {
 				complete_refs_before_fetch = 0;
 				break;
 			}
@@ -1064,8 +1071,10 @@ int cmd_clone(int argc, const char **argv, const char *prefix)
 	transport_unlock_pack(transport);
 	transport_disconnect(transport);
 
-	if (option_dissociate)
+	if (option_dissociate) {
+		close_all_packs();
 		dissociate_from_references();
+	}
 
 	junk_mode = JUNK_LEAVE_REPO;
 	err = checkout();

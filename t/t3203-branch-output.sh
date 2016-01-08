@@ -106,6 +106,19 @@ EOF
 	test_i18ncmp expect actual
 '
 
+test_expect_success 'git branch shows detached HEAD properly after checkout --detach' '
+	git checkout master &&
+	cat >expect <<EOF &&
+* (HEAD detached at $(git rev-parse --short HEAD^0))
+  branch-one
+  branch-two
+  master
+EOF
+	git checkout --detach &&
+	git branch >actual &&
+	test_i18ncmp expect actual
+'
+
 test_expect_success 'git branch shows detached HEAD properly after moving' '
 	cat >expect <<EOF &&
 * (HEAD detached from $(git rev-parse --short HEAD))
@@ -141,6 +154,26 @@ EOF
 	git reset --hard HEAD^1 &&
 	git branch >actual &&
 	test_i18ncmp expect actual
+'
+
+test_expect_success 'git branch `--sort` option' '
+	cat >expect <<-\EOF &&
+	* (HEAD detached from fromtag)
+	  branch-two
+	  branch-one
+	  master
+	EOF
+	git branch --sort=objectsize >actual &&
+	test_i18ncmp expect actual
+'
+
+test_expect_success 'git branch --points-at option' '
+	cat >expect <<-\EOF &&
+	  branch-one
+	  master
+	EOF
+	git branch --points-at=branch-one >actual &&
+	test_cmp expect actual
 '
 
 test_done

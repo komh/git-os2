@@ -126,7 +126,7 @@ static int commit_is_complete(struct commit *commit)
 		struct commit_list *parent;
 
 		c = (struct commit *)study.objects[--study.nr].item;
-		if (!c->object.parsed && !parse_object(c->object.sha1))
+		if (!c->object.parsed && !parse_object(c->object.oid.hash))
 			c->object.flags |= INCOMPLETE;
 
 		if (c->object.flags & INCOMPLETE) {
@@ -152,7 +152,7 @@ static int commit_is_complete(struct commit *commit)
 		for (i = 0; i < found.nr; i++) {
 			struct commit *c =
 				(struct commit *)found.objects[i].item;
-			if (!tree_is_complete(c->tree->object.sha1)) {
+			if (!tree_is_complete(c->tree->object.oid.hash)) {
 				is_incomplete = 1;
 				c->object.flags |= INCOMPLETE;
 			}
@@ -218,7 +218,6 @@ static int keep_entry(struct commit **it, unsigned char *sha1)
  */
 static void mark_reachable(struct expire_reflog_policy_cb *cb)
 {
-	struct commit *commit;
 	struct commit_list *pending;
 	unsigned long expire_limit = cb->mark_limit;
 	struct commit_list *leftover = NULL;
@@ -228,11 +227,8 @@ static void mark_reachable(struct expire_reflog_policy_cb *cb)
 
 	pending = cb->mark_list;
 	while (pending) {
-		struct commit_list *entry = pending;
 		struct commit_list *parent;
-		pending = entry->next;
-		commit = entry->item;
-		free(entry);
+		struct commit *commit = pop_commit(&pending);
 		if (commit->object.flags & REACHABLE)
 			continue;
 		if (parse_commit(commit))

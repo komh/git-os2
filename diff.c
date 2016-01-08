@@ -13,7 +13,6 @@
 #include "run-command.h"
 #include "utf8.h"
 #include "userdiff.h"
-#include "sigchain.h"
 #include "submodule-config.h"
 #include "submodule.h"
 #include "ll-merge.h"
@@ -322,7 +321,7 @@ static struct diff_tempfile {
 	 */
 	const char *name;
 
-	char hex[41];
+	char hex[GIT_SHA1_HEXSZ + 1];
 	char mode[10];
 
 	/*
@@ -1041,8 +1040,9 @@ static void diff_words_show(struct diff_words_data *diff_words)
 	xpp.flags = 0;
 	/* as only the hunk header will be parsed, we need a 0-context */
 	xecfg.ctxlen = 0;
-	xdi_diff_outf(&minus, &plus, fn_out_diff_words_aux, diff_words,
-		      &xpp, &xecfg);
+	if (xdi_diff_outf(&minus, &plus, fn_out_diff_words_aux, diff_words,
+			  &xpp, &xecfg))
+		die("unable to generate word diff");
 	free(minus.ptr);
 	free(plus.ptr);
 	if (diff_words->current_plus != diff_words->plus.text.ptr +
@@ -2449,8 +2449,9 @@ static void builtin_diff(const char *name_a,
 			xecfg.ctxlen = strtoul(v, NULL, 10);
 		if (o->word_diff)
 			init_diff_words_data(&ecbdata, o, one, two);
-		xdi_diff_outf(&mf1, &mf2, fn_out_consume, &ecbdata,
-			      &xpp, &xecfg);
+		if (xdi_diff_outf(&mf1, &mf2, fn_out_consume, &ecbdata,
+				  &xpp, &xecfg))
+			die("unable to generate diff for %s", one->path);
 		if (o->word_diff)
 			free_diff_words_data(&ecbdata);
 		if (textconv_one)
@@ -2527,8 +2528,9 @@ static void builtin_diffstat(const char *name_a, const char *name_b,
 		xpp.flags = o->xdl_opts;
 		xecfg.ctxlen = o->context;
 		xecfg.interhunkctxlen = o->interhunkcontext;
-		xdi_diff_outf(&mf1, &mf2, diffstat_consume, diffstat,
-			      &xpp, &xecfg);
+		if (xdi_diff_outf(&mf1, &mf2, diffstat_consume, diffstat,
+				  &xpp, &xecfg))
+			die("unable to generate diffstat for %s", one->path);
 	}
 
 	diff_free_filespec_data(one);
@@ -2574,8 +2576,9 @@ static void builtin_checkdiff(const char *name_a, const char *name_b,
 		memset(&xecfg, 0, sizeof(xecfg));
 		xecfg.ctxlen = 1; /* at least one context line */
 		xpp.flags = 0;
-		xdi_diff_outf(&mf1, &mf2, checkdiff_consume, &data,
-			      &xpp, &xecfg);
+		if (xdi_diff_outf(&mf1, &mf2, checkdiff_consume, &data,
+				  &xpp, &xecfg))
+			die("unable to generate checkdiff for %s", one->path);
 
 		if (data.ws_rule & WS_BLANK_AT_EOF) {
 			struct emit_callback ecbdata;
@@ -2878,9 +2881,8 @@ static void prep_temp_blob(const char *path, struct diff_tempfile *temp,
 		die_errno("unable to write temp-file");
 	close_tempfile(&temp->tempfile);
 	temp->name = get_tempfile_path(&temp->tempfile);
-	strcpy(temp->hex, sha1_to_hex(sha1));
-	temp->hex[40] = 0;
-	sprintf(temp->mode, "%06o", mode);
+	sha1_to_hex_r(temp->hex, sha1);
+	xsnprintf(temp->mode, sizeof(temp->mode), "%06o", mode);
 	strbuf_release(&buf);
 	strbuf_release(&template);
 	free(path_dup);
@@ -2897,8 +2899,8 @@ static struct diff_tempfile *prepare_temp_file(const char *name,
 		 * a '+' entry produces this for file-1.
 		 */
 		temp->name = "/dev/null";
-		strcpy(temp->hex, ".");
-		strcpy(temp->mode, ".");
+		xsnprintf(temp->hex, sizeof(temp->hex), ".");
+		xsnprintf(temp->mode, sizeof(temp->mode), ".");
 		return temp;
 	}
 
@@ -2926,16 +2928,16 @@ static struct diff_tempfile *prepare_temp_file(const char *name,
 			/* we can borrow from the file in the work tree */
 			temp->name = name;
 			if (!one->sha1_valid)
-				strcpy(temp->hex, sha1_to_hex(null_sha1));
+				sha1_to_hex_r(temp->hex, null_sha1);
 			else
-				strcpy(temp->hex, sha1_to_hex(one->sha1));
+				sha1_to_hex_r(temp->hex, one->sha1);
 			/* Even though we may sometimes borrow the
 			 * contents from the work tree, we always want
 			 * one->mode.  mode is trustworthy even when
 			 * !(one->sha1_valid), as long as
 			 * DIFF_FILE_VALID(one).
 			 */
-			sprintf(temp->mode, "%06o", one->mode);
+			xsnprintf(temp->mode, sizeof(temp->mode), "%06o", one->mode);
 		}
 		return temp;
 	}
@@ -4081,9 +4083,9 @@ const char *diff_unique_abbrev(const unsigned char *sha1, int len)
 	if (abblen < 37) {
 		static char hex[41];
 		if (len < abblen && abblen <= len + 2)
-			sprintf(hex, "%s%.*s", abbrev, len+3-abblen, "..");
+			xsnprintf(hex, sizeof(hex), "%s%.*s", abbrev, len+3-abblen, "..");
 		else
-			sprintf(hex, "%s...", abbrev);
+			xsnprintf(hex, sizeof(hex), "%s...", abbrev);
 		return hex;
 	}
 	return sha1_to_hex(sha1);
@@ -4510,8 +4512,10 @@ static int diff_get_patch_id(struct diff_options *options, unsigned char *sha1)
 		xpp.flags = 0;
 		xecfg.ctxlen = 3;
 		xecfg.flags = 0;
-		xdi_diff_outf(&mf1, &mf2, patch_id_consume, &data,
-			      &xpp, &xecfg);
+		if (xdi_diff_outf(&mf1, &mf2, patch_id_consume, &data,
+				  &xpp, &xecfg))
+			return error("unable to generate patch-id diff for %s",
+				     p->one->path);
 	}
 
 	git_SHA1_Final(sha1, &ctx);
