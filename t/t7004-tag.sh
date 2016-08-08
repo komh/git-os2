@@ -23,8 +23,8 @@ test_expect_success 'listing all tags in an empty tree should succeed' '
 '
 
 test_expect_success 'listing all tags in an empty tree should output nothing' '
-	test `git tag -l | wc -l` -eq 0 &&
-	test `git tag | wc -l` -eq 0
+	test $(git tag -l | wc -l) -eq 0 &&
+	test $(git tag | wc -l) -eq 0
 '
 
 test_expect_success 'looking for a tag in an empty tree should fail' \
@@ -72,8 +72,8 @@ test_expect_success 'listing all tags if one exists should succeed' '
 '
 
 test_expect_success 'listing all tags if one exists should output that tag' '
-	test `git tag -l` = mytag &&
-	test `git tag` = mytag
+	test $(git tag -l) = mytag &&
+	test $(git tag) = mytag
 '
 
 # pattern matching:
@@ -83,7 +83,7 @@ test_expect_success 'listing a tag using a matching pattern should succeed' \
 
 test_expect_success \
 	'listing a tag using a matching pattern should output that tag' \
-	'test `git tag -l mytag` = mytag'
+	'test $(git tag -l mytag) = mytag'
 
 # todo: git tag -l now returns always zero, when fixed, change this test
 test_expect_success \
@@ -92,7 +92,7 @@ test_expect_success \
 
 test_expect_success \
 	'listing tags using a non-matching pattern should output nothing' \
-	'test `git tag -l xxx | wc -l` -eq 0'
+	'test $(git tag -l xxx | wc -l) -eq 0'
 
 # special cases for creating tags:
 
@@ -102,13 +102,13 @@ test_expect_success \
 
 test_expect_success \
 	'trying to create a tag with a non-valid name should fail' '
-	test `git tag -l | wc -l` -eq 1 &&
+	test $(git tag -l | wc -l) -eq 1 &&
 	test_must_fail git tag "" &&
 	test_must_fail git tag .othertag &&
 	test_must_fail git tag "other tag" &&
 	test_must_fail git tag "othertag^" &&
 	test_must_fail git tag "other~tag" &&
-	test `git tag -l | wc -l` -eq 1
+	test $(git tag -l | wc -l) -eq 1
 '
 
 test_expect_success 'creating a tag using HEAD directly should succeed' '
@@ -772,6 +772,47 @@ echo '-----BEGIN PGP SIGNATURE-----' >>expect
 test_expect_success GPG '-s implies annotated tag' '
 	GIT_EDITOR=./fakeeditor git tag -s implied-annotate &&
 	get_tag_msg implied-annotate >actual &&
+	test_cmp expect actual
+'
+
+get_tag_header forcesignannotated-implied-sign $commit commit $time >expect
+echo "A message" >>expect
+echo '-----BEGIN PGP SIGNATURE-----' >>expect
+test_expect_success GPG \
+	'git tag -s implied if configured with tag.forcesignannotated' \
+	'test_config tag.forcesignannotated true &&
+	git tag -m "A message" forcesignannotated-implied-sign &&
+	get_tag_msg forcesignannotated-implied-sign >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success GPG \
+	'lightweight with no message when configured with tag.forcesignannotated' \
+	'test_config tag.forcesignannotated true &&
+	git tag forcesignannotated-lightweight &&
+	tag_exists forcesignannotated-lightweight &&
+	test_must_fail git tag -v forcesignannotated-no-message
+'
+
+get_tag_header forcesignannotated-annotate $commit commit $time >expect
+echo "A message" >>expect
+test_expect_success GPG \
+	'git tag -a disable configured tag.forcesignannotated' \
+	'test_config tag.forcesignannotated true &&
+	git tag -a -m "A message" forcesignannotated-annotate &&
+	get_tag_msg forcesignannotated-annotate >actual &&
+	test_cmp expect actual &&
+	test_must_fail git tag -v forcesignannotated-annotate
+'
+
+get_tag_header forcesignannotated-disabled $commit commit $time >expect
+echo "A message" >>expect
+echo '-----BEGIN PGP SIGNATURE-----' >>expect
+test_expect_success GPG \
+	'git tag --sign enable GPG sign' \
+	'test_config tag.forcesignannotated false &&
+	git tag --sign -m "A message" forcesignannotated-disabled &&
+	get_tag_msg forcesignannotated-disabled >actual &&
 	test_cmp expect actual
 '
 
@@ -1555,6 +1596,14 @@ test_expect_success '--no-merged show unmerged tags' '
 	mergetest-3
 	EOF
 	git tag -l --no-merged=mergetest-2 mergetest-* >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'ambiguous branch/tags not marked' '
+	git tag ambiguous &&
+	git branch ambiguous &&
+	echo ambiguous >expect &&
+	git tag -l ambiguous >actual &&
 	test_cmp expect actual
 '
 

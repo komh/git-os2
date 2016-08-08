@@ -253,7 +253,7 @@ static int link_alt_odb_entry(const char *entry, const char *relative_base,
 {
 	struct alternate_object_database *ent;
 	struct alternate_object_database *alt;
-	int pfxlen, entlen;
+	size_t pfxlen, entlen;
 	struct strbuf pathbuf = STRBUF_INIT;
 
 	if (!is_absolute_path(entry) && relative_base) {
@@ -273,8 +273,8 @@ static int link_alt_odb_entry(const char *entry, const char *relative_base,
 	while (pfxlen && pathbuf.buf[pfxlen-1] == '/')
 		pfxlen -= 1;
 
-	entlen = pfxlen + 43; /* '/' + 2 hex + '/' + 38 hex + NUL */
-	ent = xmalloc(sizeof(*ent) + entlen);
+	entlen = st_add(pfxlen, 43); /* '/' + 2 hex + '/' + 38 hex + NUL */
+	ent = xmalloc(st_add(sizeof(*ent), entlen));
 	memcpy(ent->base, pathbuf.buf, pfxlen);
 	strbuf_release(&pathbuf);
 
@@ -301,7 +301,7 @@ static int link_alt_odb_entry(const char *entry, const char *relative_base,
 			return -1;
 		}
 	}
-	if (!strcmp_icase(ent->base, normalized_objdir)) {
+	if (!fspathcmp(ent->base, normalized_objdir)) {
 		free(ent);
 		return -1;
 	}
@@ -396,7 +396,7 @@ void add_to_alternates_file(const char *reference)
 		struct strbuf line = STRBUF_INIT;
 		int found = 0;
 
-		while (strbuf_getline(&line, in, '\n') != EOF) {
+		while (strbuf_getline(&line, in) != EOF) {
 			if (!strcmp(reference, line.buf)) {
 				found = 1;
 				break;
@@ -1076,6 +1076,8 @@ unsigned char *use_pack(struct packed_git *p,
 		die("packfile %s cannot be accessed", p->pack_name);
 	if (offset > (p->pack_size - 20))
 		die("offset beyond end of packfile (truncated pack?)");
+	if (offset < 0)
+		die(_("offset before end of packfile (broken .idx?)"));
 
 	if (!win || !in_window(win, offset)) {
 		if (win)
@@ -1105,9 +1107,8 @@ unsigned char *use_pack(struct packed_git *p,
 				PROT_READ, MAP_PRIVATE,
 				p->pack_fd, win->offset);
 			if (win->base == MAP_FAILED)
-				die("packfile %s cannot be mapped: %s",
-					p->pack_name,
-					strerror(errno));
+				die_errno("packfile %s cannot be mapped",
+					  p->pack_name);
 			if (!win->offset && win->len == p->pack_size
 				&& !p->do_not_close)
 				close_pack_fd(p);
@@ -1134,7 +1135,7 @@ unsigned char *use_pack(struct packed_git *p,
 
 static struct packed_git *alloc_packed_git(int extra)
 {
-	struct packed_git *p = xmalloc(sizeof(*p) + extra);
+	struct packed_git *p = xmalloc(st_add(sizeof(*p), extra));
 	memset(p, 0, sizeof(*p));
 	p->pack_fd = -1;
 	return p;
@@ -1168,7 +1169,7 @@ struct packed_git *add_packed_git(const char *path, size_t path_len, int local)
 	 * ".pack" is long enough to hold any suffix we're adding (and
 	 * the use xsnprintf double-checks that)
 	 */
-	alloc = path_len + strlen(".pack") + 1;
+	alloc = st_add3(path_len, strlen(".pack"), 1);
 	p = alloc_packed_git(alloc);
 	memcpy(p->pack_name, path, path_len);
 
@@ -1196,7 +1197,7 @@ struct packed_git *add_packed_git(const char *path, size_t path_len, int local)
 struct packed_git *parse_pack_index(unsigned char *sha1, const char *idx_path)
 {
 	const char *path = sha1_pack_name(sha1);
-	int alloc = strlen(path) + 1;
+	size_t alloc = st_add(strlen(path), 1);
 	struct packed_git *p = alloc_packed_git(alloc);
 
 	memcpy(p->pack_name, path, alloc); /* includes NUL */
@@ -1277,8 +1278,8 @@ static void prepare_packed_git_one(char *objdir, int local)
 	dir = opendir(path.buf);
 	if (!dir) {
 		if (errno != ENOENT)
-			error("unable to open object pack directory: %s: %s",
-			      path.buf, strerror(errno));
+			error_errno("unable to open object pack directory: %s",
+				    path.buf);
 		strbuf_release(&path);
 		return;
 	}
@@ -1413,10 +1414,12 @@ static void mark_bad_packed_object(struct packed_git *p,
 {
 	unsigned i;
 	for (i = 0; i < p->num_bad_objects; i++)
-		if (!hashcmp(sha1, p->bad_object_sha1 + 20 * i))
+		if (!hashcmp(sha1, p->bad_object_sha1 + GIT_SHA1_RAWSZ * i))
 			return;
-	p->bad_object_sha1 = xrealloc(p->bad_object_sha1, 20 * (p->num_bad_objects + 1));
-	hashcpy(p->bad_object_sha1 + 20 * p->num_bad_objects, sha1);
+	p->bad_object_sha1 = xrealloc(p->bad_object_sha1,
+				      st_mult(GIT_SHA1_RAWSZ,
+					      st_add(p->num_bad_objects, 1)));
+	hashcpy(p->bad_object_sha1 + GIT_SHA1_RAWSZ * p->num_bad_objects, sha1);
 	p->num_bad_objects++;
 }
 
@@ -1942,7 +1945,7 @@ static enum object_type packed_to_object_type(struct packed_git *p,
 		/* Push the object we're going to leave behind */
 		if (poi_stack_nr >= poi_stack_alloc && poi_stack == small_poi_stack) {
 			poi_stack_alloc = alloc_nr(poi_stack_nr);
-			poi_stack = xmalloc(sizeof(off_t)*poi_stack_alloc);
+			ALLOC_ARRAY(poi_stack, poi_stack_alloc);
 			memcpy(poi_stack, small_poi_stack, sizeof(off_t)*poi_stack_nr);
 		} else {
 			ALLOC_GROW(poi_stack, poi_stack_nr+1, poi_stack_alloc);
@@ -2308,7 +2311,7 @@ void *unpack_entry(struct packed_git *p, off_t obj_offset,
 		if (delta_stack_nr >= delta_stack_alloc
 		    && delta_stack == small_delta_stack) {
 			delta_stack_alloc = alloc_nr(delta_stack_nr);
-			delta_stack = xmalloc(sizeof(*delta_stack)*delta_stack_alloc);
+			ALLOC_ARRAY(delta_stack, delta_stack_alloc);
 			memcpy(delta_stack, small_delta_stack,
 			       sizeof(*delta_stack)*delta_stack_nr);
 		} else {
@@ -2446,6 +2449,20 @@ const unsigned char *nth_packed_object_sha1(struct packed_git *p,
 	}
 }
 
+void check_pack_index_ptr(const struct packed_git *p, const void *vptr)
+{
+	const unsigned char *ptr = vptr;
+	const unsigned char *start = p->index_data;
+	const unsigned char *end = start + p->index_size;
+	if (ptr < start)
+		die(_("offset before start of pack index for %s (corrupt index?)"),
+		    p->pack_name);
+	/* No need to check for underflow; .idx files must be at least 8 bytes */
+	if (ptr >= end - 8)
+		die(_("offset beyond end of pack index for %s (truncated index?)"),
+		    p->pack_name);
+}
+
 off_t nth_packed_object_offset(const struct packed_git *p, uint32_t n)
 {
 	const unsigned char *index = p->index_data;
@@ -2459,6 +2476,7 @@ off_t nth_packed_object_offset(const struct packed_git *p, uint32_t n)
 		if (!(off & 0x80000000))
 			return off;
 		index += p->num_objects * 4 + (off & 0x7fffffff) * 8;
+		check_pack_index_ptr(p, index);
 		return (((uint64_t)ntohl(*((uint32_t *)(index + 0)))) << 32) |
 				   ntohl(*((uint32_t *)(index + 4)));
 	}
@@ -2965,7 +2983,7 @@ int finalize_object_file(const char *tmpfile, const char *filename)
 	unlink_or_warn(tmpfile);
 	if (ret) {
 		if (ret != EEXIST) {
-			return error("unable to write sha1 filename %s: %s", filename, strerror(ret));
+			return error_errno("unable to write sha1 filename %s", filename);
 		}
 		/* FIXME!!! Collision check here ? */
 	}
@@ -2979,7 +2997,7 @@ out:
 static int write_buffer(int fd, const void *buf, size_t len)
 {
 	if (write_in_full(fd, buf, len) < 0)
-		return error("file write error (%s)", strerror(errno));
+		return error_errno("file write error");
 	return 0;
 }
 
@@ -3062,7 +3080,7 @@ static int write_loose_object(const unsigned char *sha1, char *hdr, int hdrlen,
 		if (errno == EACCES)
 			return error("insufficient permission for adding an object to repository database %s", get_object_directory());
 		else
-			return error("unable to create temporary file: %s", strerror(errno));
+			return error_errno("unable to create temporary file");
 	}
 
 	/* Set it up */
@@ -3107,8 +3125,7 @@ static int write_loose_object(const unsigned char *sha1, char *hdr, int hdrlen,
 		utb.actime = mtime;
 		utb.modtime = mtime;
 		if (utime(tmp_file.buf, &utb) < 0)
-			warning("failed utime() on %s: %s",
-				tmp_file.buf, strerror(errno));
+			warning_errno("failed utime() on %s", tmp_file.buf);
 	}
 
 	return finalize_object_file(tmp_file.buf, filename);
@@ -3341,7 +3358,7 @@ static int index_core(unsigned char *sha1, int fd, size_t size,
 		if (size == read_in_full(fd, buf, size))
 			ret = index_mem(sha1, buf, size, type, path, flags);
 		else
-			ret = error("short read %s", strerror(errno));
+			ret = error_errno("short read");
 		free(buf);
 	} else {
 		void *buf = xmmap(NULL, size, PROT_READ, MAP_PRIVATE, fd, 0);
@@ -3406,18 +3423,14 @@ int index_path(unsigned char *sha1, const char *path, struct stat *st, unsigned 
 	case S_IFREG:
 		fd = open(path, O_RDONLY);
 		if (fd < 0)
-			return error("open(\"%s\"): %s", path,
-				     strerror(errno));
+			return error_errno("open(\"%s\")", path);
 		if (index_fd(sha1, fd, st, OBJ_BLOB, path, flags) < 0)
 			return error("%s: failed to insert into database",
 				     path);
 		break;
 	case S_IFLNK:
-		if (strbuf_readlink(&sb, path, st->st_size)) {
-			char *errstr = strerror(errno);
-			return error("readlink(\"%s\"): %s", path,
-			             errstr);
-		}
+		if (strbuf_readlink(&sb, path, st->st_size))
+			return error_errno("readlink(\"%s\")", path);
 		if (!(flags & HASH_WRITE_OBJECT))
 			hash_sha1_file(sb.buf, sb.len, blob_type, sha1);
 		else if (write_sha1_file(sb.buf, sb.len, blob_type, sha1))
@@ -3473,7 +3486,7 @@ static int for_each_file_in_obj_subdir(int subdir_nr,
 	if (!dir) {
 		if (errno == ENOENT)
 			return 0;
-		return error("unable to open %s: %s", path->buf, strerror(errno));
+		return error_errno("unable to open %s", path->buf);
 	}
 
 	while ((de = readdir(dir))) {

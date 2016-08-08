@@ -327,7 +327,7 @@ int ie_match_stat(const struct index_state *istate,
 	 * by definition never matches what is in the work tree until it
 	 * actually gets added.
 	 */
-	if (ce->ce_flags & CE_INTENT_TO_ADD)
+	if (ce_intent_to_add(ce))
 		return DATA_CHANGED | TYPE_CHANGED | MODE_CHANGED;
 
 	changed = ce_match_stat_basic(ce, st);
@@ -630,7 +630,7 @@ void set_object_name_for_intent_to_add_entry(struct cache_entry *ce)
 	hashcpy(ce->sha1, sha1);
 }
 
-int add_to_index(struct index_state *istate, const char *path, struct stat *st, int flags)
+int add_to_index(struct index_state *istate, const char *path, struct stat *st, int flags, int force_mode)
 {
 	int size, namelen, was_same;
 	mode_t st_mode = st->st_mode;
@@ -659,7 +659,9 @@ int add_to_index(struct index_state *istate, const char *path, struct stat *st, 
 	else
 		ce->ce_flags |= CE_INTENT_TO_ADD;
 
-	if (trust_executable_bit && has_symlinks)
+	if (S_ISREG(st_mode) && force_mode)
+		ce->ce_mode = create_ce_mode(force_mode);
+	else if (trust_executable_bit && has_symlinks)
 		ce->ce_mode = create_ce_mode(st_mode);
 	else {
 		/* If there is an existing entry, pick the mode bits and type
@@ -720,12 +722,13 @@ int add_to_index(struct index_state *istate, const char *path, struct stat *st, 
 	return 0;
 }
 
-int add_file_to_index(struct index_state *istate, const char *path, int flags)
+int add_file_to_index(struct index_state *istate, const char *path,
+	int flags, int force_mode)
 {
 	struct stat st;
 	if (lstat(path, &st))
 		die_errno("unable to stat '%s'", path);
-	return add_to_index(istate, path, &st, flags);
+	return add_to_index(istate, path, &st, flags, force_mode);
 }
 
 struct cache_entry *make_cache_entry(unsigned int mode,
@@ -1237,7 +1240,7 @@ int refresh_index(struct index_state *istate, unsigned int flags,
 
 			if (cache_errno == ENOENT)
 				fmt = deleted_fmt;
-			else if (ce->ce_flags & CE_INTENT_TO_ADD)
+			else if (ce_intent_to_add(ce))
 				fmt = added_fmt; /* must be before other checks */
 			else if (changed & TYPE_CHANGED)
 				fmt = typechange_fmt;
@@ -1519,6 +1522,28 @@ static void check_ce_order(struct index_state *istate)
 	}
 }
 
+static void tweak_untracked_cache(struct index_state *istate)
+{
+	switch (git_config_get_untracked_cache()) {
+	case -1: /* keep: do nothing */
+		break;
+	case 0: /* false */
+		remove_untracked_cache(istate);
+		break;
+	case 1: /* true */
+		add_untracked_cache(istate);
+		break;
+	default: /* unknown value: do nothing */
+		break;
+	}
+}
+
+static void post_read_index_from(struct index_state *istate)
+{
+	check_ce_order(istate);
+	tweak_untracked_cache(istate);
+}
+
 /* remember to discard_cache() before reading a different cache! */
 int do_read_index(struct index_state *istate, const char *path, int must_exist)
 {
@@ -1622,9 +1647,10 @@ int read_index_from(struct index_state *istate, const char *path)
 		return istate->cache_nr;
 
 	ret = do_read_index(istate, path, 0);
+
 	split_index = istate->split_index;
 	if (!split_index || is_null_sha1(split_index->base_sha1)) {
-		check_ce_order(istate);
+		post_read_index_from(istate);
 		return ret;
 	}
 
@@ -1642,7 +1668,7 @@ int read_index_from(struct index_state *istate, const char *path)
 			     sha1_to_hex(split_index->base_sha1)),
 		    sha1_to_hex(split_index->base->sha1));
 	merge_base_index(istate);
-	check_ce_order(istate);
+	post_read_index_from(istate);
 	return ret;
 }
 

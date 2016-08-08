@@ -318,7 +318,9 @@ int cmd_diff(int argc, const char **argv, const char *prefix)
 
 	if (!no_index)
 		gitmodules_config();
+	init_diff_ui_defaults();
 	git_config(git_diff_ui_config, NULL);
+	precompose_argv(argc, argv);
 
 	init_revisions(&rev, prefix);
 
@@ -341,7 +343,7 @@ int cmd_diff(int argc, const char **argv, const char *prefix)
 	}
 	if (no_index)
 		/* If this is a no-index diff, just run it and exit there. */
-		diff_no_index(&rev, argc, argv, prefix);
+		diff_no_index(&rev, argc, argv);
 
 	/* Otherwise, we are doing the usual "git" diff */
 	rev.diffopt.skip_stat_unmatch = !!diff_auto_refresh_index;

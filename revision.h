@@ -148,6 +148,8 @@ struct rev_info {
 			linear:1;
 
 	struct date_mode date_mode;
+	int		expand_tabs_in_log; /* unset if negative */
+	int		expand_tabs_in_log_default;
 
 	unsigned int	abbrev;
 	enum cmit_fmt	commit_format;
@@ -257,16 +259,9 @@ extern void put_revision_mark(const struct rev_info *revs,
 extern void mark_parents_uninteresting(struct commit *commit);
 extern void mark_tree_uninteresting(struct tree *tree);
 
-struct name_path {
-	struct name_path *up;
-	int elem_len;
-	const char *elem;
-};
+char *path_name(struct strbuf *path, const char *name);
 
-char *path_name(const struct name_path *path, const char *name);
-
-extern void show_object_with_name(FILE *, struct object *,
-				  const struct name_path *, const char *);
+extern void show_object_with_name(FILE *, struct object *, const char *);
 
 extern void add_pending_object(struct rev_info *revs,
 			       struct object *obj, const char *name);

@@ -64,6 +64,7 @@ static int option_renormalize;
 static int verbosity;
 static int allow_rerere_auto;
 static int abort_current_merge;
+static int allow_unrelated_histories;
 static int show_progress = -1;
 static int default_to_upstream = 1;
 static const char *sign_commit;
@@ -221,6 +222,8 @@ static struct option builtin_merge_options[] = {
 	OPT__VERBOSITY(&verbosity),
 	OPT_BOOL(0, "abort", &abort_current_merge,
 		N_("abort the current in-progress merge")),
+	OPT_BOOL(0, "allow-unrelated-histories", &allow_unrelated_histories,
+		 N_("allow merging unrelated histories")),
 	OPT_SET_INT(0, "progress", &show_progress, N_("force progress reporting"), 1),
 	{ OPTION_STRING, 'S', "gpg-sign", &sign_commit, N_("key-id"),
 	  N_("GPG sign commit"), PARSE_OPT_OPTARG, NULL, (intptr_t) "" },
@@ -404,6 +407,7 @@ static void finish(struct commit *head_commit,
 			 * We ignore errors in 'gc --auto', since the
 			 * user should see them.
 			 */
+			close_all_packs();
 			run_command_v_opt(argv_gc_auto, RUN_GIT_CMD);
 		}
 	}
@@ -818,6 +822,14 @@ static int merge_trivial(struct commit *head, struct commit_list *remoteheads)
 {
 	unsigned char result_tree[20], result_commit[20];
 	struct commit_list *parents, **pptr = &parents;
+	static struct lock_file lock;
+
+	hold_locked_index(&lock, 1);
+	refresh_cache(REFRESH_QUIET);
+	if (active_cache_changed &&
+	    write_locked_index(&the_index, &lock, COMMIT_LOCK))
+		return error(_("Unable to write index."));
+	rollback_lock_file(&lock);
 
 	write_tree_trivial(result_tree);
 	printf(_("Wonderful.\n"));
@@ -938,7 +950,7 @@ static int setup_with_upstream(const char ***argv)
 	if (!branch->merge_nr)
 		die(_("No default upstream defined for the current branch."));
 
-	args = xcalloc(branch->merge_nr + 1, sizeof(char *));
+	args = xcalloc(st_add(branch->merge_nr, 1), sizeof(char *));
 	for (i = 0; i < branch->merge_nr; i++) {
 		if (!branch->merge[i]->dst)
 			die(_("No remote-tracking branch for %s from %s"),
@@ -1164,7 +1176,7 @@ int cmd_merge(int argc, const char **argv, const char *prefix)
 	struct commit *head_commit;
 	struct strbuf buf = STRBUF_INIT;
 	const char *head_arg;
-	int flag, i, ret = 0, head_subsumed;
+	int i, ret = 0, head_subsumed;
 	int best_cnt = -1, merge_was_ok = 0, automerge_was_ok = 0;
 	struct commit_list *common = NULL;
 	const char *best_strategy = NULL, *wt_strategy = NULL;
@@ -1178,7 +1190,7 @@ int cmd_merge(int argc, const char **argv, const char *prefix)
 	 * Check if we are _not_ on a detached HEAD, i.e. if there is a
 	 * current branch.
 	 */
-	branch = branch_to_free = resolve_refdup("HEAD", 0, head_sha1, &flag);
+	branch = branch_to_free = resolve_refdup("HEAD", 0, head_sha1, NULL);
 	if (branch && starts_with(branch, "refs/heads/"))
 		branch += 11;
 	if (!branch || is_null_sha1(head_sha1))
@@ -1186,6 +1198,7 @@ int cmd_merge(int argc, const char **argv, const char *prefix)
 	else
 		head_commit = lookup_commit_or_die(head_sha1, "HEAD");
 
+	init_diff_ui_defaults();
 	git_config(git_merge_config, NULL);
 
 	if (branch_mergeoptions)
@@ -1256,12 +1269,12 @@ int cmd_merge(int argc, const char **argv, const char *prefix)
 			builtin_merge_options);
 
 	if (!head_commit) {
-		struct commit *remote_head;
 		/*
 		 * If the merged head is a valid one there is no reason
 		 * to forbid "git merge" into a branch yet to be born.
 		 * We do the same for "git pull".
 		 */
+		unsigned char *remote_head_sha1;
 		if (squash)
 			die(_("Squash commit into empty head not supported yet"));
 		if (fast_forward == FF_NO)
@@ -1269,13 +1282,13 @@ int cmd_merge(int argc, const char **argv, const char *prefix)
 			    "an empty head"));
 		remoteheads = collect_parents(head_commit, &head_subsumed,
 					      argc, argv, NULL);
-		remote_head = remoteheads->item;
-		if (!remote_head)
+		if (!remoteheads)
 			die(_("%s - not something we can merge"), argv[0]);
 		if (remoteheads->next)
 			die(_("Can merge only exactly one commit into empty head"));
-		read_empty(remote_head->object.oid.hash, 0);
-		update_ref("initial pull", "HEAD", remote_head->object.oid.hash,
+		remote_head_sha1 = remoteheads->item->object.oid.hash;
+		read_empty(remote_head_sha1, 0);
+		update_ref("initial pull", "HEAD", remote_head_sha1,
 			   NULL, 0, UPDATE_REFS_DIE_ON_ERR);
 		goto done;
 	}
@@ -1396,9 +1409,12 @@ int cmd_merge(int argc, const char **argv, const char *prefix)
 	update_ref("updating ORIG_HEAD", "ORIG_HEAD", head_commit->object.oid.hash,
 		   NULL, 0, UPDATE_REFS_DIE_ON_ERR);
 
-	if (remoteheads && !common)
-		; /* No common ancestors found. We need a real merge. */
-	else if (!remoteheads ||
+	if (remoteheads && !common) {
+		/* No common ancestors found. */
+		if (!allow_unrelated_histories)
+			die(_("refusing to merge unrelated histories"));
+		/* otherwise, we need a real merge. */
+	} else if (!remoteheads ||
 		 (!remoteheads->next && !common->next &&
 		  common->item == remoteheads->item)) {
 		/*

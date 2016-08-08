@@ -1,18 +1,18 @@
 #!/bin/sh
 
 dd if=/dev/zero bs=1048576 count=100 2>/dev/null |
-/usr/bin/time ./test-sha1 >/dev/null
+/usr/bin/time t/helper/test-sha1 >/dev/null
 
 while read expect cnt pfx
 do
 	case "$expect" in '#'*) continue ;; esac
-	actual=`
+	actual=$(
 		{
 			test -z "$pfx" || echo "$pfx"
 			dd if=/dev/zero bs=1048576 count=$cnt 2>/dev/null |
 			perl -pe 'y/\000/g/'
-		} | ./test-sha1 $cnt
-	`
+		} | ./t/helper/test-sha1 $cnt
+	)
 	if test "$expect" = "$actual"
 	then
 		echo "OK: $expect $cnt $pfx"
@@ -51,14 +51,14 @@ exit
 
 while read cnt pfx
 do
-	actual=`
+	actual=$(
 		{
 			test -z "$pfx" || echo "$pfx"
 			dd if=/dev/zero bs=1048576 count=$cnt 2>/dev/null |
 			perl -pe 'y/\000/g/'
 		} | sha1sum |
 		sed -e 's/ .*//'
-	`
+	)
 	echo "$actual $cnt $pfx"
 done <<EOF
 0

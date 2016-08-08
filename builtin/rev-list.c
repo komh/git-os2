@@ -177,9 +177,7 @@ static void finish_commit(struct commit *commit, void *data)
 	free_commit_buffer(commit);
 }
 
-static void finish_object(struct object *obj,
-			  const struct name_path *path, const char *name,
-			  void *cb_data)
+static void finish_object(struct object *obj, const char *name, void *cb_data)
 {
 	struct rev_list_info *info = cb_data;
 	if (obj->type == OBJ_BLOB && !has_object_file(&obj->oid))
@@ -188,15 +186,13 @@ static void finish_object(struct object *obj,
 		parse_object(obj->oid.hash);
 }
 
-static void show_object(struct object *obj,
-			const struct name_path *path, const char *component,
-			void *cb_data)
+static void show_object(struct object *obj, const char *name, void *cb_data)
 {
 	struct rev_list_info *info = cb_data;
-	finish_object(obj, path, component, cb_data);
+	finish_object(obj, name, cb_data);
 	if (info->flags & REV_LIST_QUIET)
 		return;
-	show_object_with_name(stdout, obj, path, component);
+	show_object_with_name(stdout, obj, name);
 }
 
 static void show_edge(struct commit *commit)
@@ -362,12 +358,16 @@ int cmd_rev_list(int argc, const char **argv, const char *prefix)
 	if (use_bitmap_index && !revs.prune) {
 		if (revs.count && !revs.left_right && !revs.cherry_mark) {
 			uint32_t commit_count;
+			int max_count = revs.max_count;
 			if (!prepare_bitmap_walk(&revs)) {
 				count_bitmap_commit_list(&commit_count, NULL, NULL, NULL);
+				if (max_count >= 0 && max_count < commit_count)
+					commit_count = max_count;
 				printf("%d\n", commit_count);
 				return 0;
 			}
-		} else if (revs.tag_objects && revs.tree_objects && revs.blob_objects) {
+		} else if (revs.max_count < 0 &&
+			   revs.tag_objects && revs.tree_objects && revs.blob_objects) {
 			if (!prepare_bitmap_walk(&revs)) {
 				traverse_bitmap_commit_list(&show_object_fast);
 				return 0;

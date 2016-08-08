@@ -671,8 +671,9 @@ static int everything_local(struct fetch_pack_args *args,
 static int sideband_demux(int in, int out, void *data)
 {
 	int *xd = data;
+	int ret;
 
-	int ret = recv_sideband("fetch-pack", xd[0], out);
+	ret = recv_sideband("fetch-pack", xd[0], out);
 	close(out);
 	return ret;
 }
@@ -697,6 +698,7 @@ static int get_pack(struct fetch_pack_args *args,
 		demux.proc = sideband_demux;
 		demux.data = xd;
 		demux.out = -1;
+		demux.isolate_sigpipe = 1;
 		if (start_async(&demux))
 			die("fetch-pack: unable to fork off sideband"
 			    " demultiplexer");

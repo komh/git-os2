@@ -109,6 +109,11 @@ extern int dwim_log(const char *str, int len, unsigned char *sha1, char **ref);
  *   If this succeeds, the ref updates will have taken place and
  *   the transaction cannot be rolled back.
  *
+ * - Instead of `ref_transaction_commit`, use
+ *   `initial_ref_transaction_commit()` if the ref database is known
+ *   to be empty (e.g. during clone).  This is likely to be much
+ *   faster.
+ *
  * - At any time call `ref_transaction_free()` to discard the
  *   transaction and free associated resources.  In particular,
  *   this rolls back the transaction if it has not been
@@ -124,6 +129,13 @@ extern int dwim_log(const char *str, int len, unsigned char *sha1, char **ref);
  *
  * The message is appended to err without first clearing err.
  * err will not be '\n' terminated.
+ *
+ * Caveats
+ * -------
+ *
+ * Note that no locks are taken, and no refs are read, until
+ * `ref_transaction_commit` is called.  So `ref_transaction_verify`
+ * won't report a verification failure until the commit is attempted.
  */
 struct ref_transaction;
 
@@ -292,7 +304,16 @@ extern char *shorten_unambiguous_ref(const char *refname, int strict);
 /** rename ref, return 0 on success **/
 extern int rename_ref(const char *oldref, const char *newref, const char *logmsg);
 
-extern int create_symref(const char *ref, const char *refs_heads_master, const char *logmsg);
+extern int create_symref(const char *refname, const char *target, const char *logmsg);
+
+/*
+ * Update HEAD of the specified gitdir.
+ * Similar to create_symref("relative-git-dir/HEAD", target, NULL), but
+ * this can update the main working tree's HEAD regardless of where
+ * $GIT_DIR points to.
+ * Return 0 if successful, non-zero otherwise.
+ * */
+extern int set_worktree_head_symref(const char *gitdir, const char *target);
 
 enum action_on_err {
 	UPDATE_REFS_MSG_ON_ERR,
@@ -324,7 +345,7 @@ struct ref_transaction *ref_transaction_begin(struct strbuf *err);
  *     msg -- a message describing the change (for the reflog).
  *
  *     err -- a strbuf for receiving a description of any error that
- *         might have occured.
+ *         might have occurred.
  *
  * The functions make internal copies of refname and msg, so the
  * caller retains ownership of these parameters.

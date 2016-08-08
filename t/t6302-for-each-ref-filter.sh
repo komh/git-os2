@@ -5,20 +5,27 @@ test_description='test for-each-refs usage of ref-filter APIs'
 . ./test-lib.sh
 . "$TEST_DIRECTORY"/lib-gpg.sh
 
-if ! test_have_prereq GPG
-then
-	skip_all="skipping for-each-ref tests, GPG not available"
-	test_done
-fi
-
 test_expect_success 'setup some history and refs' '
 	test_commit one &&
 	test_commit two &&
 	test_commit three &&
 	git checkout -b side &&
 	test_commit four &&
-	git tag -s -m "A signed tag message" signed-tag &&
-	git tag -s -m "Annonated doubly" double-tag signed-tag &&
+	git tag -m "An annotated tag" annotated-tag &&
+	git tag -m "Annonated doubly" doubly-annotated-tag annotated-tag &&
+
+	# Note that these "signed" tags might not actually be signed.
+	# Tests which care about the distinction should be marked
+	# with the GPG prereq.
+	if test_have_prereq GPG
+	then
+		sign=-s
+	else
+		sign=
+	fi &&
+	git tag $sign -m "A signed tag" signed-tag &&
+	git tag $sign -m "Signed doubly" doubly-signed-tag signed-tag &&
+
 	git checkout master &&
 	git update-ref refs/odd/spot master
 '
@@ -36,6 +43,7 @@ test_expect_success 'filtering with --points-at' '
 test_expect_success 'check signed tags with --points-at' '
 	sed -e "s/Z$//" >expect <<-\EOF &&
 	refs/heads/side Z
+	refs/tags/annotated-tag four
 	refs/tags/four Z
 	refs/tags/signed-tag four
 	EOF
@@ -58,7 +66,9 @@ test_expect_success 'filtering with --merged' '
 test_expect_success 'filtering with --no-merged' '
 	cat >expect <<-\EOF &&
 	refs/heads/side
-	refs/tags/double-tag
+	refs/tags/annotated-tag
+	refs/tags/doubly-annotated-tag
+	refs/tags/doubly-signed-tag
 	refs/tags/four
 	refs/tags/signed-tag
 	EOF
@@ -71,7 +81,9 @@ test_expect_success 'filtering with --contains' '
 	refs/heads/master
 	refs/heads/side
 	refs/odd/spot
-	refs/tags/double-tag
+	refs/tags/annotated-tag
+	refs/tags/doubly-annotated-tag
+	refs/tags/doubly-signed-tag
 	refs/tags/four
 	refs/tags/signed-tag
 	refs/tags/three
@@ -90,7 +102,9 @@ test_expect_success 'left alignment is default' '
 	refname is refs/heads/master  |refs/heads/master
 	refname is refs/heads/side    |refs/heads/side
 	refname is refs/odd/spot      |refs/odd/spot
-	refname is refs/tags/double-tag|refs/tags/double-tag
+	refname is refs/tags/annotated-tag|refs/tags/annotated-tag
+	refname is refs/tags/doubly-annotated-tag|refs/tags/doubly-annotated-tag
+	refname is refs/tags/doubly-signed-tag|refs/tags/doubly-signed-tag
 	refname is refs/tags/four     |refs/tags/four
 	refname is refs/tags/one      |refs/tags/one
 	refname is refs/tags/signed-tag|refs/tags/signed-tag
@@ -106,7 +120,9 @@ test_expect_success 'middle alignment' '
 	| refname is refs/heads/master |refs/heads/master
 	|  refname is refs/heads/side  |refs/heads/side
 	|   refname is refs/odd/spot   |refs/odd/spot
-	|refname is refs/tags/double-tag|refs/tags/double-tag
+	|refname is refs/tags/annotated-tag|refs/tags/annotated-tag
+	|refname is refs/tags/doubly-annotated-tag|refs/tags/doubly-annotated-tag
+	|refname is refs/tags/doubly-signed-tag|refs/tags/doubly-signed-tag
 	|  refname is refs/tags/four   |refs/tags/four
 	|   refname is refs/tags/one   |refs/tags/one
 	|refname is refs/tags/signed-tag|refs/tags/signed-tag
@@ -122,7 +138,9 @@ test_expect_success 'right alignment' '
 	|  refname is refs/heads/master|refs/heads/master
 	|    refname is refs/heads/side|refs/heads/side
 	|      refname is refs/odd/spot|refs/odd/spot
-	|refname is refs/tags/double-tag|refs/tags/double-tag
+	|refname is refs/tags/annotated-tag|refs/tags/annotated-tag
+	|refname is refs/tags/doubly-annotated-tag|refs/tags/doubly-annotated-tag
+	|refname is refs/tags/doubly-signed-tag|refs/tags/doubly-signed-tag
 	|     refname is refs/tags/four|refs/tags/four
 	|      refname is refs/tags/one|refs/tags/one
 	|refname is refs/tags/signed-tag|refs/tags/signed-tag
@@ -133,6 +151,50 @@ test_expect_success 'right alignment' '
 	test_cmp expect actual
 '
 
+cat >expect <<-\EOF
+|       refname is refs/heads/master       |refs/heads/master
+|        refname is refs/heads/side        |refs/heads/side
+|         refname is refs/odd/spot         |refs/odd/spot
+|    refname is refs/tags/annotated-tag    |refs/tags/annotated-tag
+|refname is refs/tags/doubly-annotated-tag |refs/tags/doubly-annotated-tag
+|  refname is refs/tags/doubly-signed-tag  |refs/tags/doubly-signed-tag
+|        refname is refs/tags/four         |refs/tags/four
+|         refname is refs/tags/one         |refs/tags/one
+|     refname is refs/tags/signed-tag      |refs/tags/signed-tag
+|        refname is refs/tags/three        |refs/tags/three
+|         refname is refs/tags/two         |refs/tags/two
+EOF
+
+test_align_permutations() {
+	while read -r option
+	do
+		test_expect_success "align:$option" '
+			git for-each-ref --format="|%(align:$option)refname is %(refname)%(end)|%(refname)" >actual &&
+			test_cmp expect actual
+		'
+	done
+}
+
+test_align_permutations <<-\EOF
+	middle,42
+	42,middle
+	position=middle,42
+	42,position=middle
+	middle,width=42
+	width=42,middle
+	position=middle,width=42
+	width=42,position=middle
+EOF
+
+# Last one wins (silently) when multiple arguments of the same type are given
+
+test_align_permutations <<-\EOF
+	32,width=42,middle
+	width=30,42,middle
+	width=42,position=right,middle
+	42,right,position=middle
+EOF
+
 # Individual atoms inside %(align:...) and %(end) must not be quoted.
 
 test_expect_success 'alignment with format quote' "
@@ -140,7 +202,9 @@ test_expect_success 'alignment with format quote' "
 	|'      '\''master| A U Thor'\''      '|
 	|'       '\''side| A U Thor'\''       '|
 	|'     '\''odd/spot| A U Thor'\''     '|
-	|'        '\''double-tag| '\''        '|
+	|'      '\''annotated-tag| '\''       '|
+	|'   '\''doubly-annotated-tag| '\''   '|
+	|'    '\''doubly-signed-tag| '\''     '|
 	|'       '\''four| A U Thor'\''       '|
 	|'       '\''one| A U Thor'\''        '|
 	|'        '\''signed-tag| '\''        '|
@@ -156,7 +220,9 @@ test_expect_success 'nested alignment with quote formatting' "
 	|'         master               '|
 	|'           side               '|
 	|'       odd/spot               '|
-	|'     double-tag               '|
+	|'  annotated-tag               '|
+	|'doubly-annotated-tag          '|
+	|'doubly-signed-tag             '|
 	|'           four               '|
 	|'            one               '|
 	|'     signed-tag               '|
@@ -172,10 +238,12 @@ test_expect_success 'check `%(contents:lines=1)`' '
 	master |three
 	side |four
 	odd/spot |three
-	double-tag |Annonated doubly
+	annotated-tag |An annotated tag
+	doubly-annotated-tag |Annonated doubly
+	doubly-signed-tag |Signed doubly
 	four |four
 	one |one
-	signed-tag |A signed tag message
+	signed-tag |A signed tag
 	three |three
 	two |two
 	EOF
@@ -188,7 +256,9 @@ test_expect_success 'check `%(contents:lines=0)`' '
 	master |
 	side |
 	odd/spot |
-	double-tag |
+	annotated-tag |
+	doubly-annotated-tag |
+	doubly-signed-tag |
 	four |
 	one |
 	signed-tag |
@@ -204,10 +274,12 @@ test_expect_success 'check `%(contents:lines=99999)`' '
 	master |three
 	side |four
 	odd/spot |three
-	double-tag |Annonated doubly
+	annotated-tag |An annotated tag
+	doubly-annotated-tag |Annonated doubly
+	doubly-signed-tag |Signed doubly
 	four |four
 	one |one
-	signed-tag |A signed tag message
+	signed-tag |A signed tag
 	three |three
 	two |two
 	EOF

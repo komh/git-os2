@@ -15,6 +15,7 @@
 #include "column.h"
 #include "strbuf.h"
 #include "utf8.h"
+#include "worktree.h"
 
 static const char cut_line[] =
 "------------------------ >8 ------------------------\n";
@@ -950,6 +951,7 @@ static void show_merge_in_progress(struct wt_status *s,
 			status_printf_ln(s, color,
 				_("  (fix conflicts and run \"git commit\")"));
 	} else {
+		s-> commitable = 1;
 		status_printf_ln(s, color,
 			_("All conflicts fixed but you are still merging."));
 		if (s->hints)
@@ -988,7 +990,7 @@ static char *read_line_from_git_path(const char *filename)
 		strbuf_release(&buf);
 		return NULL;
 	}
-	strbuf_getline(&buf, fp, '\n');
+	strbuf_getline_lf(&buf, fp);
 	if (!fclose(fp)) {
 		return strbuf_detach(&buf, NULL);
 	} else {
@@ -1063,9 +1065,7 @@ static void abbrev_sha1_in_line(struct strbuf *line)
 				strbuf_addf(line, "%s", split[i]->buf);
 		}
 	}
-	for (i = 0; split[i]; i++)
-		strbuf_release(split[i]);
-
+	strbuf_list_free(split);
 }
 
 static void read_rebase_todolist(const char *fname, struct string_list *lines)
@@ -1076,7 +1076,7 @@ static void read_rebase_todolist(const char *fname, struct string_list *lines)
 	if (!f)
 		die_errno("Could not open file %s for reading",
 			  git_path("%s", fname));
-	while (!strbuf_getline(&line, f, '\n')) {
+	while (!strbuf_getline_lf(&line, f)) {
 		if (line.len && line.buf[0] == comment_line_char)
 			continue;
 		strbuf_trim(&line);
@@ -1264,13 +1264,13 @@ static void show_bisect_in_progress(struct wt_status *s,
 /*
  * Extract branch information from rebase/bisect
  */
-static char *read_and_strip_branch(const char *path)
+static char *get_branch(const struct worktree *wt, const char *path)
 {
 	struct strbuf sb = STRBUF_INIT;
 	unsigned char sha1[20];
 	const char *branch_name;
 
-	if (strbuf_read_file(&sb, git_path("%s", path), 0) <= 0)
+	if (strbuf_read_file(&sb, worktree_git_path(wt, "%s", path), 0) <= 0)
 		goto got_nothing;
 
 	while (sb.len && sb.buf[sb.len - 1] == '\n')
@@ -1362,6 +1362,46 @@ static void wt_status_get_detached_from(struct wt_status_state *state)
 	strbuf_release(&cb.buf);
 }
 
+int wt_status_check_rebase(const struct worktree *wt,
+			   struct wt_status_state *state)
+{
+	struct stat st;
+
+	if (!stat(worktree_git_path(wt, "rebase-apply"), &st)) {
+		if (!stat(worktree_git_path(wt, "rebase-apply/applying"), &st)) {
+			state->am_in_progress = 1;
+			if (!stat(worktree_git_path(wt, "rebase-apply/patch"), &st) && !st.st_size)
+				state->am_empty_patch = 1;
+		} else {
+			state->rebase_in_progress = 1;
+			state->branch = get_branch(wt, "rebase-apply/head-name");
+			state->onto = get_branch(wt, "rebase-apply/onto");
+		}
+	} else if (!stat(worktree_git_path(wt, "rebase-merge"), &st)) {
+		if (!stat(worktree_git_path(wt, "rebase-merge/interactive"), &st))
+			state->rebase_interactive_in_progress = 1;
+		else
+			state->rebase_in_progress = 1;
+		state->branch = get_branch(wt, "rebase-merge/head-name");
+		state->onto = get_branch(wt, "rebase-merge/onto");
+	} else
+		return 0;
+	return 1;
+}
+
+int wt_status_check_bisect(const struct worktree *wt,
+			   struct wt_status_state *state)
+{
+	struct stat st;
+
+	if (!stat(worktree_git_path(wt, "BISECT_LOG"), &st)) {
+		state->bisect_in_progress = 1;
+		state->branch = get_branch(wt, "BISECT_START");
+		return 1;
+	}
+	return 0;
+}
+
 void wt_status_get_state(struct wt_status_state *state,
 			 int get_detached_from)
 {
@@ -1370,32 +1410,14 @@ void wt_status_get_state(struct wt_status_state *state,
 
 	if (!stat(git_path_merge_head(), &st)) {
 		state->merge_in_progress = 1;
-	} else if (!stat(git_path("rebase-apply"), &st)) {
-		if (!stat(git_path("rebase-apply/applying"), &st)) {
-			state->am_in_progress = 1;
-			if (!stat(git_path("rebase-apply/patch"), &st) && !st.st_size)
-				state->am_empty_patch = 1;
-		} else {
-			state->rebase_in_progress = 1;
-			state->branch = read_and_strip_branch("rebase-apply/head-name");
-			state->onto = read_and_strip_branch("rebase-apply/onto");
-		}
-	} else if (!stat(git_path("rebase-merge"), &st)) {
-		if (!stat(git_path("rebase-merge/interactive"), &st))
-			state->rebase_interactive_in_progress = 1;
-		else
-			state->rebase_in_progress = 1;
-		state->branch = read_and_strip_branch("rebase-merge/head-name");
-		state->onto = read_and_strip_branch("rebase-merge/onto");
+	} else if (wt_status_check_rebase(NULL, state)) {
+		;		/* all set */
 	} else if (!stat(git_path_cherry_pick_head(), &st) &&
 			!get_sha1("CHERRY_PICK_HEAD", sha1)) {
 		state->cherry_pick_in_progress = 1;
 		hashcpy(state->cherry_pick_head_sha1, sha1);
 	}
-	if (!stat(git_path("BISECT_LOG"), &st)) {
-		state->bisect_in_progress = 1;
-		state->branch = read_and_strip_branch("BISECT_START");
-	}
+	wt_status_check_bisect(NULL, state);
 	if (!stat(git_path_revert_head(), &st) &&
 	    !get_sha1("REVERT_HEAD", sha1)) {
 		state->revert_in_progress = 1;
@@ -1532,7 +1554,7 @@ void wt_status_print(struct wt_status *s)
 			else
 				printf(_("nothing to commit\n"));
 		} else
-			printf(_("nothing to commit, working directory clean\n"));
+			printf(_("nothing to commit, working tree clean\n"));
 	}
 }
 
@@ -1677,10 +1699,10 @@ static void wt_shortstatus_print_tracking(struct wt_status *s)
 		color_fprintf(s->fp, header_color, LABEL(N_("behind ")));
 		color_fprintf(s->fp, branch_color_remote, "%d", num_theirs);
 	} else if (!num_theirs) {
-		color_fprintf(s->fp, header_color, LABEL(N_(("ahead "))));
+		color_fprintf(s->fp, header_color, LABEL(N_("ahead ")));
 		color_fprintf(s->fp, branch_color_local, "%d", num_ours);
 	} else {
-		color_fprintf(s->fp, header_color, LABEL(N_(("ahead "))));
+		color_fprintf(s->fp, header_color, LABEL(N_("ahead ")));
 		color_fprintf(s->fp, branch_color_local, "%d", num_ours);
 		color_fprintf(s->fp, header_color, ", %s", LABEL(N_("behind ")));
 		color_fprintf(s->fp, branch_color_remote, "%d", num_theirs);

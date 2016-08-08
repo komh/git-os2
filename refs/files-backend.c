@@ -199,17 +199,14 @@ static struct ref_entry *create_ref_entry(const char *refname,
 					  const unsigned char *sha1, int flag,
 					  int check_name)
 {
-	int len;
 	struct ref_entry *ref;
 
 	if (check_name &&
 	    check_refname_format(refname, REFNAME_ALLOW_ONELEVEL))
 		die("Reference has invalid format: '%s'", refname);
-	len = strlen(refname) + 1;
-	ref = xmalloc(sizeof(struct ref_entry) + len);
+	FLEX_ALLOC_STR(ref, name, refname);
 	hashcpy(ref->u.value.oid.hash, sha1);
 	oidclr(&ref->u.value.peeled);
-	memcpy(ref->name, refname, len);
 	ref->flag = flag;
 	return ref;
 }
@@ -268,9 +265,7 @@ static struct ref_entry *create_dir_entry(struct ref_cache *ref_cache,
 					  int incomplete)
 {
 	struct ref_entry *direntry;
-	direntry = xcalloc(1, sizeof(struct ref_entry) + len + 1);
-	memcpy(direntry->name, dirname, len);
-	direntry->name[len] = '\0';
+	FLEX_ALLOC_MEM(direntry, name, dirname, len);
 	direntry->u.subdir.ref_cache = ref_cache;
 	direntry->flag = REF_DIR | (incomplete ? REF_INCOMPLETE : 0);
 	return direntry;
@@ -517,9 +512,6 @@ static void sort_ref_dir(struct ref_dir *dir)
 	}
 	dir->sorted = dir->nr = i;
 }
-
-/* Include broken references in a do_for_each_ref*() iteration: */
-#define DO_FOR_EACH_INCLUDE_BROKEN 0x01
 
 /*
  * Return true iff the reference described by entry can be resolved to
@@ -933,16 +925,32 @@ static void clear_loose_ref_cache(struct ref_cache *refs)
 	}
 }
 
+/*
+ * Create a new submodule ref cache and add it to the internal
+ * set of caches.
+ */
 static struct ref_cache *create_ref_cache(const char *submodule)
 {
-	int len;
 	struct ref_cache *refs;
 	if (!submodule)
 		submodule = "";
-	len = strlen(submodule) + 1;
-	refs = xcalloc(1, sizeof(struct ref_cache) + len);
-	memcpy(refs->name, submodule, len);
+	FLEX_ALLOC_STR(refs, name, submodule);
+	refs->next = submodule_ref_caches;
+	submodule_ref_caches = refs;
 	return refs;
+}
+
+static struct ref_cache *lookup_ref_cache(const char *submodule)
+{
+	struct ref_cache *refs;
+
+	if (!submodule || !*submodule)
+		return &ref_cache;
+
+	for (refs = submodule_ref_caches; refs; refs = refs->next)
+		if (!strcmp(submodule, refs->name))
+			return refs;
+	return NULL;
 }
 
 /*
@@ -953,18 +961,9 @@ static struct ref_cache *create_ref_cache(const char *submodule)
  */
 static struct ref_cache *get_ref_cache(const char *submodule)
 {
-	struct ref_cache *refs;
-
-	if (!submodule || !*submodule)
-		return &ref_cache;
-
-	for (refs = submodule_ref_caches; refs; refs = refs->next)
-		if (!strcmp(submodule, refs->name))
-			return refs;
-
-	refs = create_ref_cache(submodule);
-	refs->next = submodule_ref_caches;
-	submodule_ref_caches = refs;
+	struct ref_cache *refs = lookup_ref_cache(submodule);
+	if (!refs)
+		refs = create_ref_cache(submodule);
 	return refs;
 }
 
@@ -1270,8 +1269,6 @@ static struct ref_dir *get_loose_refs(struct ref_cache *refs)
 	return get_ref_dir(refs->loose);
 }
 
-/* We allow "recursive" symbolic refs. Only within reason, though */
-#define MAXDEPTH 5
 #define MAXREFLEN (1024)
 
 /*
@@ -1301,7 +1298,7 @@ static int resolve_gitlink_ref_recursive(struct ref_cache *refs,
 	char buffer[128], *p;
 	char *path;
 
-	if (recursion > MAXDEPTH || strlen(refname) > MAXREFLEN)
+	if (recursion > SYMREF_MAXDEPTH || strlen(refname) > MAXREFLEN)
 		return -1;
 	path = *refs->name
 		? git_pathdup_submodule(refs->name, "%s", refname)
@@ -1336,16 +1333,24 @@ static int resolve_gitlink_ref_recursive(struct ref_cache *refs,
 int resolve_gitlink_ref(const char *path, const char *refname, unsigned char *sha1)
 {
 	int len = strlen(path), retval;
-	char *submodule;
+	struct strbuf submodule = STRBUF_INIT;
 	struct ref_cache *refs;
 
 	while (len && path[len-1] == '/')
 		len--;
 	if (!len)
 		return -1;
-	submodule = xstrndup(path, len);
-	refs = get_ref_cache(submodule);
-	free(submodule);
+
+	strbuf_add(&submodule, path, len);
+	refs = lookup_ref_cache(submodule.buf);
+	if (!refs) {
+		if (!is_nonbare_repository_dir(&submodule)) {
+			strbuf_release(&submodule);
+			return -1;
+		}
+		refs = create_ref_cache(submodule.buf);
+	}
+	strbuf_release(&submodule);
 
 	retval = resolve_gitlink_ref_recursive(refs, refname, sha1, 0);
 	return retval;
@@ -1361,13 +1366,11 @@ static struct ref_entry *get_packed_ref(const char *refname)
 }
 
 /*
- * A loose ref file doesn't exist; check for a packed ref.  The
- * options are forwarded from resolve_safe_unsafe().
+ * A loose ref file doesn't exist; check for a packed ref.
  */
 static int resolve_missing_loose_ref(const char *refname,
-				     int resolve_flags,
 				     unsigned char *sha1,
-				     int *flags)
+				     unsigned int *flags)
 {
 	struct ref_entry *entry;
 
@@ -1378,205 +1381,158 @@ static int resolve_missing_loose_ref(const char *refname,
 	entry = get_packed_ref(refname);
 	if (entry) {
 		hashcpy(sha1, entry->u.value.oid.hash);
-		if (flags)
-			*flags |= REF_ISPACKED;
+		*flags |= REF_ISPACKED;
 		return 0;
 	}
-	/* The reference is not a packed reference, either. */
-	if (resolve_flags & RESOLVE_REF_READING) {
-		errno = ENOENT;
-		return -1;
-	} else {
-		hashclr(sha1);
-		return 0;
-	}
+	/* refname is not a packed reference. */
+	return -1;
 }
 
-/* This function needs to return a meaningful errno on failure */
-static const char *resolve_ref_1(const char *refname,
-				 int resolve_flags,
-				 unsigned char *sha1,
-				 int *flags,
-				 struct strbuf *sb_refname,
-				 struct strbuf *sb_path,
-				 struct strbuf *sb_contents)
+/*
+ * Read a raw ref from the filesystem or packed refs file.
+ *
+ * If the ref is a sha1, fill in sha1 and return 0.
+ *
+ * If the ref is symbolic, fill in *symref with the referrent
+ * (e.g. "refs/heads/master") and return 0.  The caller is responsible
+ * for validating the referrent.  Set REF_ISSYMREF in flags.
+ *
+ * If the ref doesn't exist, set errno to ENOENT and return -1.
+ *
+ * If the ref exists but is neither a symbolic ref nor a sha1, it is
+ * broken. Set REF_ISBROKEN in flags, set errno to EINVAL, and return
+ * -1.
+ *
+ * If there is another error reading the ref, set errno appropriately and
+ * return -1.
+ *
+ * Backend-specific flags might be set in flags as well, regardless of
+ * outcome.
+ *
+ * sb_path is workspace: the caller should allocate and free it.
+ *
+ * It is OK for refname to point into symref. In this case:
+ * - if the function succeeds with REF_ISSYMREF, symref will be
+ *   overwritten and the memory pointed to by refname might be changed
+ *   or even freed.
+ * - in all other cases, symref will be untouched, and therefore
+ *   refname will still be valid and unchanged.
+ */
+int read_raw_ref(const char *refname, unsigned char *sha1,
+		 struct strbuf *symref, unsigned int *flags)
 {
-	int depth = MAXDEPTH;
-	int bad_name = 0;
+	struct strbuf sb_contents = STRBUF_INIT;
+	struct strbuf sb_path = STRBUF_INIT;
+	const char *path;
+	const char *buf;
+	struct stat st;
+	int fd;
+	int ret = -1;
+	int save_errno;
 
-	if (flags)
-		*flags = 0;
+	strbuf_reset(&sb_path);
+	strbuf_git_path(&sb_path, "%s", refname);
+	path = sb_path.buf;
 
-	if (check_refname_format(refname, REFNAME_ALLOW_ONELEVEL)) {
-		if (flags)
-			*flags |= REF_BAD_NAME;
+stat_ref:
+	/*
+	 * We might have to loop back here to avoid a race
+	 * condition: first we lstat() the file, then we try
+	 * to read it as a link or as a file.  But if somebody
+	 * changes the type of the file (file <-> directory
+	 * <-> symlink) between the lstat() and reading, then
+	 * we don't want to report that as an error but rather
+	 * try again starting with the lstat().
+	 */
 
-		if (!(resolve_flags & RESOLVE_REF_ALLOW_BAD_NAME) ||
-		    !refname_is_safe(refname)) {
-			errno = EINVAL;
-			return NULL;
+	if (lstat(path, &st) < 0) {
+		if (errno != ENOENT)
+			goto out;
+		if (resolve_missing_loose_ref(refname, sha1, flags)) {
+			errno = ENOENT;
+			goto out;
 		}
-		/*
-		 * dwim_ref() uses REF_ISBROKEN to distinguish between
-		 * missing refs and refs that were present but invalid,
-		 * to complain about the latter to stderr.
-		 *
-		 * We don't know whether the ref exists, so don't set
-		 * REF_ISBROKEN yet.
-		 */
-		bad_name = 1;
+		ret = 0;
+		goto out;
 	}
-	for (;;) {
-		const char *path;
-		struct stat st;
-		char *buf;
-		int fd;
 
-		if (--depth < 0) {
-			errno = ELOOP;
-			return NULL;
-		}
-
-		strbuf_reset(sb_path);
-		strbuf_git_path(sb_path, "%s", refname);
-		path = sb_path->buf;
-
-		/*
-		 * We might have to loop back here to avoid a race
-		 * condition: first we lstat() the file, then we try
-		 * to read it as a link or as a file.  But if somebody
-		 * changes the type of the file (file <-> directory
-		 * <-> symlink) between the lstat() and reading, then
-		 * we don't want to report that as an error but rather
-		 * try again starting with the lstat().
-		 */
-	stat_ref:
-		if (lstat(path, &st) < 0) {
-			if (errno != ENOENT)
-				return NULL;
-			if (resolve_missing_loose_ref(refname, resolve_flags,
-						      sha1, flags))
-				return NULL;
-			if (bad_name) {
-				hashclr(sha1);
-				if (flags)
-					*flags |= REF_ISBROKEN;
-			}
-			return refname;
-		}
-
-		/* Follow "normalized" - ie "refs/.." symlinks by hand */
-		if (S_ISLNK(st.st_mode)) {
-			strbuf_reset(sb_contents);
-			if (strbuf_readlink(sb_contents, path, 0) < 0) {
-				if (errno == ENOENT || errno == EINVAL)
-					/* inconsistent with lstat; retry */
-					goto stat_ref;
-				else
-					return NULL;
-			}
-			if (starts_with(sb_contents->buf, "refs/") &&
-			    !check_refname_format(sb_contents->buf, 0)) {
-				strbuf_swap(sb_refname, sb_contents);
-				refname = sb_refname->buf;
-				if (flags)
-					*flags |= REF_ISSYMREF;
-				if (resolve_flags & RESOLVE_REF_NO_RECURSE) {
-					hashclr(sha1);
-					return refname;
-				}
-				continue;
-			}
-		}
-
-		/* Is it a directory? */
-		if (S_ISDIR(st.st_mode)) {
-			errno = EISDIR;
-			return NULL;
-		}
-
-		/*
-		 * Anything else, just open it and try to use it as
-		 * a ref
-		 */
-		fd = open(path, O_RDONLY);
-		if (fd < 0) {
-			if (errno == ENOENT)
+	/* Follow "normalized" - ie "refs/.." symlinks by hand */
+	if (S_ISLNK(st.st_mode)) {
+		strbuf_reset(&sb_contents);
+		if (strbuf_readlink(&sb_contents, path, 0) < 0) {
+			if (errno == ENOENT || errno == EINVAL)
 				/* inconsistent with lstat; retry */
 				goto stat_ref;
 			else
-				return NULL;
+				goto out;
 		}
-		strbuf_reset(sb_contents);
-		if (strbuf_read(sb_contents, fd, 256) < 0) {
-			int save_errno = errno;
-			close(fd);
-			errno = save_errno;
-			return NULL;
-		}
-		close(fd);
-		strbuf_rtrim(sb_contents);
-
-		/*
-		 * Is it a symbolic ref?
-		 */
-		if (!starts_with(sb_contents->buf, "ref:")) {
-			/*
-			 * Please note that FETCH_HEAD has a second
-			 * line containing other data.
-			 */
-			if (get_sha1_hex(sb_contents->buf, sha1) ||
-			    (sb_contents->buf[40] != '\0' && !isspace(sb_contents->buf[40]))) {
-				if (flags)
-					*flags |= REF_ISBROKEN;
-				errno = EINVAL;
-				return NULL;
-			}
-			if (bad_name) {
-				hashclr(sha1);
-				if (flags)
-					*flags |= REF_ISBROKEN;
-			}
-			return refname;
-		}
-		if (flags)
+		if (starts_with(sb_contents.buf, "refs/") &&
+		    !check_refname_format(sb_contents.buf, 0)) {
+			strbuf_swap(&sb_contents, symref);
 			*flags |= REF_ISSYMREF;
-		buf = sb_contents->buf + 4;
-		while (isspace(*buf))
-			buf++;
-		strbuf_reset(sb_refname);
-		strbuf_addstr(sb_refname, buf);
-		refname = sb_refname->buf;
-		if (resolve_flags & RESOLVE_REF_NO_RECURSE) {
-			hashclr(sha1);
-			return refname;
-		}
-		if (check_refname_format(buf, REFNAME_ALLOW_ONELEVEL)) {
-			if (flags)
-				*flags |= REF_ISBROKEN;
-
-			if (!(resolve_flags & RESOLVE_REF_ALLOW_BAD_NAME) ||
-			    !refname_is_safe(buf)) {
-				errno = EINVAL;
-				return NULL;
-			}
-			bad_name = 1;
+			ret = 0;
+			goto out;
 		}
 	}
-}
 
-const char *resolve_ref_unsafe(const char *refname, int resolve_flags,
-			       unsigned char *sha1, int *flags)
-{
-	static struct strbuf sb_refname = STRBUF_INIT;
-	struct strbuf sb_contents = STRBUF_INIT;
-	struct strbuf sb_path = STRBUF_INIT;
-	const char *ret;
+	/* Is it a directory? */
+	if (S_ISDIR(st.st_mode)) {
+		errno = EISDIR;
+		goto out;
+	}
 
-	ret = resolve_ref_1(refname, resolve_flags, sha1, flags,
-			    &sb_refname, &sb_path, &sb_contents);
+	/*
+	 * Anything else, just open it and try to use it as
+	 * a ref
+	 */
+	fd = open(path, O_RDONLY);
+	if (fd < 0) {
+		if (errno == ENOENT)
+			/* inconsistent with lstat; retry */
+			goto stat_ref;
+		else
+			goto out;
+	}
+	strbuf_reset(&sb_contents);
+	if (strbuf_read(&sb_contents, fd, 256) < 0) {
+		int save_errno = errno;
+		close(fd);
+		errno = save_errno;
+		goto out;
+	}
+	close(fd);
+	strbuf_rtrim(&sb_contents);
+	buf = sb_contents.buf;
+	if (starts_with(buf, "ref:")) {
+		buf += 4;
+		while (isspace(*buf))
+			buf++;
+
+		strbuf_reset(symref);
+		strbuf_addstr(symref, buf);
+		*flags |= REF_ISSYMREF;
+		ret = 0;
+		goto out;
+	}
+
+	/*
+	 * Please note that FETCH_HEAD has additional
+	 * data after the sha.
+	 */
+	if (get_sha1_hex(buf, sha1) ||
+	    (buf[40] != '\0' && !isspace(buf[40]))) {
+		*flags |= REF_ISBROKEN;
+		errno = EINVAL;
+		goto out;
+	}
+
+	ret = 0;
+
+out:
+	save_errno = errno;
 	strbuf_release(&sb_path);
 	strbuf_release(&sb_contents);
+	errno = save_errno;
 	return ret;
 }
 
@@ -1717,10 +1673,13 @@ static int do_for_each_entry(struct ref_cache *refs, const char *base,
  * value, stop the iteration and return that value; otherwise, return
  * 0.
  */
-static int do_for_each_ref(struct ref_cache *refs, const char *base,
-			   each_ref_fn fn, int trim, int flags, void *cb_data)
+int do_for_each_ref(const char *submodule, const char *base,
+		    each_ref_fn fn, int trim, int flags, void *cb_data)
 {
 	struct ref_entry_cb data;
+	struct ref_cache *refs;
+
+	refs = get_ref_cache(submodule);
 	data.base = base;
 	data.trim = trim;
 	data.flags = flags;
@@ -1733,86 +1692,6 @@ static int do_for_each_ref(struct ref_cache *refs, const char *base,
 		data.flags |= DO_FOR_EACH_INCLUDE_BROKEN;
 
 	return do_for_each_entry(refs, base, do_one_ref, &data);
-}
-
-static int do_head_ref(const char *submodule, each_ref_fn fn, void *cb_data)
-{
-	struct object_id oid;
-	int flag;
-
-	if (submodule) {
-		if (resolve_gitlink_ref(submodule, "HEAD", oid.hash) == 0)
-			return fn("HEAD", &oid, 0, cb_data);
-
-		return 0;
-	}
-
-	if (!read_ref_full("HEAD", RESOLVE_REF_READING, oid.hash, &flag))
-		return fn("HEAD", &oid, flag, cb_data);
-
-	return 0;
-}
-
-int head_ref(each_ref_fn fn, void *cb_data)
-{
-	return do_head_ref(NULL, fn, cb_data);
-}
-
-int head_ref_submodule(const char *submodule, each_ref_fn fn, void *cb_data)
-{
-	return do_head_ref(submodule, fn, cb_data);
-}
-
-int for_each_ref(each_ref_fn fn, void *cb_data)
-{
-	return do_for_each_ref(&ref_cache, "", fn, 0, 0, cb_data);
-}
-
-int for_each_ref_submodule(const char *submodule, each_ref_fn fn, void *cb_data)
-{
-	return do_for_each_ref(get_ref_cache(submodule), "", fn, 0, 0, cb_data);
-}
-
-int for_each_ref_in(const char *prefix, each_ref_fn fn, void *cb_data)
-{
-	return do_for_each_ref(&ref_cache, prefix, fn, strlen(prefix), 0, cb_data);
-}
-
-int for_each_fullref_in(const char *prefix, each_ref_fn fn, void *cb_data, unsigned int broken)
-{
-	unsigned int flag = 0;
-
-	if (broken)
-		flag = DO_FOR_EACH_INCLUDE_BROKEN;
-	return do_for_each_ref(&ref_cache, prefix, fn, 0, flag, cb_data);
-}
-
-int for_each_ref_in_submodule(const char *submodule, const char *prefix,
-		each_ref_fn fn, void *cb_data)
-{
-	return do_for_each_ref(get_ref_cache(submodule), prefix, fn, strlen(prefix), 0, cb_data);
-}
-
-int for_each_replace_ref(each_ref_fn fn, void *cb_data)
-{
-	return do_for_each_ref(&ref_cache, git_replace_ref_base, fn,
-			       strlen(git_replace_ref_base), 0, cb_data);
-}
-
-int for_each_namespaced_ref(each_ref_fn fn, void *cb_data)
-{
-	struct strbuf buf = STRBUF_INIT;
-	int ret;
-	strbuf_addf(&buf, "%srefs/", get_git_namespace());
-	ret = do_for_each_ref(&ref_cache, buf.buf, fn, 0, 0, cb_data);
-	strbuf_release(&buf);
-	return ret;
-}
-
-int for_each_rawref(each_ref_fn fn, void *cb_data)
-{
-	return do_for_each_ref(&ref_cache, "", fn, 0,
-			       DO_FOR_EACH_INCLUDE_BROKEN, cb_data);
 }
 
 static void unlock_ref(struct ref_lock *lock)
@@ -1840,12 +1719,17 @@ static int verify_lock(struct ref_lock *lock,
 	if (read_ref_full(lock->ref_name,
 			  mustexist ? RESOLVE_REF_READING : 0,
 			  lock->old_oid.hash, NULL)) {
-		int save_errno = errno;
-		strbuf_addf(err, "can't verify ref %s", lock->ref_name);
-		errno = save_errno;
-		return -1;
+		if (old_sha1) {
+			int save_errno = errno;
+			strbuf_addf(err, "can't verify ref %s", lock->ref_name);
+			errno = save_errno;
+			return -1;
+		} else {
+			hashclr(lock->old_oid.hash);
+			return 0;
+		}
 	}
-	if (hashcmp(lock->old_oid.hash, old_sha1)) {
+	if (old_sha1 && hashcmp(lock->old_oid.hash, old_sha1)) {
 		strbuf_addf(err, "ref %s is at %s but expected %s",
 			    lock->ref_name,
 			    sha1_to_hex(lock->old_oid.hash),
@@ -1882,7 +1766,8 @@ static struct ref_lock *lock_ref_sha1_basic(const char *refname,
 	const char *orig_refname = refname;
 	struct ref_lock *lock;
 	int last_errno = 0;
-	int type, lflags;
+	int type;
+	int lflags = 0;
 	int mustexist = (old_sha1 && !is_null_sha1(old_sha1));
 	int resolve_flags = 0;
 	int attempts_remaining = 3;
@@ -1893,10 +1778,11 @@ static struct ref_lock *lock_ref_sha1_basic(const char *refname,
 
 	if (mustexist)
 		resolve_flags |= RESOLVE_REF_READING;
-	if (flags & REF_DELETING) {
+	if (flags & REF_DELETING)
 		resolve_flags |= RESOLVE_REF_ALLOW_BAD_NAME;
-		if (flags & REF_NODEREF)
-			resolve_flags |= RESOLVE_REF_NO_RECURSE;
+	if (flags & REF_NODEREF) {
+		resolve_flags |= RESOLVE_REF_NO_RECURSE;
+		lflags |= LOCK_NO_DEREF;
 	}
 
 	refname = resolve_ref_unsafe(refname, resolve_flags,
@@ -1932,6 +1818,10 @@ static struct ref_lock *lock_ref_sha1_basic(const char *refname,
 
 		goto error_return;
 	}
+
+	if (flags & REF_NODEREF)
+		refname = orig_refname;
+
 	/*
 	 * If the ref did not exist and we are creating it, make sure
 	 * there is no existing packed ref whose name begins with our
@@ -1947,11 +1837,6 @@ static struct ref_lock *lock_ref_sha1_basic(const char *refname,
 
 	lock->lk = xcalloc(1, sizeof(struct lock_file));
 
-	lflags = 0;
-	if (flags & REF_NODEREF) {
-		refname = orig_refname;
-		lflags |= LOCK_NO_DEREF;
-	}
 	lock->ref_name = xstrdup(refname);
 	lock->orig_ref_name = xstrdup(orig_refname);
 	strbuf_git_path(&ref_file, "%s", refname);
@@ -1985,7 +1870,7 @@ static struct ref_lock *lock_ref_sha1_basic(const char *refname,
 			goto error_return;
 		}
 	}
-	if (old_sha1 && verify_lock(lock, old_sha1, mustexist, err)) {
+	if (verify_lock(lock, old_sha1, mustexist, err)) {
 		last_errno = errno;
 		goto error_return;
 	}
@@ -2173,10 +2058,9 @@ static int pack_if_possible_fn(struct ref_entry *entry, void *cb_data)
 
 	/* Schedule the loose reference for pruning if requested. */
 	if ((cb->flags & PACK_REFS_PRUNE)) {
-		int namelen = strlen(entry->name) + 1;
-		struct ref_to_prune *n = xcalloc(1, sizeof(*n) + namelen);
+		struct ref_to_prune *n;
+		FLEX_ALLOC_STR(n, name, entry->name);
 		hashcpy(n->sha1, entry->u.value.oid.hash);
-		memcpy(n->name, entry->name, namelen); /* includes NUL */
 		n->next = cb->ref_to_prune;
 		cb->ref_to_prune = n;
 	}
@@ -2811,73 +2695,108 @@ static int commit_ref_update(struct ref_lock *lock,
 	return 0;
 }
 
-int create_symref(const char *ref_target, const char *refs_heads_master,
-		  const char *logmsg)
+static int create_ref_symlink(struct ref_lock *lock, const char *target)
 {
-	char *lockpath = NULL;
-	char ref[1000];
-	int fd, len, written;
-	char *git_HEAD = git_pathdup("%s", ref_target);
-	unsigned char old_sha1[20], new_sha1[20];
-	struct strbuf err = STRBUF_INIT;
-
-	if (logmsg && read_ref(ref_target, old_sha1))
-		hashclr(old_sha1);
-
-	if (safe_create_leading_directories(git_HEAD) < 0)
-		return error("unable to create directory for %s", git_HEAD);
-
+	int ret = -1;
 #ifndef NO_SYMLINK_HEAD
-	if (prefer_symlink_refs) {
-		unlink(git_HEAD);
-		if (!symlink(refs_heads_master, git_HEAD))
-			goto done;
+	char *ref_path = get_locked_file_path(lock->lk);
+	unlink(ref_path);
+	ret = symlink(target, ref_path);
+	free(ref_path);
+
+	if (ret)
 		fprintf(stderr, "no symlink - falling back to symbolic ref\n");
-	}
 #endif
+	return ret;
+}
 
-	len = snprintf(ref, sizeof(ref), "ref: %s\n", refs_heads_master);
-	if (sizeof(ref) <= len) {
-		error("refname too long: %s", refs_heads_master);
-		goto error_free_return;
-	}
-	lockpath = mkpathdup("%s.lock", git_HEAD);
-	fd = open(lockpath, O_CREAT | O_EXCL | O_WRONLY, 0666);
-	if (fd < 0) {
-		error("Unable to open %s for writing", lockpath);
-		goto error_free_return;
-	}
-	written = write_in_full(fd, ref, len);
-	if (close(fd) != 0 || written != len) {
-		error("Unable to write to %s", lockpath);
-		goto error_unlink_return;
-	}
-	if (rename(lockpath, git_HEAD) < 0) {
-		error("Unable to create %s", git_HEAD);
-		goto error_unlink_return;
-	}
-	if (adjust_shared_perm(git_HEAD)) {
-		error("Unable to fix permissions on %s", lockpath);
-	error_unlink_return:
-		unlink_or_warn(lockpath);
-	error_free_return:
-		free(lockpath);
-		free(git_HEAD);
-		return -1;
-	}
-	free(lockpath);
-
-#ifndef NO_SYMLINK_HEAD
-	done:
-#endif
-	if (logmsg && !read_ref(refs_heads_master, new_sha1) &&
-		log_ref_write(ref_target, old_sha1, new_sha1, logmsg, 0, &err)) {
+static void update_symref_reflog(struct ref_lock *lock, const char *refname,
+				 const char *target, const char *logmsg)
+{
+	struct strbuf err = STRBUF_INIT;
+	unsigned char new_sha1[20];
+	if (logmsg && !read_ref(target, new_sha1) &&
+	    log_ref_write(refname, lock->old_oid.hash, new_sha1, logmsg, 0, &err)) {
 		error("%s", err.buf);
 		strbuf_release(&err);
 	}
+}
 
-	free(git_HEAD);
+static int create_symref_locked(struct ref_lock *lock, const char *refname,
+				const char *target, const char *logmsg)
+{
+	if (prefer_symlink_refs && !create_ref_symlink(lock, target)) {
+		update_symref_reflog(lock, refname, target, logmsg);
+		return 0;
+	}
+
+	if (!fdopen_lock_file(lock->lk, "w"))
+		return error("unable to fdopen %s: %s",
+			     lock->lk->tempfile.filename.buf, strerror(errno));
+
+	update_symref_reflog(lock, refname, target, logmsg);
+
+	/* no error check; commit_ref will check ferror */
+	fprintf(lock->lk->tempfile.fp, "ref: %s\n", target);
+	if (commit_ref(lock) < 0)
+		return error("unable to write symref for %s: %s", refname,
+			     strerror(errno));
 	return 0;
+}
+
+int create_symref(const char *refname, const char *target, const char *logmsg)
+{
+	struct strbuf err = STRBUF_INIT;
+	struct ref_lock *lock;
+	int ret;
+
+	lock = lock_ref_sha1_basic(refname, NULL, NULL, NULL, REF_NODEREF, NULL,
+				   &err);
+	if (!lock) {
+		error("%s", err.buf);
+		strbuf_release(&err);
+		return -1;
+	}
+
+	ret = create_symref_locked(lock, refname, target, logmsg);
+	unlock_ref(lock);
+	return ret;
+}
+
+int set_worktree_head_symref(const char *gitdir, const char *target)
+{
+	static struct lock_file head_lock;
+	struct ref_lock *lock;
+	struct strbuf head_path = STRBUF_INIT;
+	const char *head_rel;
+	int ret;
+
+	strbuf_addf(&head_path, "%s/HEAD", absolute_path(gitdir));
+	if (hold_lock_file_for_update(&head_lock, head_path.buf,
+				      LOCK_NO_DEREF) < 0) {
+		struct strbuf err = STRBUF_INIT;
+		unable_to_lock_message(head_path.buf, errno, &err);
+		error("%s", err.buf);
+		strbuf_release(&err);
+		strbuf_release(&head_path);
+		return -1;
+	}
+
+	/* head_rel will be "HEAD" for the main tree, "worktrees/wt/HEAD" for
+	   linked trees */
+	head_rel = remove_leading_path(head_path.buf,
+				       absolute_path(get_git_common_dir()));
+	/* to make use of create_symref_locked(), initialize ref_lock */
+	lock = xcalloc(1, sizeof(struct ref_lock));
+	lock->lk = &head_lock;
+	lock->ref_name = xstrdup(head_rel);
+	lock->orig_ref_name = xstrdup(head_rel);
+
+	ret = create_symref_locked(lock, head_rel, target, NULL);
+
+	unlock_ref(lock); /* will free lock */
+	strbuf_release(&head_path);
+	return ret;
 }
 
 int reflog_exists(const char *refname)
@@ -3431,7 +3350,8 @@ int reflog_expire(const char *refname, const unsigned char *sha1,
 	 * reference itself, plus we might need to update the
 	 * reference if --updateref was specified:
 	 */
-	lock = lock_ref_sha1_basic(refname, sha1, NULL, NULL, 0, &type, &err);
+	lock = lock_ref_sha1_basic(refname, sha1, NULL, NULL, REF_NODEREF,
+				   &type, &err);
 	if (!lock) {
 		error("cannot lock ref '%s': %s", refname, err.buf);
 		strbuf_release(&err);

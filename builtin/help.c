@@ -127,7 +127,7 @@ static void exec_woman_emacs(const char *path, const char *page)
 			path = "emacsclient";
 		strbuf_addf(&man_page, "(woman \"%s\")", page);
 		execlp(path, "emacsclient", "-e", man_page.buf, (char *)NULL);
-		warning(_("failed to exec '%s': %s"), path, strerror(errno));
+		warning_errno(_("failed to exec '%s'"), path);
 	}
 }
 
@@ -148,7 +148,7 @@ static void exec_man_konqueror(const char *path, const char *page)
 			path = "kfmclient";
 		strbuf_addf(&man_page, "man:%s(1)", page);
 		execlp(path, filename, "newTab", man_page.buf, (char *)NULL);
-		warning(_("failed to exec '%s': %s"), path, strerror(errno));
+		warning_errno(_("failed to exec '%s'"), path);
 	}
 }
 
@@ -157,7 +157,7 @@ static void exec_man_man(const char *path, const char *page)
 	if (!path)
 		path = "man";
 	execlp(path, "man", page, (char *)NULL);
-	warning(_("failed to exec '%s': %s"), path, strerror(errno));
+	warning_errno(_("failed to exec '%s'"), path);
 }
 
 static void exec_man_cmd(const char *cmd, const char *page)
@@ -165,18 +165,16 @@ static void exec_man_cmd(const char *cmd, const char *page)
 	struct strbuf shell_cmd = STRBUF_INIT;
 	strbuf_addf(&shell_cmd, "%s %s", cmd, page);
 	execl(SHELL_PATH, SHELL_PATH, "-c", shell_cmd.buf, (char *)NULL);
-	warning(_("failed to exec '%s': %s"), cmd, strerror(errno));
+	warning(_("failed to exec '%s'"), cmd);
 }
 
 static void add_man_viewer(const char *name)
 {
 	struct man_viewer_list **p = &man_viewer_list;
-	size_t len = strlen(name);
 
 	while (*p)
 		p = &((*p)->next);
-	*p = xcalloc(1, (sizeof(**p) + len + 1));
-	memcpy((*p)->name, name, len); /* NUL-terminated by xcalloc */
+	FLEX_ALLOC_STR(*p, name, name);
 }
 
 static int supported_man_viewer(const char *name, size_t len)
@@ -190,9 +188,8 @@ static void do_add_man_viewer_info(const char *name,
 				   size_t len,
 				   const char *value)
 {
-	struct man_viewer_info_list *new = xcalloc(1, sizeof(*new) + len + 1);
-
-	memcpy(new->name, name, len); /* NUL-terminated by xcalloc */
+	struct man_viewer_info_list *new;
+	FLEX_ALLOC_MEM(new, name, name, len);
 	new->info = xstrdup(value);
 	new->next = man_viewer_info_list;
 	man_viewer_info_list = new;

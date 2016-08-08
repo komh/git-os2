@@ -176,4 +176,24 @@ test_expect_success 'git branch --points-at option' '
 	test_cmp expect actual
 '
 
+test_expect_success 'ambiguous branch/tag not marked' '
+	git tag ambiguous &&
+	git branch ambiguous &&
+	echo "  ambiguous" >expect &&
+	git branch --list ambiguous >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'local-branch symrefs shortened properly' '
+	git symbolic-ref refs/heads/ref-to-branch refs/heads/branch-one &&
+	git symbolic-ref refs/heads/ref-to-remote refs/remotes/origin/branch-one &&
+	cat >expect <<-\EOF &&
+	  ref-to-branch -> branch-one
+	  ref-to-remote -> refs/remotes/origin/branch-one
+	EOF
+	git branch >actual.raw &&
+	grep ref-to <actual.raw >actual &&
+	test_cmp expect actual
+'
+
 test_done

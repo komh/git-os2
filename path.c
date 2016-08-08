@@ -5,6 +5,7 @@
 #include "strbuf.h"
 #include "string-list.h"
 #include "dir.h"
+#include "worktree.h"
 
 static int get_st_mode_bits(const char *path, int *mode)
 {
@@ -134,7 +135,7 @@ static struct common_dir common_list[] = {
  * definite
  * definition
  *
- * The trie would look look like:
+ * The trie would look like:
  * root: len = 0, children a and d non-NULL, value = NULL.
  *    a: len = 2, contents = bc, value = (data for "abc")
  *    d: len = 2, contents = ef, children i non-NULL, value = (data for "def")
@@ -383,10 +384,11 @@ static void adjust_git_path(struct strbuf *buf, int git_dir_len)
 		update_common_dir(buf, git_dir_len, NULL);
 }
 
-static void do_git_path(struct strbuf *buf, const char *fmt, va_list args)
+static void do_git_path(const struct worktree *wt, struct strbuf *buf,
+			const char *fmt, va_list args)
 {
 	int gitdir_len;
-	strbuf_addstr(buf, get_git_dir());
+	strbuf_addstr(buf, get_worktree_git_dir(wt));
 	if (buf->len && !is_dir_sep(buf->buf[buf->len - 1]))
 		strbuf_addch(buf, '/');
 	gitdir_len = buf->len;
@@ -400,7 +402,7 @@ char *git_path_buf(struct strbuf *buf, const char *fmt, ...)
 	va_list args;
 	strbuf_reset(buf);
 	va_start(args, fmt);
-	do_git_path(buf, fmt, args);
+	do_git_path(NULL, buf, fmt, args);
 	va_end(args);
 	return buf->buf;
 }
@@ -409,7 +411,7 @@ void strbuf_git_path(struct strbuf *sb, const char *fmt, ...)
 {
 	va_list args;
 	va_start(args, fmt);
-	do_git_path(sb, fmt, args);
+	do_git_path(NULL, sb, fmt, args);
 	va_end(args);
 }
 
@@ -418,7 +420,7 @@ const char *git_path(const char *fmt, ...)
 	struct strbuf *pathname = get_pathname();
 	va_list args;
 	va_start(args, fmt);
-	do_git_path(pathname, fmt, args);
+	do_git_path(NULL, pathname, fmt, args);
 	va_end(args);
 	return pathname->buf;
 }
@@ -428,7 +430,7 @@ char *git_pathdup(const char *fmt, ...)
 	struct strbuf path = STRBUF_INIT;
 	va_list args;
 	va_start(args, fmt);
-	do_git_path(&path, fmt, args);
+	do_git_path(NULL, &path, fmt, args);
 	va_end(args);
 	return strbuf_detach(&path, NULL);
 }
@@ -452,6 +454,16 @@ const char *mkpath(const char *fmt, ...)
 	strbuf_vaddf(pathname, fmt, args);
 	va_end(args);
 	return cleanup_path(pathname->buf);
+}
+
+const char *worktree_git_path(const struct worktree *wt, const char *fmt, ...)
+{
+	struct strbuf *pathname = get_pathname();
+	va_list args;
+	va_start(args, fmt);
+	do_git_path(wt, pathname, fmt, args);
+	va_end(args);
+	return pathname->buf;
 }
 
 static void do_submodule_path(struct strbuf *buf, const char *path,
@@ -500,6 +512,35 @@ void strbuf_git_path_submodule(struct strbuf *buf, const char *path,
 	va_list args;
 	va_start(args, fmt);
 	do_submodule_path(buf, path, fmt, args);
+	va_end(args);
+}
+
+static void do_git_common_path(struct strbuf *buf,
+			       const char *fmt,
+			       va_list args)
+{
+	strbuf_addstr(buf, get_git_common_dir());
+	if (buf->len && !is_dir_sep(buf->buf[buf->len - 1]))
+		strbuf_addch(buf, '/');
+	strbuf_vaddf(buf, fmt, args);
+	strbuf_cleanup_path(buf);
+}
+
+const char *git_common_path(const char *fmt, ...)
+{
+	struct strbuf *pathname = get_pathname();
+	va_list args;
+	va_start(args, fmt);
+	do_git_common_path(pathname, fmt, args);
+	va_end(args);
+	return pathname->buf;
+}
+
+void strbuf_git_common_path(struct strbuf *sb, const char *fmt, ...)
+{
+	va_list args;
+	va_start(args, fmt);
+	do_git_common_path(sb, fmt, args);
 	va_end(args);
 }
 
@@ -584,6 +625,9 @@ char *expand_user_path(const char *path)
 			if (!home)
 				goto return_null;
 			strbuf_addstr(&user_path, home);
+#ifdef GIT_WINDOWS_NATIVE
+			convert_slashes(user_path.buf);
+#endif
 		} else {
 			struct passwd *pw = getpw_str(username, username_len);
 			if (!pw)
@@ -699,17 +743,17 @@ static int calc_shared_perm(int mode)
 {
 	int tweak;
 
-	if (shared_repository < 0)
-		tweak = -shared_repository;
+	if (get_shared_repository() < 0)
+		tweak = -get_shared_repository();
 	else
-		tweak = shared_repository;
+		tweak = get_shared_repository();
 
 	if (!(mode & S_IWUSR))
 		tweak &= ~0222;
 	if (mode & S_IXUSR)
 		/* Copy read bits to execute bits */
 		tweak |= (tweak & 0444) >> 2;
-	if (shared_repository < 0)
+	if (get_shared_repository() < 0)
 		mode = (mode & ~0777) | tweak;
 	else
 		mode |= tweak;
@@ -722,7 +766,7 @@ int adjust_shared_perm(const char *path)
 {
 	int old_mode, new_mode;
 
-	if (!shared_repository)
+	if (!get_shared_repository())
 		return 0;
 	if (get_st_mode_bits(path, &old_mode) < 0)
 		return -1;
@@ -782,13 +826,10 @@ const char *relative_path(const char *in, const char *prefix,
 	else if (!prefix_len)
 		return in;
 
-	if (have_same_root(in, prefix)) {
+	if (have_same_root(in, prefix))
 		/* bypass dos_drive, for "c:" is identical to "C:" */
-		if (has_dos_drive_prefix(in)) {
-			i = 2;
-			j = 2;
-		}
-	} else {
+		i = j = has_dos_drive_prefix(in);
+	else {
 		return in;
 	}
 
@@ -943,11 +984,10 @@ const char *remove_leading_path(const char *in, const char *prefix)
 int normalize_path_copy_len(char *dst, const char *src, int *prefix_len)
 {
 	char *dst0;
+	int i;
 
-	if (has_dos_drive_prefix(src)) {
+	for (i = has_dos_drive_prefix(src); i > 0; i--)
 		*dst++ = *src++;
-		*dst++ = *src++;
-	}
 	dst0 = dst;
 
 	if (is_dir_sep(*src)) {

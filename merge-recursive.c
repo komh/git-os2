@@ -29,9 +29,9 @@ static struct tree *shift_tree_object(struct tree *one, struct tree *two,
 	struct object_id shifted;
 
 	if (!*subtree_shift) {
-		shift_tree(one->object.oid.hash, two->object.oid.hash, shifted.hash, 0);
+		shift_tree(&one->object.oid, &two->object.oid, &shifted, 0);
 	} else {
-		shift_tree_by(one->object.oid.hash, two->object.oid.hash, shifted.hash,
+		shift_tree_by(&one->object.oid, &two->object.oid, &shifted,
 			      subtree_shift);
 	}
 	if (!oidcmp(&two->object.oid, &shifted))
@@ -482,6 +482,9 @@ static struct string_list *get_renames(struct merge_options *o,
 	struct diff_options opts;
 
 	renames = xcalloc(1, sizeof(struct string_list));
+	if (!o->detect_rename)
+		return renames;
+
 	diff_setup(&opts);
 	DIFF_OPT_SET(&opts, RECURSIVE);
 	DIFF_OPT_CLR(&opts, RENAME_EMPTY);
@@ -619,7 +622,7 @@ static char *unique_path(struct merge_options *o, const char *path, const char *
 	base_len = newpath.len;
 	while (string_list_has_string(&o->current_file_set, newpath.buf) ||
 	       string_list_has_string(&o->current_directory_set, newpath.buf) ||
-	       file_exists(newpath.buf)) {
+	       (!o->call_depth && file_exists(newpath.buf))) {
 		strbuf_setlen(&newpath, base_len);
 		strbuf_addf(&newpath, "_%d", suffix++);
 	}
@@ -1231,8 +1234,8 @@ static void conflict_rename_rename_2to1(struct merge_options *o,
 	       a->path, c1->path, ci->branch1,
 	       b->path, c2->path, ci->branch2);
 
-	remove_file(o, 1, a->path, would_lose_untracked(a->path));
-	remove_file(o, 1, b->path, would_lose_untracked(b->path));
+	remove_file(o, 1, a->path, o->call_depth || would_lose_untracked(a->path));
+	remove_file(o, 1, b->path, o->call_depth || would_lose_untracked(b->path));
 
 	mfi_c1 = merge_file_special_markers(o, a, c1, &ci->ren1_other,
 					    o->branch1, c1->path,
@@ -1770,8 +1773,6 @@ static int process_entry(struct merge_options *o,
 			output(o, 1, _("CONFLICT (%s): There is a directory with name %s in %s. "
 			       "Adding %s as %s"),
 			       conf, path, other_branch, path, new_path);
-			if (o->call_depth)
-				remove_file_from_cache(path);
 			update_file(o, 0, sha, mode, new_path);
 			if (o->call_depth)
 				remove_file_from_cache(path);
@@ -2039,6 +2040,7 @@ void init_merge_options(struct merge_options *o)
 	o->diff_rename_limit = -1;
 	o->merge_rename_limit = -1;
 	o->renormalize = 0;
+	o->detect_rename = 1;
 	merge_recursive_config(o);
 	if (getenv("GIT_MERGE_VERBOSITY"))
 		o->verbosity =
@@ -2088,9 +2090,17 @@ int parse_merge_opt(struct merge_options *o, const char *s)
 		o->renormalize = 1;
 	else if (!strcmp(s, "no-renormalize"))
 		o->renormalize = 0;
-	else if (skip_prefix(s, "rename-threshold=", &arg)) {
+	else if (!strcmp(s, "no-renames"))
+		o->detect_rename = 0;
+	else if (!strcmp(s, "find-renames")) {
+		o->detect_rename = 1;
+		o->rename_score = 0;
+	}
+	else if (skip_prefix(s, "find-renames=", &arg) ||
+		 skip_prefix(s, "rename-threshold=", &arg)) {
 		if ((o->rename_score = parse_rename_score(&arg)) == -1 || *arg != 0)
 			return -1;
+		o->detect_rename = 1;
 	}
 	else
 		return -1;

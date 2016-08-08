@@ -21,6 +21,7 @@ static const char * const worktree_usage[] = {
 struct add_opts {
 	int force;
 	int detach;
+	int checkout;
 	const char *new_branch;
 	int force_new_branch;
 };
@@ -52,7 +53,7 @@ static int prune_worktree(const char *id, struct strbuf *reason)
 		return 1;
 	}
 	len = st.st_size;
-	path = xmalloc(len + 1);
+	path = xmallocz(len);
 	read_in_full(fd, path, len);
 	close(fd);
 	while (len && (path[len - 1] == '\n' || path[len - 1] == '\r'))
@@ -109,7 +110,7 @@ static void prune_worktrees(void)
 		if (ret < 0 && errno == ENOTDIR)
 			ret = unlink(path.buf);
 		if (ret)
-			error(_("failed to remove: %s"), strerror(errno));
+			error_errno(_("failed to remove '%s'"), path.buf);
 	}
 	closedir(dir);
 	if (!show_only)
@@ -201,12 +202,10 @@ static int add_worktree(const char *path, const char *refname,
 		die(_("'%s' already exists"), path);
 
 	/* is 'refname' a branch or commit? */
-	if (opts->force_new_branch) /* definitely a branch */
-		;
-	else if (!opts->detach && !strbuf_check_branch_ref(&symref, refname) &&
+	if (!opts->detach && !strbuf_check_branch_ref(&symref, refname) &&
 		 ref_exists(symref.buf)) { /* it's a branch */
 		if (!opts->force)
-			die_if_checked_out(symref.buf);
+			die_if_checked_out(symref.buf, 0);
 	} else { /* must be a commit */
 		commit = lookup_commit_reference_by_name(refname);
 		if (!commit)
@@ -286,18 +285,22 @@ static int add_worktree(const char *path, const char *refname,
 	if (ret)
 		goto done;
 
-	cp.argv = NULL;
-	argv_array_clear(&cp.args);
-	argv_array_pushl(&cp.args, "reset", "--hard", NULL);
-	cp.env = child_env.argv;
-	ret = run_command(&cp);
-	if (!ret) {
-		is_junk = 0;
-		free(junk_work_tree);
-		free(junk_git_dir);
-		junk_work_tree = NULL;
-		junk_git_dir = NULL;
+	if (opts->checkout) {
+		cp.argv = NULL;
+		argv_array_clear(&cp.args);
+		argv_array_pushl(&cp.args, "reset", "--hard", NULL);
+		cp.env = child_env.argv;
+		ret = run_command(&cp);
+		if (ret)
+			goto done;
 	}
+
+	is_junk = 0;
+	free(junk_work_tree);
+	free(junk_git_dir);
+	junk_work_tree = NULL;
+	junk_git_dir = NULL;
+
 done:
 	strbuf_reset(&sb);
 	strbuf_addf(&sb, "%s/locked", sb_repo.buf);
@@ -322,10 +325,12 @@ static int add(int ac, const char **av, const char *prefix)
 		OPT_STRING('B', NULL, &new_branch_force, N_("branch"),
 			   N_("create or reset a branch")),
 		OPT_BOOL(0, "detach", &opts.detach, N_("detach HEAD at named commit")),
+		OPT_BOOL(0, "checkout", &opts.checkout, N_("populate the new working tree")),
 		OPT_END()
 	};
 
 	memset(&opts, 0, sizeof(opts));
+	opts.checkout = 1;
 	ac = parse_options(ac, av, prefix, options, worktree_usage, 0);
 	if (!!opts.detach + !!opts.new_branch + !!new_branch_force > 1)
 		die(_("-b, -B, and --detach are mutually exclusive"));
@@ -336,8 +341,17 @@ static int add(int ac, const char **av, const char *prefix)
 	branch = ac < 2 ? "HEAD" : av[1];
 
 	opts.force_new_branch = !!new_branch_force;
-	if (opts.force_new_branch)
+	if (opts.force_new_branch) {
+		struct strbuf symref = STRBUF_INIT;
+
 		opts.new_branch = new_branch_force;
+
+		if (!opts.force &&
+		    !strbuf_check_branch_ref(&symref, opts.new_branch) &&
+		    ref_exists(symref.buf))
+			die_if_checked_out(symref.buf, 0);
+		strbuf_release(&symref);
+	}
 
 	if (ac < 2 && !opts.new_branch && !opts.detach) {
 		int n;

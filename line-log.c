@@ -14,6 +14,7 @@
 #include "graph.h"
 #include "userdiff.h"
 #include "line-log.h"
+#include "argv-array.h"
 
 static void range_set_grow(struct range_set *rs, size_t extra)
 {
@@ -479,8 +480,7 @@ static struct commit *check_single_commit(struct rev_info *revs)
 		struct object *obj = revs->pending.objects[i].item;
 		if (obj->flags & UNINTERESTING)
 			continue;
-		while (obj->type == OBJ_TAG)
-			obj = deref_tag(obj, NULL, 0);
+		obj = deref_tag(obj, NULL, 0);
 		if (obj->type != OBJ_COMMIT)
 			die("Non commit %s?", revs->pending.objects[i].name);
 		if (commit)
@@ -521,7 +521,7 @@ static void fill_line_ends(struct diff_filespec *spec, long *lines,
 	if (diff_populate_filespec(spec, 0))
 		die("Cannot read blob %s", sha1_to_hex(spec->sha1));
 
-	ends = xmalloc(size * sizeof(*ends));
+	ALLOC_ARRAY(ends, size);
 	ends[cur++] = 0;
 	data = spec->data;
 	while (num < spec->size) {
@@ -746,22 +746,17 @@ void line_log_init(struct rev_info *rev, const char *prefix, struct string_list 
 	add_line_range(rev, commit, range);
 
 	if (!rev->diffopt.detect_rename) {
-		int i, count = 0;
-		struct line_log_data *r = range;
+		struct line_log_data *r;
+		struct argv_array array = ARGV_ARRAY_INIT;
 		const char **paths;
-		while (r) {
-			count++;
-			r = r->next;
-		}
-		paths = xmalloc((count+1)*sizeof(char *));
-		r = range;
-		for (i = 0; i < count; i++) {
-			paths[i] = xstrdup(r->path);
-			r = r->next;
-		}
-		paths[count] = NULL;
+
+		for (r = range; r; r = r->next)
+			argv_array_push(&array, r->path);
+		paths = argv_array_detach(&array);
+
 		parse_pathspec(&rev->diffopt.pathspec, 0,
 			       PATHSPEC_PREFER_FULL, "", paths);
+		/* strings are now owned by pathspec */
 		free(paths);
 	}
 }
@@ -1146,9 +1141,9 @@ static int process_ranges_merge_commit(struct rev_info *rev, struct commit *comm
 	if (nparents > 1 && rev->first_parent_only)
 		nparents = 1;
 
-	diffqueues = xmalloc(nparents * sizeof(*diffqueues));
-	cand = xmalloc(nparents * sizeof(*cand));
-	parents = xmalloc(nparents * sizeof(*parents));
+	ALLOC_ARRAY(diffqueues, nparents);
+	ALLOC_ARRAY(cand, nparents);
+	ALLOC_ARRAY(parents, nparents);
 
 	p = commit->parents;
 	for (i = 0; i < nparents; i++) {
