@@ -48,7 +48,7 @@ export ASCIIDOC="$python_for_git /asciidoc/asciidoc.py"
 #export XSLTPROC=xsltproc
 #export XSLTPROC="echo xslt_is_not_available"
 
-gitbase="/usr"
+#gitbase="/usr"
 #gitbase="/git"
 #gitbase="/git-1.7.3.5"
 #gitbase="/git-1.7.3.4"
@@ -194,7 +194,6 @@ export ld_rpath=no
 #export SAVE_LD_FLAGS="$LDFLAGS"
 
 ./configure \
- --prefix=$gitbase \
  --enable-pthreads=no \
  --with-shell="$shell_for_git" \
  --with-perl="$perl_for_git" \
@@ -202,7 +201,8 @@ export ld_rpath=no
  $use_openssl \
  $use_curl \
  $use_expat \
- $use_tcltk
+ $use_tcltk \
+ "$@"
 
 cp -p config.status config.status.backup
 cp -p config.mak.autogen config.mak.backup
