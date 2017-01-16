@@ -20,6 +20,22 @@ test_expect_success '"add" an existing empty worktree' '
 	git worktree add --detach existing_empty master
 '
 
+test_expect_success '"add" using shorthand - fails when no previous branch' '
+	test_must_fail git worktree add existing_short -
+'
+
+test_expect_success '"add" using - shorthand' '
+	git checkout -b newbranch &&
+	echo hello >myworld &&
+	git add myworld &&
+	git commit -m myworld &&
+	git checkout master &&
+	git worktree add short-hand - &&
+	echo refs/heads/newbranch >expect &&
+	git -C short-hand rev-parse --symbolic-full-name HEAD >actual &&
+	test_cmp expect actual
+'
+
 test_expect_success '"add" refuses to checkout locked branch' '
 	test_must_fail git worktree add zere master &&
 	! test -d zere &&
@@ -119,6 +135,14 @@ test_expect_success 'checkout from a bare repo without "add"' '
 	(
 		cd bare &&
 		test_must_fail git checkout master
+	)
+'
+
+test_expect_success '"add" default branch of a bare repo' '
+	(
+		git clone --bare . bare2 &&
+		cd bare2 &&
+		git worktree add ../there3 master
 	)
 '
 

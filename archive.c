@@ -322,7 +322,7 @@ static int path_exists(struct tree *tree, const char *path)
 	pathspec.recursive = 1;
 	ret = read_tree_recursive(tree, "", 0, 0, &pathspec,
 				  reject_entry, &pathspec);
-	free_pathspec(&pathspec);
+	clear_pathspec(&pathspec);
 	return ret != 0;
 }
 
@@ -458,11 +458,11 @@ static int parse_archive_args(int argc, const char **argv,
 	argc = parse_options(argc, argv, NULL, opts, archive_usage, 0);
 
 	if (remote)
-		die("Unexpected option --remote");
+		die(_("Unexpected option --remote"));
 	if (exec)
-		die("Option --exec can only be used together with --remote");
+		die(_("Option --exec can only be used together with --remote"));
 	if (output)
-		die("Unexpected option --output");
+		die(_("Unexpected option --output"));
 
 	if (!base)
 		base = "";
@@ -484,14 +484,14 @@ static int parse_archive_args(int argc, const char **argv,
 		usage_with_options(archive_usage, opts);
 	*ar = lookup_archiver(format);
 	if (!*ar || (is_remote && !((*ar)->flags & ARCHIVER_REMOTE)))
-		die("Unknown archive format '%s'", format);
+		die(_("Unknown archive format '%s'"), format);
 
 	args->compression_level = Z_DEFAULT_COMPRESSION;
 	if (compression_level != -1) {
 		if ((*ar)->flags & ARCHIVER_WANT_COMPRESSION_LEVELS)
 			args->compression_level = compression_level;
 		else {
-			die("Argument not supported for format '%s': -%d",
+			die(_("Argument not supported for format '%s': -%d"),
 					format, compression_level);
 		}
 	}
@@ -504,14 +504,10 @@ static int parse_archive_args(int argc, const char **argv,
 }
 
 int write_archive(int argc, const char **argv, const char *prefix,
-		  int setup_prefix, const char *name_hint, int remote)
+		  const char *name_hint, int remote)
 {
-	int nongit = 0;
 	const struct archiver *ar = NULL;
 	struct archiver_args args;
-
-	if (setup_prefix && prefix == NULL)
-		prefix = setup_git_directory_gently(&nongit);
 
 	git_config_get_bool("uploadarchive.allowunreachable", &remote_allow_unreachable);
 	git_config(git_default_config, NULL);
@@ -520,7 +516,7 @@ int write_archive(int argc, const char **argv, const char *prefix,
 	init_zip_archiver();
 
 	argc = parse_archive_args(argc, argv, &ar, &args, name_hint, remote);
-	if (nongit) {
+	if (!startup_info->have_repository) {
 		/*
 		 * We know this will die() with an error, so we could just
 		 * die ourselves; but its error message will be more specific

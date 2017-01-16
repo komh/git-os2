@@ -15,7 +15,6 @@ SUBDIRECTORY_OK=Yes
 OPTIONS_SPEC=
 START_DIR=$(pwd)
 . git-sh-setup
-. git-sh-i18n
 require_work_tree
 cd_to_toplevel
 
@@ -101,7 +100,7 @@ create_stash () {
 				u_tree=$(git write-tree) &&
 				printf 'untracked files on %s\n' "$msg" | git commit-tree $u_tree  &&
 				rm -f "$TMPindex"
-		) ) || die "Cannot save the untracked files"
+		) ) || die "$(gettext "Cannot save the untracked files")"
 
 		untracked_commit_option="-p $u_commit";
 	else
@@ -249,7 +248,7 @@ save_stash () {
 
 	if test -n "$patch_mode" && test -n "$untracked"
 	then
-	    die "Can't use --patch and --include-untracked or --all at the same time"
+		die "$(gettext "Can't use --patch and --include-untracked or --all at the same time")"
 	fi
 
 	stash_msg="$*"
@@ -266,7 +265,7 @@ save_stash () {
 	create_stash "$stash_msg" $untracked
 	store_stash -m "$stash_msg" -q $w_commit ||
 	die "$(gettext "Cannot save the current status")"
-	say Saved working directory and index state "$stash_msg"
+	say "$(eval_gettext "Saved working directory and index state \$stash_msg")"
 
 	if test -z "$patch_mode"
 	then
@@ -385,9 +384,8 @@ parse_flags_and_rev()
 	i_tree=
 	u_tree=
 
-	REV=$(git rev-parse --no-flags --symbolic --sq "$@") || exit 1
-
 	FLAGS=
+	REV=
 	for opt
 	do
 		case "$opt" in
@@ -405,6 +403,9 @@ parse_flags_and_rev()
 					die "$(eval_gettext "unknown option: \$opt")"
 				FLAGS="${FLAGS}${FLAGS:+ }$opt"
 			;;
+			*)
+				REV="${REV}${REV:+ }'$opt'"
+			;;
 		esac
 	done
 
@@ -420,6 +421,15 @@ parse_flags_and_rev()
 		;;
 		*)
 			die "$(eval_gettext "Too many revisions specified: \$REV")"
+		;;
+	esac
+
+	case "$1" in
+		*[!0-9]*)
+			:
+		;;
+		*)
+			set -- "${ref_stash}@{$1}"
 		;;
 	esac
 
@@ -495,7 +505,7 @@ apply_stash () {
 		GIT_INDEX_FILE="$TMPindex" git-read-tree "$u_tree" &&
 		GIT_INDEX_FILE="$TMPindex" git checkout-index --all &&
 		rm -f "$TMPindex" ||
-		die 'Could not restore untracked files from stash'
+		die "$(gettext "Could not restore untracked files from stash")"
 	fi
 
 	eval "
@@ -549,7 +559,7 @@ pop_stash() {
 		drop_stash "$@"
 	else
 		status=$?
-		say "The stash is kept in case you need it again."
+		say "$(gettext "The stash is kept in case you need it again.")"
 		exit $status
 	fi
 }

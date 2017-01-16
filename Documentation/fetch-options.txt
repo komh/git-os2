@@ -14,6 +14,20 @@
 	linkgit:git-clone[1]), deepen or shorten the history to the specified
 	number of commits. Tags for the deepened commits are not fetched.
 
+--deepen=<depth>::
+	Similar to --depth, except it specifies the number of commits
+	from the current shallow boundary instead of from the tip of
+	each remote branch history.
+
+--shallow-since=<date>::
+	Deepen or shorten the history of a shallow repository to
+	include all reachable commits after <date>.
+
+--shallow-exclude=<revision>::
+	Deepen or shorten the history of a shallow repository to
+	exclude commits reachable from a specified remote branch or tag.
+	This option can be specified multiple times.
+
 --unshallow::
 	If the source repository is complete, convert a shallow
 	repository to a complete one, removing all the limitations
@@ -88,7 +102,7 @@ ifndef::git-pull[]
 	to whatever else would otherwise be fetched.  Using this
 	option alone does not subject tags to pruning, even if --prune
 	is used (though tags may be pruned anyway if they are also the
-	destination of an explicit refspec; see '--prune').
+	destination of an explicit refspec; see `--prune`).
 
 --recurse-submodules[=yes|on-demand|no]::
 	This option controls if and under what conditions new commits of
@@ -110,7 +124,7 @@ ifndef::git-pull[]
 
 --no-recurse-submodules::
 	Disable recursive fetching of submodules (this has the same effect as
-	using the '--recurse-submodules=no' option).
+	using the `--recurse-submodules=no` option).
 
 --submodule-prefix=<path>::
 	Prepend <path> to paths printed in informative messages
@@ -137,7 +151,7 @@ endif::git-pull[]
 
 --upload-pack <upload-pack>::
 	When given, and the repository to fetch from is handled
-	by 'git fetch-pack', '--exec=<upload-pack>' is passed to
+	by 'git fetch-pack', `--exec=<upload-pack>` is passed to
 	the command to specify non-default path for the command
 	run on the other end.
 

@@ -1544,8 +1544,7 @@ void set_ref_status_for_push(struct ref *remote_refs, int send_mirror,
 		 * branch.
 		 */
 		if (ref->expect_old_sha1) {
-			if (ref->expect_old_no_trackback ||
-			    oidcmp(&ref->old_oid, &ref->old_oid_expect))
+			if (oidcmp(&ref->old_oid, &ref->old_oid_expect))
 				reject_reason = REF_STATUS_REJECT_STALE;
 			else
 				/* If the ref isn't stale then force the update. */
@@ -2074,7 +2073,7 @@ int format_tracking_info(struct branch *branch, struct strbuf *sb)
 			_("Your branch is based on '%s', but the upstream is gone.\n"),
 			base);
 		if (advice_status_hints)
-			strbuf_addf(sb,
+			strbuf_addstr(sb,
 				_("  (use \"git branch --unset-upstream\" to fixup)\n"));
 	} else if (!ours && !theirs) {
 		strbuf_addf(sb,
@@ -2087,7 +2086,7 @@ int format_tracking_info(struct branch *branch, struct strbuf *sb)
 			   ours),
 			base, ours);
 		if (advice_status_hints)
-			strbuf_addf(sb,
+			strbuf_addstr(sb,
 				_("  (use \"git push\" to publish your local commits)\n"));
 	} else if (!ours) {
 		strbuf_addf(sb,
@@ -2098,7 +2097,7 @@ int format_tracking_info(struct branch *branch, struct strbuf *sb)
 			   theirs),
 			base, theirs);
 		if (advice_status_hints)
-			strbuf_addf(sb,
+			strbuf_addstr(sb,
 				_("  (use \"git pull\" to update your local branch)\n"));
 	} else {
 		strbuf_addf(sb,
@@ -2111,7 +2110,7 @@ int format_tracking_info(struct branch *branch, struct strbuf *sb)
 			   ours + theirs),
 			base, ours, theirs);
 		if (advice_status_hints)
-			strbuf_addf(sb,
+			strbuf_addstr(sb,
 				_("  (use \"git pull\" to merge the remote branch into yours)\n"));
 	}
 	free(base);
@@ -2294,6 +2293,8 @@ int parse_push_cas_option(struct push_cas_option *cas, const char *arg, int unse
 	entry = add_cas_entry(cas, arg, colon - arg);
 	if (!*colon)
 		entry->use_tracking = 1;
+	else if (!colon[1])
+		hashclr(entry->expect);
 	else if (get_sha1(colon + 1, entry->expect))
 		return error("cannot parse expected object name '%s'", colon + 1);
 	return 0;
@@ -2343,7 +2344,7 @@ static void apply_cas(struct push_cas_option *cas,
 		if (!entry->use_tracking)
 			hashcpy(ref->old_oid_expect.hash, cas->entry[i].expect);
 		else if (remote_tracking(remote, ref->name, &ref->old_oid_expect))
-			ref->expect_old_no_trackback = 1;
+			oidclr(&ref->old_oid_expect);
 		return;
 	}
 
@@ -2353,7 +2354,7 @@ static void apply_cas(struct push_cas_option *cas,
 
 	ref->expect_old_sha1 = 1;
 	if (remote_tracking(remote, ref->name, &ref->old_oid_expect))
-		ref->expect_old_no_trackback = 1;
+		oidclr(&ref->old_oid_expect);
 }
 
 void apply_push_cas(struct push_cas_option *cas,

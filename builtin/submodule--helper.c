@@ -95,6 +95,8 @@ static int chop_last_dir(char **remoteurl, int is_relative)
  * NEEDSWORK: This works incorrectly on the domain and protocol part.
  * remote_url      url              outcome          expectation
  * http://a.com/b  ../c             http://a.com/c   as is
+ * http://a.com/b/ ../c             http://a.com/c   same as previous line, but
+ *                                                   ignore trailing slash in url
  * http://a.com/b  ../../c          http://c         error out
  * http://a.com/b  ../../../c       http:/c          error out
  * http://a.com/b  ../../../../c    http:c           error out
@@ -113,8 +115,8 @@ static char *relative_url(const char *remote_url,
 	struct strbuf sb = STRBUF_INIT;
 	size_t len = strlen(remoteurl);
 
-	if (is_dir_sep(remoteurl[len]))
-		remoteurl[len] = '\0';
+	if (is_dir_sep(remoteurl[len-1]))
+		remoteurl[len-1] = '\0';
 
 	if (!url_is_local_not_ssh(remoteurl) || is_absolute_path(remoteurl))
 		is_relative = 0;
@@ -147,6 +149,8 @@ static char *relative_url(const char *remote_url,
 	}
 	strbuf_reset(&sb);
 	strbuf_addf(&sb, "%s%s%s", remoteurl, colonsep ? ":" : "/", url);
+	if (ends_with(url, "/"))
+		strbuf_setlen(&sb, sb.len - 1);
 	free(remoteurl);
 
 	if (starts_with_dot_slash(sb.buf))
@@ -296,7 +300,8 @@ static int module_list(int argc, const char **argv, const char *prefix)
 		if (ce_stage(ce))
 			printf("%06o %s U\t", ce->ce_mode, sha1_to_hex(null_sha1));
 		else
-			printf("%06o %s %d\t", ce->ce_mode, sha1_to_hex(ce->sha1), ce_stage(ce));
+			printf("%06o %s %d\t", ce->ce_mode,
+			       oid_to_hex(&ce->oid), ce_stage(ce));
 
 		utf8_fprintf(stdout, "%s\n", ce->name);
 	}
@@ -442,19 +447,25 @@ static int module_name(int argc, const char **argv, const char *prefix)
 }
 
 static int clone_submodule(const char *path, const char *gitdir, const char *url,
-			   const char *depth, const char *reference, int quiet)
+			   const char *depth, struct string_list *reference,
+			   int quiet, int progress)
 {
-	struct child_process cp;
-	child_process_init(&cp);
+	struct child_process cp = CHILD_PROCESS_INIT;
 
 	argv_array_push(&cp.args, "clone");
 	argv_array_push(&cp.args, "--no-checkout");
 	if (quiet)
 		argv_array_push(&cp.args, "--quiet");
+	if (progress)
+		argv_array_push(&cp.args, "--progress");
 	if (depth && *depth)
 		argv_array_pushl(&cp.args, "--depth", depth, NULL);
-	if (reference && *reference)
-		argv_array_pushl(&cp.args, "--reference", reference, NULL);
+	if (reference->nr) {
+		struct string_list_item *item;
+		for_each_string_list_item(item, reference)
+			argv_array_pushl(&cp.args, "--reference",
+					 item->string, NULL);
+	}
 	if (gitdir && *gitdir)
 		argv_array_pushl(&cp.args, "--separate-git-dir", gitdir, NULL);
 
@@ -468,15 +479,110 @@ static int clone_submodule(const char *path, const char *gitdir, const char *url
 	return run_command(&cp);
 }
 
+struct submodule_alternate_setup {
+	const char *submodule_name;
+	enum SUBMODULE_ALTERNATE_ERROR_MODE {
+		SUBMODULE_ALTERNATE_ERROR_DIE,
+		SUBMODULE_ALTERNATE_ERROR_INFO,
+		SUBMODULE_ALTERNATE_ERROR_IGNORE
+	} error_mode;
+	struct string_list *reference;
+};
+#define SUBMODULE_ALTERNATE_SETUP_INIT { NULL, \
+	SUBMODULE_ALTERNATE_ERROR_IGNORE, NULL }
+
+static int add_possible_reference_from_superproject(
+		struct alternate_object_database *alt, void *sas_cb)
+{
+	struct submodule_alternate_setup *sas = sas_cb;
+
+	/*
+	 * If the alternate object store is another repository, try the
+	 * standard layout with .git/modules/<name>/objects
+	 */
+	if (ends_with(alt->path, ".git/objects")) {
+		char *sm_alternate;
+		struct strbuf sb = STRBUF_INIT;
+		struct strbuf err = STRBUF_INIT;
+		strbuf_add(&sb, alt->path, strlen(alt->path) - strlen("objects"));
+
+		/*
+		 * We need to end the new path with '/' to mark it as a dir,
+		 * otherwise a submodule name containing '/' will be broken
+		 * as the last part of a missing submodule reference would
+		 * be taken as a file name.
+		 */
+		strbuf_addf(&sb, "modules/%s/", sas->submodule_name);
+
+		sm_alternate = compute_alternate_path(sb.buf, &err);
+		if (sm_alternate) {
+			string_list_append(sas->reference, xstrdup(sb.buf));
+			free(sm_alternate);
+		} else {
+			switch (sas->error_mode) {
+			case SUBMODULE_ALTERNATE_ERROR_DIE:
+				die(_("submodule '%s' cannot add alternate: %s"),
+				    sas->submodule_name, err.buf);
+			case SUBMODULE_ALTERNATE_ERROR_INFO:
+				fprintf(stderr, _("submodule '%s' cannot add alternate: %s"),
+					sas->submodule_name, err.buf);
+			case SUBMODULE_ALTERNATE_ERROR_IGNORE:
+				; /* nothing */
+			}
+		}
+		strbuf_release(&sb);
+	}
+
+	return 0;
+}
+
+static void prepare_possible_alternates(const char *sm_name,
+		struct string_list *reference)
+{
+	char *sm_alternate = NULL, *error_strategy = NULL;
+	struct submodule_alternate_setup sas = SUBMODULE_ALTERNATE_SETUP_INIT;
+
+	git_config_get_string("submodule.alternateLocation", &sm_alternate);
+	if (!sm_alternate)
+		return;
+
+	git_config_get_string("submodule.alternateErrorStrategy", &error_strategy);
+
+	if (!error_strategy)
+		error_strategy = xstrdup("die");
+
+	sas.submodule_name = sm_name;
+	sas.reference = reference;
+	if (!strcmp(error_strategy, "die"))
+		sas.error_mode = SUBMODULE_ALTERNATE_ERROR_DIE;
+	else if (!strcmp(error_strategy, "info"))
+		sas.error_mode = SUBMODULE_ALTERNATE_ERROR_INFO;
+	else if (!strcmp(error_strategy, "ignore"))
+		sas.error_mode = SUBMODULE_ALTERNATE_ERROR_IGNORE;
+	else
+		die(_("Value '%s' for submodule.alternateErrorStrategy is not recognized"), error_strategy);
+
+	if (!strcmp(sm_alternate, "superproject"))
+		foreach_alt_odb(add_possible_reference_from_superproject, &sas);
+	else if (!strcmp(sm_alternate, "no"))
+		; /* do nothing */
+	else
+		die(_("Value '%s' for submodule.alternateLocation is not recognized"), sm_alternate);
+
+	free(sm_alternate);
+	free(error_strategy);
+}
+
 static int module_clone(int argc, const char **argv, const char *prefix)
 {
-	const char *name = NULL, *url = NULL;
-	const char *reference = NULL, *depth = NULL;
+	const char *name = NULL, *url = NULL, *depth = NULL;
 	int quiet = 0;
+	int progress = 0;
 	FILE *submodule_dot_git;
 	char *p, *path = NULL, *sm_gitdir;
 	struct strbuf rel_path = STRBUF_INIT;
 	struct strbuf sb = STRBUF_INIT;
+	struct string_list reference = STRING_LIST_INIT_NODUP;
 
 	struct option module_clone_options[] = {
 		OPT_STRING(0, "prefix", &prefix,
@@ -491,13 +597,15 @@ static int module_clone(int argc, const char **argv, const char *prefix)
 		OPT_STRING(0, "url", &url,
 			   N_("string"),
 			   N_("url where to clone the submodule from")),
-		OPT_STRING(0, "reference", &reference,
-			   N_("string"),
+		OPT_STRING_LIST(0, "reference", &reference,
+			   N_("repo"),
 			   N_("reference repository")),
 		OPT_STRING(0, "depth", &depth,
 			   N_("string"),
 			   N_("depth for shallow clones")),
 		OPT__QUIET(&quiet, "Suppress output for cloning a submodule"),
+		OPT_BOOL(0, "progress", &progress,
+			   N_("force cloning progress")),
 		OPT_END()
 	};
 
@@ -528,7 +636,11 @@ static int module_clone(int argc, const char **argv, const char *prefix)
 	if (!file_exists(sm_gitdir)) {
 		if (safe_create_leading_directories_const(sm_gitdir) < 0)
 			die(_("could not create directory '%s'"), sm_gitdir);
-		if (clone_submodule(path, sm_gitdir, url, depth, reference, quiet))
+
+		prepare_possible_alternates(name, &reference);
+
+		if (clone_submodule(path, sm_gitdir, url, depth, &reference,
+				    quiet, progress))
 			die(_("clone of '%s' into submodule path '%s' failed"),
 			    url, path);
 	} else {
@@ -578,8 +690,10 @@ struct submodule_update_clone {
 	struct submodule_update_strategy update;
 
 	/* configuration parameters which are passed on to the children */
+	int progress;
 	int quiet;
-	const char *reference;
+	int recommend_shallow;
+	struct string_list references;
 	const char *depth;
 	const char *recursive_prefix;
 	const char *prefix;
@@ -589,10 +703,15 @@ struct submodule_update_clone {
 
 	/* If we want to stop as fast as possible and return an error */
 	unsigned quickstop : 1;
+
+	/* failed clones to be retried again */
+	const struct cache_entry **failed_clones;
+	int failed_clones_nr, failed_clones_alloc;
 };
 #define SUBMODULE_UPDATE_CLONE_INIT {0, MODULE_LIST_INIT, 0, \
-	SUBMODULE_UPDATE_STRATEGY_INIT, 0, NULL, NULL, NULL, NULL, \
-	STRING_LIST_INIT_DUP, 0}
+	SUBMODULE_UPDATE_STRATEGY_INIT, 0, 0, -1, STRING_LIST_INIT_DUP, \
+	NULL, NULL, NULL, \
+	STRING_LIST_INIT_DUP, 0, NULL, 0, 0}
 
 
 static void next_submodule_warn_missing(struct submodule_update_clone *suc,
@@ -633,7 +752,7 @@ static int prepare_to_clone_next_submodule(const struct cache_entry *ce,
 		if (suc->recursive_prefix)
 			strbuf_addf(&sb, "%s/%s", suc->recursive_prefix, ce->name);
 		else
-			strbuf_addf(&sb, "%s", ce->name);
+			strbuf_addstr(&sb, ce->name);
 		strbuf_addf(out, _("Skipping unmerged submodule %s"), sb.buf);
 		strbuf_addch(out, '\n');
 		goto cleanup;
@@ -679,7 +798,7 @@ static int prepare_to_clone_next_submodule(const struct cache_entry *ce,
 
 	strbuf_reset(&sb);
 	strbuf_addf(&sb, "%06o %s %d %d\t%s\n", ce->ce_mode,
-			sha1_to_hex(ce->sha1), ce_stage(ce),
+			oid_to_hex(&ce->oid), ce_stage(ce),
 			needs_cloning, ce->name);
 	string_list_append(&suc->projectlines, sb.buf);
 
@@ -692,15 +811,22 @@ static int prepare_to_clone_next_submodule(const struct cache_entry *ce,
 	child->err = -1;
 	argv_array_push(&child->args, "submodule--helper");
 	argv_array_push(&child->args, "clone");
+	if (suc->progress)
+		argv_array_push(&child->args, "--progress");
 	if (suc->quiet)
 		argv_array_push(&child->args, "--quiet");
 	if (suc->prefix)
 		argv_array_pushl(&child->args, "--prefix", suc->prefix, NULL);
+	if (suc->recommend_shallow && sub->recommend_shallow == 1)
+		argv_array_push(&child->args, "--depth=1");
 	argv_array_pushl(&child->args, "--path", sub->path, NULL);
 	argv_array_pushl(&child->args, "--name", sub->name, NULL);
 	argv_array_pushl(&child->args, "--url", url, NULL);
-	if (suc->reference)
-		argv_array_push(&child->args, suc->reference);
+	if (suc->references.nr) {
+		struct string_list_item *item;
+		for_each_string_list_item(item, &suc->references)
+			argv_array_pushl(&child->args, "--reference", item->string, NULL);
+	}
 	if (suc->depth)
 		argv_array_push(&child->args, suc->depth);
 
@@ -715,23 +841,52 @@ cleanup:
 static int update_clone_get_next_task(struct child_process *child,
 				      struct strbuf *err,
 				      void *suc_cb,
-				      void **void_task_cb)
+				      void **idx_task_cb)
 {
 	struct submodule_update_clone *suc = suc_cb;
+	const struct cache_entry *ce;
+	int index;
 
 	for (; suc->current < suc->list.nr; suc->current++) {
-		const struct cache_entry *ce = suc->list.entries[suc->current];
+		ce = suc->list.entries[suc->current];
 		if (prepare_to_clone_next_submodule(ce, child, suc, err)) {
+			int *p = xmalloc(sizeof(*p));
+			*p = suc->current;
+			*idx_task_cb = p;
 			suc->current++;
 			return 1;
 		}
 	}
+
+	/*
+	 * The loop above tried cloning each submodule once, now try the
+	 * stragglers again, which we can imagine as an extension of the
+	 * entry list.
+	 */
+	index = suc->current - suc->list.nr;
+	if (index < suc->failed_clones_nr) {
+		int *p;
+		ce = suc->failed_clones[index];
+		if (!prepare_to_clone_next_submodule(ce, child, suc, err)) {
+			suc->current ++;
+			strbuf_addstr(err, "BUG: submodule considered for "
+					   "cloning, doesn't need cloning "
+					   "any more?\n");
+			return 0;
+		}
+		p = xmalloc(sizeof(*p));
+		*p = suc->current;
+		*idx_task_cb = p;
+		suc->current ++;
+		return 1;
+	}
+
 	return 0;
 }
 
 static int update_clone_start_failure(struct strbuf *err,
 				      void *suc_cb,
-				      void *void_task_cb)
+				      void *idx_task_cb)
 {
 	struct submodule_update_clone *suc = suc_cb;
 	suc->quickstop = 1;
@@ -741,15 +896,39 @@ static int update_clone_start_failure(struct strbuf *err,
 static int update_clone_task_finished(int result,
 				      struct strbuf *err,
 				      void *suc_cb,
-				      void *void_task_cb)
+				      void *idx_task_cb)
 {
+	const struct cache_entry *ce;
 	struct submodule_update_clone *suc = suc_cb;
+
+	int *idxP = *(int**)idx_task_cb;
+	int idx = *idxP;
+	free(idxP);
 
 	if (!result)
 		return 0;
 
-	suc->quickstop = 1;
-	return 1;
+	if (idx < suc->list.nr) {
+		ce  = suc->list.entries[idx];
+		strbuf_addf(err, _("Failed to clone '%s'. Retry scheduled"),
+			    ce->name);
+		strbuf_addch(err, '\n');
+		ALLOC_GROW(suc->failed_clones,
+			   suc->failed_clones_nr + 1,
+			   suc->failed_clones_alloc);
+		suc->failed_clones[suc->failed_clones_nr++] = ce;
+		return 0;
+	} else {
+		idx -= suc->list.nr;
+		ce  = suc->failed_clones[idx];
+		strbuf_addf(err, _("Failed to clone '%s' a second time, aborting"),
+			    ce->name);
+		strbuf_addch(err, '\n');
+		suc->quickstop = 1;
+		return 1;
+	}
+
+	return 0;
 }
 
 static int update_clone(int argc, const char **argv, const char *prefix)
@@ -771,14 +950,18 @@ static int update_clone(int argc, const char **argv, const char *prefix)
 		OPT_STRING(0, "update", &update,
 			   N_("string"),
 			   N_("rebase, merge, checkout or none")),
-		OPT_STRING(0, "reference", &suc.reference, N_("repo"),
+		OPT_STRING_LIST(0, "reference", &suc.references, N_("repo"),
 			   N_("reference repository")),
 		OPT_STRING(0, "depth", &suc.depth, "<depth>",
 			   N_("Create a shallow clone truncated to the "
 			      "specified number of revisions")),
 		OPT_INTEGER('j', "jobs", &max_jobs,
 			    N_("parallel jobs")),
+		OPT_BOOL(0, "recommend-shallow", &suc.recommend_shallow,
+			    N_("whether the initial clone should follow the shallow recommendation")),
 		OPT__QUIET(&suc.quiet, N_("don't print cloning progress")),
+		OPT_BOOL(0, "progress", &suc.progress,
+			    N_("force cloning progress")),
 		OPT_END()
 	};
 
@@ -835,9 +1018,60 @@ static int resolve_relative_path(int argc, const char **argv, const char *prefix
 {
 	struct strbuf sb = STRBUF_INIT;
 	if (argc != 3)
-		die("submodule--helper relative_path takes exactly 2 arguments, got %d", argc);
+		die("submodule--helper relative-path takes exactly 2 arguments, got %d", argc);
 
 	printf("%s", relative_path(argv[1], argv[2], &sb));
+	strbuf_release(&sb);
+	return 0;
+}
+
+static const char *remote_submodule_branch(const char *path)
+{
+	const struct submodule *sub;
+	gitmodules_config();
+	git_config(submodule_config, NULL);
+
+	sub = submodule_from_path(null_sha1, path);
+	if (!sub)
+		return NULL;
+
+	if (!sub->branch)
+		return "master";
+
+	if (!strcmp(sub->branch, ".")) {
+		unsigned char sha1[20];
+		const char *refname = resolve_ref_unsafe("HEAD", 0, sha1, NULL);
+
+		if (!refname)
+			die(_("No such ref: %s"), "HEAD");
+
+		/* detached HEAD */
+		if (!strcmp(refname, "HEAD"))
+			die(_("Submodule (%s) branch configured to inherit "
+			      "branch from superproject, but the superproject "
+			      "is not on any branch"), sub->name);
+
+		if (!skip_prefix(refname, "refs/heads/", &refname))
+			die(_("Expecting a full ref name, got %s"), refname);
+		return refname;
+	}
+
+	return sub->branch;
+}
+
+static int resolve_remote_submodule_branch(int argc, const char **argv,
+		const char *prefix)
+{
+	const char *ret;
+	struct strbuf sb = STRBUF_INIT;
+	if (argc != 2)
+		die("submodule--helper remote-branch takes exactly one arguments, got %d", argc);
+
+	ret = remote_submodule_branch(argv[1]);
+	if (!ret)
+		die("submodule %s doesn't exist", argv[1]);
+
+	printf("%s", ret);
 	strbuf_release(&sb);
 	return 0;
 }
@@ -855,7 +1089,8 @@ static struct cmd_struct commands[] = {
 	{"relative-path", resolve_relative_path},
 	{"resolve-relative-url", resolve_relative_url},
 	{"resolve-relative-url-test", resolve_relative_url_test},
-	{"init", module_init}
+	{"init", module_init},
+	{"remote-branch", resolve_remote_submodule_branch}
 };
 
 int cmd_submodule__helper(int argc, const char **argv, const char *prefix)

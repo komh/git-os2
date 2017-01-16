@@ -23,6 +23,7 @@
 #include "reachable.h"
 #include "sha1-array.h"
 #include "argv-array.h"
+#include "mru.h"
 
 static const char *pack_usage[] = {
 	N_("git pack-objects --stdout [<options>...] [< <ref-list> | < <object-list>]"),
@@ -44,7 +45,9 @@ static int non_empty;
 static int reuse_delta = 1, reuse_object = 1;
 static int keep_unreachable, unpack_unreachable, include_tag;
 static unsigned long unpack_unreachable_expiration;
+static int pack_loose_unreachable;
 static int local;
+static int have_non_local_packs;
 static int incremental;
 static int ignore_packed_keep;
 static int allow_ofs_delta;
@@ -65,7 +68,8 @@ static struct packed_git *reuse_packfile;
 static uint32_t reuse_packfile_objects;
 static off_t reuse_packfile_offset;
 
-static int use_bitmap_index = 1;
+static int use_bitmap_index_default = 1;
+static int use_bitmap_index = -1;
 static int write_bitmap_index;
 static uint16_t write_bitmap_options;
 
@@ -341,15 +345,15 @@ static unsigned long write_no_reuse_object(struct sha1file *f, struct object_ent
 }
 
 /* Return 0 if we will bust the pack-size limit */
-static unsigned long write_reuse_object(struct sha1file *f, struct object_entry *entry,
-					unsigned long limit, int usable_delta)
+static off_t write_reuse_object(struct sha1file *f, struct object_entry *entry,
+				unsigned long limit, int usable_delta)
 {
 	struct packed_git *p = entry->in_pack;
 	struct pack_window *w_curs = NULL;
 	struct revindex_entry *revidx;
 	off_t offset;
 	enum object_type type = entry->type;
-	unsigned long datalen;
+	off_t datalen;
 	unsigned char header[10], dheader[10];
 	unsigned hdrlen;
 
@@ -415,11 +419,12 @@ static unsigned long write_reuse_object(struct sha1file *f, struct object_entry 
 }
 
 /* Return 0 if we will bust the pack-size limit */
-static unsigned long write_object(struct sha1file *f,
-				  struct object_entry *entry,
-				  off_t write_offset)
+static off_t write_object(struct sha1file *f,
+			  struct object_entry *entry,
+			  off_t write_offset)
 {
-	unsigned long limit, len;
+	unsigned long limit;
+	off_t len;
 	int usable_delta, to_reuse;
 
 	if (!pack_to_stdout)
@@ -491,7 +496,7 @@ static enum write_one_status write_one(struct sha1file *f,
 				       struct object_entry *e,
 				       off_t *offset)
 {
-	unsigned long size;
+	off_t size;
 	int recursing;
 
 	/*
@@ -715,7 +720,7 @@ static off_t write_reused_pack(struct sha1file *f)
 	if (!is_pack_valid(reuse_packfile))
 		die("packfile is invalid: %s", reuse_packfile->pack_name);
 
-	fd = git_open_noatime(reuse_packfile->pack_name);
+	fd = git_open(reuse_packfile->pack_name);
 	if (fd < 0)
 		die_errno("unable to open packfile for reuse: %s",
 			  reuse_packfile->pack_name);
@@ -942,29 +947,80 @@ static int have_duplicate_entry(const unsigned char *sha1,
 	return 1;
 }
 
+static int want_found_object(int exclude, struct packed_git *p)
+{
+	if (exclude)
+		return 1;
+	if (incremental)
+		return 0;
+
+	/*
+	 * When asked to do --local (do not include an object that appears in a
+	 * pack we borrow from elsewhere) or --honor-pack-keep (do not include
+	 * an object that appears in a pack marked with .keep), finding a pack
+	 * that matches the criteria is sufficient for us to decide to omit it.
+	 * However, even if this pack does not satisfy the criteria, we need to
+	 * make sure no copy of this object appears in _any_ pack that makes us
+	 * to omit the object, so we need to check all the packs.
+	 *
+	 * We can however first check whether these options can possible matter;
+	 * if they do not matter we know we want the object in generated pack.
+	 * Otherwise, we signal "-1" at the end to tell the caller that we do
+	 * not know either way, and it needs to check more packs.
+	 */
+	if (!ignore_packed_keep &&
+	    (!local || !have_non_local_packs))
+		return 1;
+
+	if (local && !p->pack_local)
+		return 0;
+	if (ignore_packed_keep && p->pack_local && p->pack_keep)
+		return 0;
+
+	/* we don't know yet; keep looking for more packs */
+	return -1;
+}
+
 /*
  * Check whether we want the object in the pack (e.g., we do not want
  * objects found in non-local stores if the "--local" option was used).
  *
- * As a side effect of this check, we will find the packed version of this
- * object, if any. We therefore pass out the pack information to avoid having
- * to look it up again later.
+ * If the caller already knows an existing pack it wants to take the object
+ * from, that is passed in *found_pack and *found_offset; otherwise this
+ * function finds if there is any pack that has the object and returns the pack
+ * and its offset in these variables.
  */
 static int want_object_in_pack(const unsigned char *sha1,
 			       int exclude,
 			       struct packed_git **found_pack,
 			       off_t *found_offset)
 {
-	struct packed_git *p;
+	struct mru_entry *entry;
+	int want;
 
 	if (!exclude && local && has_loose_object_nonlocal(sha1))
 		return 0;
 
-	*found_pack = NULL;
-	*found_offset = 0;
+	/*
+	 * If we already know the pack object lives in, start checks from that
+	 * pack - in the usual case when neither --local was given nor .keep files
+	 * are present we will determine the answer right now.
+	 */
+	if (*found_pack) {
+		want = want_found_object(exclude, *found_pack);
+		if (want != -1)
+			return want;
+	}
 
-	for (p = packed_git; p; p = p->next) {
-		off_t offset = find_pack_entry_one(sha1, p);
+	for (entry = packed_git_mru->head; entry; entry = entry->next) {
+		struct packed_git *p = entry->item;
+		off_t offset;
+
+		if (p == *found_pack)
+			offset = *found_offset;
+		else
+			offset = find_pack_entry_one(sha1, p);
+
 		if (offset) {
 			if (!*found_pack) {
 				if (!is_pack_valid(p))
@@ -972,14 +1028,11 @@ static int want_object_in_pack(const unsigned char *sha1,
 				*found_offset = offset;
 				*found_pack = p;
 			}
-			if (exclude)
-				return 1;
-			if (incremental)
-				return 0;
-			if (local && !p->pack_local)
-				return 0;
-			if (ignore_packed_keep && p->pack_local && p->pack_keep)
-				return 0;
+			want = want_found_object(exclude, p);
+			if (!exclude && want > 0)
+				mru_mark(packed_git_mru, entry);
+			if (want != -1)
+				return want;
 		}
 	}
 
@@ -1020,8 +1073,8 @@ static const char no_closure_warning[] = N_(
 static int add_object_entry(const unsigned char *sha1, enum object_type type,
 			    const char *name, int exclude)
 {
-	struct packed_git *found_pack;
-	off_t found_offset;
+	struct packed_git *found_pack = NULL;
+	off_t found_offset = 0;
 	uint32_t index_pos;
 
 	if (have_duplicate_entry(sha1, exclude, &index_pos))
@@ -1052,6 +1105,9 @@ static int add_object_entry_from_bitmap(const unsigned char *sha1,
 	uint32_t index_pos;
 
 	if (have_duplicate_entry(sha1, 0, &index_pos))
+		return 0;
+
+	if (!want_object_in_pack(sha1, 0, &pack, &offset))
 		return 0;
 
 	create_object_entry(sha1, type, name_hash, 0, 0, index_pos, pack, offset);
@@ -1475,6 +1531,83 @@ static int pack_offset_sort(const void *_a, const void *_b)
 			(a->in_pack_offset > b->in_pack_offset);
 }
 
+/*
+ * Drop an on-disk delta we were planning to reuse. Naively, this would
+ * just involve blanking out the "delta" field, but we have to deal
+ * with some extra book-keeping:
+ *
+ *   1. Removing ourselves from the delta_sibling linked list.
+ *
+ *   2. Updating our size/type to the non-delta representation. These were
+ *      either not recorded initially (size) or overwritten with the delta type
+ *      (type) when check_object() decided to reuse the delta.
+ */
+static void drop_reused_delta(struct object_entry *entry)
+{
+	struct object_entry **p = &entry->delta->delta_child;
+	struct object_info oi = OBJECT_INFO_INIT;
+
+	while (*p) {
+		if (*p == entry)
+			*p = (*p)->delta_sibling;
+		else
+			p = &(*p)->delta_sibling;
+	}
+	entry->delta = NULL;
+
+	oi.sizep = &entry->size;
+	oi.typep = &entry->type;
+	if (packed_object_info(entry->in_pack, entry->in_pack_offset, &oi) < 0) {
+		/*
+		 * We failed to get the info from this pack for some reason;
+		 * fall back to sha1_object_info, which may find another copy.
+		 * And if that fails, the error will be recorded in entry->type
+		 * and dealt with in prepare_pack().
+		 */
+		entry->type = sha1_object_info(entry->idx.sha1, &entry->size);
+	}
+}
+
+/*
+ * Follow the chain of deltas from this entry onward, throwing away any links
+ * that cause us to hit a cycle (as determined by the DFS state flags in
+ * the entries).
+ */
+static void break_delta_chains(struct object_entry *entry)
+{
+	/* If it's not a delta, it can't be part of a cycle. */
+	if (!entry->delta) {
+		entry->dfs_state = DFS_DONE;
+		return;
+	}
+
+	switch (entry->dfs_state) {
+	case DFS_NONE:
+		/*
+		 * This is the first time we've seen the object. We mark it as
+		 * part of the active potential cycle and recurse.
+		 */
+		entry->dfs_state = DFS_ACTIVE;
+		break_delta_chains(entry->delta);
+		entry->dfs_state = DFS_DONE;
+		break;
+
+	case DFS_DONE:
+		/* object already examined, and not part of a cycle */
+		break;
+
+	case DFS_ACTIVE:
+		/*
+		 * We found a cycle that needs broken. It would be correct to
+		 * break any link in the chain, but it's convenient to
+		 * break this one.
+		 */
+		drop_reused_delta(entry);
+		entry->dfs_state = DFS_DONE;
+		break;
+	}
+}
+
 static void get_object_details(void)
 {
 	uint32_t i;
@@ -1483,7 +1616,7 @@ static void get_object_details(void)
 	sorted_by_offset = xcalloc(to_pack.nr_objects, sizeof(struct object_entry *));
 	for (i = 0; i < to_pack.nr_objects; i++)
 		sorted_by_offset[i] = to_pack.objects + i;
-	qsort(sorted_by_offset, to_pack.nr_objects, sizeof(*sorted_by_offset), pack_offset_sort);
+	QSORT(sorted_by_offset, to_pack.nr_objects, pack_offset_sort);
 
 	for (i = 0; i < to_pack.nr_objects; i++) {
 		struct object_entry *entry = sorted_by_offset[i];
@@ -1491,6 +1624,13 @@ static void get_object_details(void)
 		if (big_file_threshold < entry->size)
 			entry->no_try_delta = 1;
 	}
+
+	/*
+	 * This must happen in a second pass, since we rely on the delta
+	 * information for the whole list being completed.
+	 */
+	for (i = 0; i < to_pack.nr_objects; i++)
+		break_delta_chains(&to_pack.objects[i]);
 
 	free(sorted_by_offset);
 }
@@ -2103,6 +2243,35 @@ static void ll_find_deltas(struct object_entry **list, unsigned list_size,
 #define ll_find_deltas(l, s, w, d, p)	find_deltas(l, &s, w, d, p)
 #endif
 
+static void add_tag_chain(const struct object_id *oid)
+{
+	struct tag *tag;
+
+	/*
+	 * We catch duplicates already in add_object_entry(), but we'd
+	 * prefer to do this extra check to avoid having to parse the
+	 * tag at all if we already know that it's being packed (e.g., if
+	 * it was included via bitmaps, we would not have parsed it
+	 * previously).
+	 */
+	if (packlist_find(&to_pack, oid->hash, NULL))
+		return;
+
+	tag = lookup_tag(oid->hash);
+	while (1) {
+		if (!tag || parse_tag(tag) || !tag->tagged)
+			die("unable to pack objects reachable from tag %s",
+			    oid_to_hex(oid));
+
+		add_object_entry(tag->object.oid.hash, OBJ_TAG, NULL, 0);
+
+		if (tag->tagged->type != OBJ_TAG)
+			return;
+
+		tag = (struct tag *)tag->tagged;
+	}
+}
+
 static int add_ref_tag(const char *path, const struct object_id *oid, int flag, void *cb_data)
 {
 	struct object_id peeled;
@@ -2110,7 +2279,7 @@ static int add_ref_tag(const char *path, const struct object_id *oid, int flag, 
 	if (starts_with(path, "refs/tags/") && /* is a tag? */
 	    !peel_ref(path, peeled.hash)    && /* peelable? */
 	    packlist_find(&to_pack, peeled.hash, NULL))      /* object packed? */
-		add_object_entry(oid->hash, OBJ_TAG, NULL, 0);
+		add_tag_chain(oid);
 	return 0;
 }
 
@@ -2176,7 +2345,7 @@ static void prepare_pack(int window, int depth)
 		if (progress)
 			progress_state = start_progress(_("Compressing objects"),
 							nr_deltas);
-		qsort(delta_list, n, sizeof(*delta_list), type_size_sort);
+		QSORT(delta_list, n, type_size_sort);
 		ll_find_deltas(delta_list, n, window+1, depth, &nr_done);
 		stop_progress(&progress_state);
 		if (nr_done != nr_deltas)
@@ -2224,7 +2393,7 @@ static int git_pack_config(const char *k, const char *v, void *cb)
 			write_bitmap_options &= ~BITMAP_OPT_HASH_CACHE;
 	}
 	if (!strcmp(k, "pack.usebitmaps")) {
-		use_bitmap_index = git_config_bool(k, v);
+		use_bitmap_index_default = git_config_bool(k, v);
 		return 0;
 	}
 	if (!strcmp(k, "pack.threads")) {
@@ -2368,14 +2537,39 @@ static void add_objects_in_unpacked_packs(struct rev_info *revs)
 	}
 
 	if (in_pack.nr) {
-		qsort(in_pack.array, in_pack.nr, sizeof(in_pack.array[0]),
-		      ofscmp);
+		QSORT(in_pack.array, in_pack.nr, ofscmp);
 		for (i = 0; i < in_pack.nr; i++) {
 			struct object *o = in_pack.array[i].object;
 			add_object_entry(o->oid.hash, o->type, "", 0);
 		}
 	}
 	free(in_pack.array);
+}
+
+static int add_loose_object(const unsigned char *sha1, const char *path,
+			    void *data)
+{
+	enum object_type type = sha1_object_info(sha1, NULL);
+
+	if (type < 0) {
+		warning("loose object at %s could not be examined", path);
+		return 0;
+	}
+
+	add_object_entry(sha1, type, "", 0);
+	return 0;
+}
+
+/*
+ * We actually don't even have to worry about reachability here.
+ * add_object_entry will weed out duplicates, so we just add every
+ * loose object we find.
+ */
+static void add_unreachable_loose_objects(void)
+{
+	for_each_loose_file_in_objdir(get_object_directory(),
+				      add_loose_object,
+				      NULL, NULL, NULL);
 }
 
 static int has_sha1_pack_kept_or_nonlocal(const unsigned char *sha1)
@@ -2447,13 +2641,13 @@ static void loosen_unused_packed_objects(struct rev_info *revs)
 }
 
 /*
- * This tracks any options which a reader of the pack might
- * not understand, and which would therefore prevent blind reuse
- * of what we have on disk.
+ * This tracks any options which pack-reuse code expects to be on, or which a
+ * reader of the pack might not understand, and which would therefore prevent
+ * blind reuse of what we have on disk.
  */
 static int pack_options_allow_reuse(void)
 {
-	return allow_ofs_delta;
+	return pack_to_stdout && allow_ofs_delta;
 }
 
 static int get_object_list_from_bitmap(struct rev_info *revs)
@@ -2547,6 +2741,8 @@ static void get_object_list(int ac, const char **av)
 
 	if (keep_unreachable)
 		add_objects_in_unpacked_packs(&revs);
+	if (pack_loose_unreachable)
+		add_unreachable_loose_objects();
 	if (unpack_unreachable)
 		loosen_unused_packed_objects(&revs);
 
@@ -2647,6 +2843,8 @@ int cmd_pack_objects(int argc, const char **argv, const char *prefix)
 			 N_("include tag objects that refer to objects to be packed")),
 		OPT_BOOL(0, "keep-unreachable", &keep_unreachable,
 			 N_("keep unreachable objects")),
+		OPT_BOOL(0, "pack-loose-unreachable", &pack_loose_unreachable,
+			 N_("pack loose unreachable objects")),
 		{ OPTION_CALLBACK, 0, "unpack-unreachable", NULL, N_("time"),
 		  N_("unpack unreachable objects newer than <time>"),
 		  PARSE_OPT_OPTARG, option_parse_unpack_unreachable },
@@ -2742,7 +2940,23 @@ int cmd_pack_objects(int argc, const char **argv, const char *prefix)
 	if (!rev_list_all || !rev_list_reflog || !rev_list_index)
 		unpack_unreachable_expiration = 0;
 
-	if (!use_internal_rev_list || !pack_to_stdout || is_repository_shallow())
+	/*
+	 * "soft" reasons not to use bitmaps - for on-disk repack by default we want
+	 *
+	 * - to produce good pack (with bitmap index not-yet-packed objects are
+	 *   packed in suboptimal order).
+	 *
+	 * - to use more robust pack-generation codepath (avoiding possible
+	 *   bugs in bitmap code and possible bitmap index corruption).
+	 */
+	if (!pack_to_stdout)
+		use_bitmap_index_default = 0;
+
+	if (use_bitmap_index < 0)
+		use_bitmap_index = use_bitmap_index_default;
+
+	/* "hard" reasons not to use bitmaps; these just won't work at all */
+	if (!use_internal_rev_list || (!pack_to_stdout && write_bitmap_index) || is_repository_shallow())
 		use_bitmap_index = 0;
 
 	if (pack_to_stdout || !rev_list_all)
@@ -2752,6 +2966,28 @@ int cmd_pack_objects(int argc, const char **argv, const char *prefix)
 		progress = 2;
 
 	prepare_packed_git();
+	if (ignore_packed_keep) {
+		struct packed_git *p;
+		for (p = packed_git; p; p = p->next)
+			if (p->pack_local && p->pack_keep)
+				break;
+		if (!p) /* no keep-able packs found */
+			ignore_packed_keep = 0;
+	}
+	if (local) {
+		/*
+		 * unlike ignore_packed_keep above, we do not want to
+		 * unset "local" based on looking at packs, as it
+		 * also covers non-local objects
+		 */
+		struct packed_git *p;
+		for (p = packed_git; p; p = p->next) {
+			if (!p->pack_local) {
+				have_non_local_packs = 1;
+				break;
+			}
+		}
+	}
 
 	if (progress)
 		progress_state = start_progress(_("Counting objects"), 0);

@@ -846,7 +846,7 @@ static void cherry_pick_list(struct commit_list *list, struct rev_info *revs)
 		 */
 		if (left_first != !!(flags & SYMMETRIC_LEFT))
 			continue;
-		commit->util = add_commit_patch_id(commit, &ids);
+		add_commit_patch_id(commit, &ids);
 	}
 
 	/* either cherry_mark or cherry_pick are true */
@@ -873,21 +873,9 @@ static void cherry_pick_list(struct commit_list *list, struct rev_info *revs)
 		id = has_commit_patch_id(commit, &ids);
 		if (!id)
 			continue;
-		id->seen = 1;
+
 		commit->object.flags |= cherry_flag;
-	}
-
-	/* Now check the original side for seen ones */
-	for (p = list; p; p = p->next) {
-		struct commit *commit = p->item;
-		struct patch_id *ent;
-
-		ent = commit->util;
-		if (!ent)
-			continue;
-		if (ent->seen)
-			commit->object.flags |= cherry_flag;
-		commit->util = NULL;
+		id->commit->object.flags |= cherry_flag;
 	}
 
 	free_patch_ids(&ids);
@@ -1287,7 +1275,7 @@ void add_index_objects_to_pending(struct rev_info *revs, unsigned flags)
 		if (S_ISGITLINK(ce->ce_mode))
 			continue;
 
-		blob = lookup_blob(ce->sha1);
+		blob = lookup_blob(ce->oid.hash);
 		if (!blob)
 			die("unable to add index blob to traversal");
 		add_pending_object_with_path(revs, &blob->object, "",
@@ -1301,12 +1289,14 @@ void add_index_objects_to_pending(struct rev_info *revs, unsigned flags)
 	}
 }
 
-static int add_parents_only(struct rev_info *revs, const char *arg_, int flags)
+static int add_parents_only(struct rev_info *revs, const char *arg_, int flags,
+			    int exclude_parent)
 {
 	unsigned char sha1[20];
 	struct object *it;
 	struct commit *commit;
 	struct commit_list *parents;
+	int parent_number;
 	const char *arg = arg_;
 
 	if (*arg == '^') {
@@ -1328,7 +1318,15 @@ static int add_parents_only(struct rev_info *revs, const char *arg_, int flags)
 	if (it->type != OBJ_COMMIT)
 		return 0;
 	commit = (struct commit *)it;
-	for (parents = commit->parents; parents; parents = parents->next) {
+	if (exclude_parent &&
+	    exclude_parent > commit_list_count(commit->parents))
+		return 0;
+	for (parents = commit->parents, parent_number = 1;
+	     parents;
+	     parents = parents->next, parent_number++) {
+		if (exclude_parent && parent_number != exclude_parent)
+			continue;
+
 		it = &parents->item->object;
 		it->flags |= flags;
 		add_rev_cmdline(revs, it, arg_, REV_CMD_PARENTS_ONLY, flags);
@@ -1425,7 +1423,7 @@ static void prepare_show_merge(struct rev_info *revs)
 		       ce_same_name(ce, active_cache[i+1]))
 			i++;
 	}
-	free_pathspec(&revs->prune_data);
+	clear_pathspec(&revs->prune_data);
 	parse_pathspec(&revs->prune_data, PATHSPEC_ALL_MAGIC & ~PATHSPEC_LITERAL,
 		       PATHSPEC_PREFER_FULL | PATHSPEC_LITERAL_PATH, "", prune);
 	revs->limited = 1;
@@ -1531,17 +1529,33 @@ int handle_revision_arg(const char *arg_, struct rev_info *revs, int flags, unsi
 		}
 		*dotdot = '.';
 	}
+
 	dotdot = strstr(arg, "^@");
 	if (dotdot && !dotdot[2]) {
 		*dotdot = 0;
-		if (add_parents_only(revs, arg, flags))
+		if (add_parents_only(revs, arg, flags, 0))
 			return 0;
 		*dotdot = '^';
 	}
 	dotdot = strstr(arg, "^!");
 	if (dotdot && !dotdot[2]) {
 		*dotdot = 0;
-		if (!add_parents_only(revs, arg, flags ^ (UNINTERESTING | BOTTOM)))
+		if (!add_parents_only(revs, arg, flags ^ (UNINTERESTING | BOTTOM), 0))
+			*dotdot = '^';
+	}
+	dotdot = strstr(arg, "^-");
+	if (dotdot) {
+		int exclude_parent = 1;
+
+		if (dotdot[2]) {
+			char *end;
+			exclude_parent = strtoul(dotdot + 2, &end, 10);
+			if (*end != '\0' || !exclude_parent)
+				return -1;
+		}
+
+		*dotdot = 0;
+		if (!add_parents_only(revs, arg, flags ^ (UNINTERESTING | BOTTOM), exclude_parent))
 			*dotdot = '^';
 	}
 
@@ -1871,6 +1885,8 @@ static int handle_revision_opt(struct rev_info *revs, int argc, const char **arg
 		revs->notes_opt.use_default_notes = 1;
 	} else if (!strcmp(arg, "--show-signature")) {
 		revs->show_signature = 1;
+	} else if (!strcmp(arg, "--no-show-signature")) {
+		revs->show_signature = 0;
 	} else if (!strcmp(arg, "--show-linear-break") ||
 		   starts_with(arg, "--show-linear-break=")) {
 		if (starts_with(arg, "--show-linear-break="))
@@ -1971,16 +1987,16 @@ static int handle_revision_opt(struct rev_info *revs, int argc, const char **arg
 	} else if (!strcmp(arg, "--grep-debug")) {
 		revs->grep_filter.debug = 1;
 	} else if (!strcmp(arg, "--basic-regexp")) {
-		grep_set_pattern_type_option(GREP_PATTERN_TYPE_BRE, &revs->grep_filter);
+		revs->grep_filter.pattern_type_option = GREP_PATTERN_TYPE_BRE;
 	} else if (!strcmp(arg, "--extended-regexp") || !strcmp(arg, "-E")) {
-		grep_set_pattern_type_option(GREP_PATTERN_TYPE_ERE, &revs->grep_filter);
+		revs->grep_filter.pattern_type_option = GREP_PATTERN_TYPE_ERE;
 	} else if (!strcmp(arg, "--regexp-ignore-case") || !strcmp(arg, "-i")) {
 		revs->grep_filter.regflags |= REG_ICASE;
 		DIFF_OPT_SET(&revs->diffopt, PICKAXE_IGNORE_CASE);
 	} else if (!strcmp(arg, "--fixed-strings") || !strcmp(arg, "-F")) {
-		grep_set_pattern_type_option(GREP_PATTERN_TYPE_FIXED, &revs->grep_filter);
+		revs->grep_filter.pattern_type_option = GREP_PATTERN_TYPE_FIXED;
 	} else if (!strcmp(arg, "--perl-regexp")) {
-		grep_set_pattern_type_option(GREP_PATTERN_TYPE_PCRE, &revs->grep_filter);
+		revs->grep_filter.pattern_type_option = GREP_PATTERN_TYPE_PCRE;
 	} else if (!strcmp(arg, "--all-match")) {
 		revs->grep_filter.all_match = 1;
 	} else if (!strcmp(arg, "--invert-grep")) {

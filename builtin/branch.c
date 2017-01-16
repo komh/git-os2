@@ -212,7 +212,7 @@ static int delete_branches(int argc, const char **argv, int force, int kinds,
 			die(_("Couldn't look up commit object for HEAD"));
 	}
 	for (i = 0; i < argc; i++, strbuf_release(&bname)) {
-		const char *target;
+		char *target = NULL;
 		int flags = 0;
 
 		strbuf_branchname(&bname, argv[i]);
@@ -231,11 +231,11 @@ static int delete_branches(int argc, const char **argv, int force, int kinds,
 			}
 		}
 
-		target = resolve_ref_unsafe(name,
-					    RESOLVE_REF_READING
-					    | RESOLVE_REF_NO_RECURSE
-					    | RESOLVE_REF_ALLOW_BAD_NAME,
-					    sha1, &flags);
+		target = resolve_refdup(name,
+					RESOLVE_REF_READING
+					| RESOLVE_REF_NO_RECURSE
+					| RESOLVE_REF_ALLOW_BAD_NAME,
+					sha1, &flags);
 		if (!target) {
 			error(remote_branch
 			      ? _("remote-tracking branch '%s' not found.")
@@ -248,7 +248,7 @@ static int delete_branches(int argc, const char **argv, int force, int kinds,
 		    check_branch_commit(bname.buf, name, sha1, head_rev, kinds,
 					force)) {
 			ret = 1;
-			continue;
+			goto next;
 		}
 
 		if (delete_ref(name, is_null_sha1(sha1) ? NULL : sha1,
@@ -258,7 +258,7 @@ static int delete_branches(int argc, const char **argv, int force, int kinds,
 			      : _("Error deleting branch '%s'"),
 			      bname.buf);
 			ret = 1;
-			continue;
+			goto next;
 		}
 		if (!quiet) {
 			printf(remote_branch
@@ -270,6 +270,9 @@ static int delete_branches(int argc, const char **argv, int force, int kinds,
 			       : find_unique_abbrev(sha1, DEFAULT_ABBREV));
 		}
 		delete_branch_config(bname.buf);
+
+	next:
+		free(target);
 	}
 
 	free(name);
@@ -614,14 +617,11 @@ static int edit_branch_description(const char *branch_name)
 	if (!buf.len || buf.buf[buf.len-1] != '\n')
 		strbuf_addch(&buf, '\n');
 	strbuf_commented_addf(&buf,
-		    "Please edit the description for the branch\n"
-		    "  %s\n"
-		    "Lines starting with '%c' will be stripped.\n",
+		    _("Please edit the description for the branch\n"
+		      "  %s\n"
+		      "Lines starting with '%c' will be stripped.\n"),
 		    branch_name, comment_line_char);
-	if (write_file_gently(git_path(edit_description), "%s", buf.buf)) {
-		strbuf_release(&buf);
-		return error_errno(_("could not write branch description template"));
-	}
+	write_file_buf(git_path(edit_description), buf.buf, buf.len);
 	strbuf_reset(&buf);
 	if (launch_editor(git_path(edit_description), &buf, NULL)) {
 		strbuf_release(&buf);
@@ -657,7 +657,7 @@ int cmd_branch(int argc, const char **argv, const char *prefix)
 		OPT_SET_INT( 0, "set-upstream",  &track, N_("change upstream info"),
 			BRANCH_TRACK_OVERRIDE),
 		OPT_STRING('u', "set-upstream-to", &new_upstream, N_("upstream"), N_("change the upstream info")),
-		OPT_BOOL(0, "unset-upstream", &unset_upstream, "Unset the upstream info"),
+		OPT_BOOL(0, "unset-upstream", &unset_upstream, N_("Unset the upstream info")),
 		OPT__COLOR(&branch_use_color, N_("use colored output")),
 		OPT_SET_INT('r', "remotes",     &filter.kind, N_("act on remote-tracking branches"),
 			FILTER_REFS_REMOTES),
@@ -807,7 +807,7 @@ int cmd_branch(int argc, const char **argv, const char *prefix)
 		 * create_branch takes care of setting up the tracking
 		 * info and making sure new_upstream is correct
 		 */
-		create_branch(head, branch->name, new_upstream, 0, 0, 0, quiet, BRANCH_TRACK_OVERRIDE);
+		create_branch(branch->name, new_upstream, 0, 0, 0, quiet, BRANCH_TRACK_OVERRIDE);
 	} else if (unset_upstream) {
 		struct branch *branch = branch_get(argv[0]);
 		struct strbuf buf = STRBUF_INIT;
@@ -853,7 +853,7 @@ int cmd_branch(int argc, const char **argv, const char *prefix)
 		strbuf_release(&buf);
 
 		branch_existed = ref_exists(branch->refname);
-		create_branch(head, argv[0], (argc == 2) ? argv[1] : head,
+		create_branch(argv[0], (argc == 2) ? argv[1] : head,
 			      force, reflog, 0, quiet, track);
 
 		/*

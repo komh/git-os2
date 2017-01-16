@@ -54,10 +54,11 @@ static int dump_cache_tree(struct cache_tree *it,
 	return errs;
 }
 
-int main(int ac, char **av)
+int cmd_main(int ac, const char **av)
 {
 	struct index_state istate;
 	struct cache_tree *another = cache_tree();
+	setup_git_directory();
 	if (read_cache() < 0)
 		die("unable to read index file");
 	istate = the_index;

@@ -227,6 +227,24 @@ int xopen(const char *path, int oflag, ...)
 	}
 }
 
+static int handle_nonblock(int fd, short poll_events, int err)
+{
+	struct pollfd pfd;
+
+	if (err != EAGAIN && err != EWOULDBLOCK)
+		return 0;
+
+	pfd.fd = fd;
+	pfd.events = poll_events;
+
+	/*
+	 * no need to check for errors, here;
+	 * a subsequent read/write will detect unrecoverable errors
+	 */
+	poll(&pfd, 1, -1);
+	return 1;
+}
+
 /*
  * xread() is the same a read(), but it automatically restarts read()
  * operations with a recoverable error (EAGAIN and EINTR). xread()
@@ -242,20 +260,8 @@ ssize_t xread(int fd, void *buf, size_t len)
 		if (nr < 0) {
 			if (errno == EINTR)
 				continue;
-			if (errno == EAGAIN || errno == EWOULDBLOCK) {
-				struct pollfd pfd;
-				pfd.events = POLLIN;
-				pfd.fd = fd;
-				/*
-				 * it is OK if this poll() failed; we
-				 * want to leave this infinite loop
-				 * only when read() returns with
-				 * success, or an expected failure,
-				 * which would be checked by the next
-				 * call to read(2).
-				 */
-				poll(&pfd, 1, -1);
-			}
+			if (handle_nonblock(fd, POLLIN, errno))
+				continue;
 		}
 		return nr;
 	}
@@ -273,8 +279,13 @@ ssize_t xwrite(int fd, const void *buf, size_t len)
 	    len = MAX_IO_SIZE;
 	while (1) {
 		nr = write(fd, buf, len);
-		if ((nr < 0) && (errno == EAGAIN || errno == EINTR))
-			continue;
+		if (nr < 0) {
+			if (errno == EINTR)
+				continue;
+			if (handle_nonblock(fd, POLLOUT, errno))
+				continue;
+		}
+
 		return nr;
 	}
 }
@@ -640,56 +651,28 @@ int xsnprintf(char *dst, size_t max, const char *fmt, ...)
 	return len;
 }
 
-static int write_file_v(const char *path, int fatal,
-			const char *fmt, va_list params)
+void write_file_buf(const char *path, const char *buf, size_t len)
 {
+	int fd = xopen(path, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+	if (write_in_full(fd, buf, len) != len)
+		die_errno(_("could not write to %s"), path);
+	if (close(fd))
+		die_errno(_("could not close %s"), path);
+}
+
+void write_file(const char *path, const char *fmt, ...)
+{
+	va_list params;
 	struct strbuf sb = STRBUF_INIT;
-	int fd = open(path, O_RDWR | O_CREAT | O_TRUNC, 0666);
-	if (fd < 0) {
-		if (fatal)
-			die_errno(_("could not open %s for writing"), path);
-		return -1;
-	}
+
+	va_start(params, fmt);
 	strbuf_vaddf(&sb, fmt, params);
+	va_end(params);
+
 	strbuf_complete_line(&sb);
-	if (write_in_full(fd, sb.buf, sb.len) != sb.len) {
-		int err = errno;
-		close(fd);
-		strbuf_release(&sb);
-		errno = err;
-		if (fatal)
-			die_errno(_("could not write to %s"), path);
-		return -1;
-	}
+
+	write_file_buf(path, sb.buf, sb.len);
 	strbuf_release(&sb);
-	if (close(fd)) {
-		if (fatal)
-			die_errno(_("could not close %s"), path);
-		return -1;
-	}
-	return 0;
-}
-
-int write_file(const char *path, const char *fmt, ...)
-{
-	int status;
-	va_list params;
-
-	va_start(params, fmt);
-	status = write_file_v(path, 1, fmt, params);
-	va_end(params);
-	return status;
-}
-
-int write_file_gently(const char *path, const char *fmt, ...)
-{
-	int status;
-	va_list params;
-
-	va_start(params, fmt);
-	status = write_file_v(path, 0, fmt, params);
-	va_end(params);
-	return status;
 }
 
 void sleep_millisec(int millisec)

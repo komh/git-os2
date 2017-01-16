@@ -25,7 +25,6 @@ static char term = '\n';
 static int use_global_config, use_system_config, use_local_config;
 static struct git_config_source given_config_source;
 static int actions, types;
-static const char *get_color_slot, *get_colorbool_slot;
 static int end_null;
 static int respect_includes = -1;
 static int show_origin;
@@ -604,7 +603,7 @@ int cmd_config(int argc, const char **argv, const char *prefix)
 				      given_config_source.file : git_path("config"));
 		if (use_global_config) {
 			int fd = open(config_file, O_CREAT | O_EXCL | O_WRONLY, 0666);
-			if (fd) {
+			if (fd >= 0) {
 				char *content = default_user_config();
 				write_str_in_full(fd, content);
 				free(content);
@@ -623,8 +622,8 @@ int cmd_config(int argc, const char **argv, const char *prefix)
 		value = normalize_value(argv[0], argv[1]);
 		ret = git_config_set_in_file_gently(given_config_source.file, argv[0], value);
 		if (ret == CONFIG_NOTHING_SET)
-			error("cannot overwrite multiple values with a single value\n"
-			"       Use a regexp, --add or --replace-all to change %s.", argv[0]);
+			error(_("cannot overwrite multiple values with a single value\n"
+			"       Use a regexp, --add or --replace-all to change %s."), argv[0]);
 		return ret;
 	}
 	else if (actions == ACTION_SET_ALL) {

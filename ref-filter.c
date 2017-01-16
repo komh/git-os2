@@ -235,7 +235,7 @@ int parse_ref_filter_atom(const char *atom, const char *ep)
 {
 	const char *sp;
 	const char *arg;
-	int i, at;
+	int i, at, atom_len;
 
 	sp = atom;
 	if (*sp == '*' && sp < ep)
@@ -250,19 +250,19 @@ int parse_ref_filter_atom(const char *atom, const char *ep)
 			return i;
 	}
 
+	/*
+	 * If the atom name has a colon, strip it and everything after
+	 * it off - it specifies the format for this entry, and
+	 * shouldn't be used for checking against the valid_atom
+	 * table.
+	 */
+	arg = memchr(sp, ':', ep - sp);
+	atom_len = (arg ? arg : ep) - sp;
+
 	/* Is the atom a valid one? */
 	for (i = 0; i < ARRAY_SIZE(valid_atom); i++) {
 		int len = strlen(valid_atom[i].name);
-
-		/*
-		 * If the atom name has a colon, strip it and everything after
-		 * it off - it specifies the format for this entry, and
-		 * shouldn't be used for checking against the valid_atom
-		 * table.
-		 */
-		arg = memchr(sp, ':', ep - sp);
-		if (len == (arg ? arg : ep) - sp &&
-		    !memcmp(valid_atom[i].name, sp, len))
+		if (len == atom_len && !memcmp(valid_atom[i].name, sp, len))
 			break;
 	}
 
@@ -1017,7 +1017,7 @@ static void populate_value(struct ref_array_item *ref)
 
 			head = resolve_ref_unsafe("HEAD", RESOLVE_REF_READING,
 						  sha1, NULL);
-			if (!strcmp(ref->refname, head))
+			if (head && !strcmp(ref->refname, head))
 				v->s = "*";
 			else
 				v->s = " ";
@@ -1573,25 +1573,7 @@ static int compare_refs(const void *a_, const void *b_)
 void ref_array_sort(struct ref_sorting *sorting, struct ref_array *array)
 {
 	ref_sorting = sorting;
-	qsort(array->items, array->nr, sizeof(struct ref_array_item *), compare_refs);
-}
-
-static int hex1(char ch)
-{
-	if ('0' <= ch && ch <= '9')
-		return ch - '0';
-	else if ('a' <= ch && ch <= 'f')
-		return ch - 'a' + 10;
-	else if ('A' <= ch && ch <= 'F')
-		return ch - 'A' + 10;
-	return -1;
-}
-static int hex2(const char *cp)
-{
-	if (cp[0] && cp[1])
-		return (hex1(cp[0]) << 4) | hex1(cp[1]);
-	else
-		return -1;
+	QSORT(array->items, array->nr, compare_refs);
 }
 
 static void append_literal(const char *cp, const char *ep, struct ref_formatting_state *state)
@@ -1603,7 +1585,7 @@ static void append_literal(const char *cp, const char *ep, struct ref_formatting
 			if (cp[1] == '%')
 				cp++;
 			else {
-				int ch = hex2(cp + 1);
+				int ch = hex2chr(cp + 1);
 				if (0 <= ch) {
 					strbuf_addch(s, ch);
 					cp += 3;

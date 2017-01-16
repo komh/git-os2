@@ -1,6 +1,5 @@
 #include "cache.h"
 #include "pkt-line.h"
-#include "exec_cmd.h"
 #include "run-command.h"
 #include "strbuf.h"
 #include "string-list.h"
@@ -32,7 +31,7 @@ static const char daemon_usage[] =
 "           [<directory>...]";
 
 /* List of acceptable pathname prefixes */
-static char **ok_paths;
+static const char **ok_paths;
 static int strict_paths;
 
 /* If this is set, git-daemon-export-ok is not required */
@@ -161,6 +160,7 @@ static const char *path_ok(const char *directory, struct hostinfo *hi)
 {
 	static char rpath[PATH_MAX];
 	static char interp_path[PATH_MAX];
+	size_t rlen;
 	const char *path;
 	const char *dir;
 
@@ -188,8 +188,12 @@ static const char *path_ok(const char *directory, struct hostinfo *hi)
 			namlen = slash - dir;
 			restlen -= namlen;
 			loginfo("userpath <%s>, request <%s>, namlen %d, restlen %d, slash <%s>", user_path, dir, namlen, restlen, slash);
-			snprintf(rpath, PATH_MAX, "%.*s/%s%.*s",
-				 namlen, dir, user_path, restlen, slash);
+			rlen = snprintf(rpath, sizeof(rpath), "%.*s/%s%.*s",
+					namlen, dir, user_path, restlen, slash);
+			if (rlen >= sizeof(rpath)) {
+				logerror("user-path too large: %s", rpath);
+				return NULL;
+			}
 			dir = rpath;
 		}
 	}
@@ -208,7 +212,15 @@ static const char *path_ok(const char *directory, struct hostinfo *hi)
 
 		strbuf_expand(&expanded_path, interpolated_path,
 			      expand_path, &context);
-		strlcpy(interp_path, expanded_path.buf, PATH_MAX);
+
+		rlen = strlcpy(interp_path, expanded_path.buf,
+			       sizeof(interp_path));
+		if (rlen >= sizeof(interp_path)) {
+			logerror("interpolated path too large: %s",
+				 interp_path);
+			return NULL;
+		}
+
 		strbuf_release(&expanded_path);
 		loginfo("Interpolated dir '%s'", interp_path);
 
@@ -220,7 +232,11 @@ static const char *path_ok(const char *directory, struct hostinfo *hi)
 			logerror("'%s': Non-absolute path denied (base-path active)", dir);
 			return NULL;
 		}
-		snprintf(rpath, PATH_MAX, "%s%s", base_path, dir);
+		rlen = snprintf(rpath, sizeof(rpath), "%s%s", base_path, dir);
+		if (rlen >= sizeof(rpath)) {
+			logerror("base-path too large: %s", rpath);
+			return NULL;
+		}
 		dir = rpath;
 	}
 
@@ -240,7 +256,7 @@ static const char *path_ok(const char *directory, struct hostinfo *hi)
 	}
 
 	if ( ok_paths && *ok_paths ) {
-		char **pp;
+		const char **pp;
 		int pathlen = strlen(path);
 
 		/* The validation is done on the paths after enter_repo
@@ -282,7 +298,7 @@ static int daemon_error(const char *dir, const char *msg)
 {
 	if (!informative_errors)
 		msg = "access denied or repository not exported";
-	packet_write(1, "ERR %s: %s", msg, dir);
+	packet_write_fmt(1, "ERR %s: %s", msg, dir);
 	return -1;
 }
 
@@ -673,9 +689,11 @@ static void set_keep_alive(int sockfd)
 {
 	int ka = 1;
 
-	if (setsockopt(sockfd, SOL_SOCKET, SO_KEEPALIVE, &ka, sizeof(ka)) < 0)
-		logerror("unable to set SO_KEEPALIVE on socket: %s",
-			strerror(errno));
+	if (setsockopt(sockfd, SOL_SOCKET, SO_KEEPALIVE, &ka, sizeof(ka)) < 0) {
+		if (errno != ENOTSOCK)
+			logerror("unable to set SO_KEEPALIVE on socket: %s",
+				strerror(errno));
+	}
 }
 
 static int execute(void)
@@ -1192,7 +1210,7 @@ static int serve(struct string_list *listen_addr, int listen_port,
 	return service_loop(&socklist);
 }
 
-int main(int argc, char **argv)
+int cmd_main(int argc, const char **argv)
 {
 	int listen_port = 0;
 	struct string_list listen_addr = STRING_LIST_INIT_NODUP;
@@ -1202,12 +1220,8 @@ int main(int argc, char **argv)
 	struct credentials *cred = NULL;
 	int i;
 
-	git_setup_gettext();
-
-	git_extract_argv0_path(argv[0]);
-
 	for (i = 1; i < argc; i++) {
-		char *arg = argv[i];
+		const char *arg = argv[i];
 		const char *v;
 
 		if (skip_prefix(arg, "--listen=", &v)) {
@@ -1381,8 +1395,7 @@ int main(int argc, char **argv)
 	if (detach) {
 		if (daemonize())
 			die("--detach not supported on this platform");
-	} else
-		sanitize_stdfds();
+	}
 
 	if (pid_file)
 		write_file(pid_file, "%"PRIuMAX, (uintmax_t) getpid());

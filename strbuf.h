@@ -263,11 +263,7 @@ static inline void strbuf_addstr(struct strbuf *sb, const char *s)
 /**
  * Copy the contents of another buffer at the end of the current one.
  */
-static inline void strbuf_addbuf(struct strbuf *sb, const struct strbuf *sb2)
-{
-	strbuf_grow(sb, sb2->len);
-	strbuf_add(sb, sb2->buf, sb2->len);
-}
+extern void strbuf_addbuf(struct strbuf *sb, const struct strbuf *sb2);
 
 /**
  * Copy part of the buffer from a given position till a given length to the
@@ -446,6 +442,14 @@ extern int strbuf_getcwd(struct strbuf *sb);
  * resolved.
  */
 extern void strbuf_add_absolute_path(struct strbuf *sb, const char *path);
+
+
+/**
+ * Normalize in-place the path contained in the strbuf. See
+ * normalize_path_copy() for details. If an error occurs, the contents of "sb"
+ * are left untouched, and -1 is returned.
+ */
+extern int strbuf_normalize_path(struct strbuf *sb);
 
 /**
  * Strip whitespace from a buffer. The second parameter controls if

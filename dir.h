@@ -262,9 +262,32 @@ extern int is_empty_dir(const char *dir);
 
 extern void setup_standard_excludes(struct dir_struct *dir);
 
+
+/* Constants for remove_dir_recursively: */
+
+/*
+ * If a non-directory is found within path, stop and return an error.
+ * (In this case some empty directories might already have been
+ * removed.)
+ */
 #define REMOVE_DIR_EMPTY_ONLY 01
+
+/*
+ * If any Git work trees are found within path, skip them without
+ * considering it an error.
+ */
 #define REMOVE_DIR_KEEP_NESTED_GIT 02
+
+/* Remove the contents of path, but leave path itself. */
 #define REMOVE_DIR_KEEP_TOPLEVEL 04
+
+/*
+ * Remove path and its contents, recursively. flags is a combination
+ * of the above REMOVE_DIR_* constants. Return 0 on success.
+ *
+ * This function uses path as temporary scratch space, but restores it
+ * before returning.
+ */
 extern int remove_dir_recursively(struct strbuf *path, int flag);
 
 /* tries to remove the path with empty directories along it, ignores ENOENT */
@@ -280,6 +303,10 @@ struct pathspec_item;
 extern int git_fnmatch(const struct pathspec_item *item,
 		       const char *pattern, const char *string,
 		       int prefix);
+
+extern int submodule_path_match(const struct pathspec *ps,
+				const char *submodule_name,
+				char *seen);
 
 static inline int ce_path_match(const struct cache_entry *ce,
 				const struct pathspec *pathspec,

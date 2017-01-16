@@ -187,7 +187,7 @@ void strbuf_insert(struct strbuf *sb, size_t pos, const void *data, size_t len)
 
 void strbuf_remove(struct strbuf *sb, size_t pos, size_t len)
 {
-	strbuf_splice(sb, pos, len, NULL, 0);
+	strbuf_splice(sb, pos, len, "", 0);
 }
 
 void strbuf_add(struct strbuf *sb, const void *data, size_t len)
@@ -195,6 +195,13 @@ void strbuf_add(struct strbuf *sb, const void *data, size_t len)
 	strbuf_grow(sb, len);
 	memcpy(sb->buf + sb->len, data, len);
 	strbuf_setlen(sb, sb->len + len);
+}
+
+void strbuf_addbuf(struct strbuf *sb, const struct strbuf *sb2)
+{
+	strbuf_grow(sb, sb2->len);
+	memcpy(sb->buf + sb->len, sb2->buf, sb2->len);
+	strbuf_setlen(sb, sb->len + sb2->len);
 }
 
 void strbuf_adddup(struct strbuf *sb, size_t pos, size_t len)
@@ -862,4 +869,24 @@ void strbuf_stripspace(struct strbuf *sb, int skip_comments)
 	}
 
 	strbuf_setlen(sb, j);
+}
+
+int strbuf_normalize_path(struct strbuf *src)
+{
+	struct strbuf dst = STRBUF_INIT;
+
+	strbuf_grow(&dst, src->len);
+	if (normalize_path_copy(dst.buf, src->buf) < 0) {
+		strbuf_release(&dst);
+		return -1;
+	}
+
+	/*
+	 * normalize_path does not tell us the new length, so we have to
+	 * compute it by looking for the new NUL it placed
+	 */
+	strbuf_setlen(&dst, strlen(dst.buf));
+	strbuf_swap(src, &dst);
+	strbuf_release(&dst);
+	return 0;
 }

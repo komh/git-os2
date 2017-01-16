@@ -124,6 +124,12 @@ test_expect_success PERL 'difftool stops on error with --trust-exit-code' '
 	test_cmp expect actual
 '
 
+test_expect_success PERL 'difftool honors exit status if command not found' '
+	test_config difftool.nonexistent.cmd i-dont-exist &&
+	test_config difftool.trustExitCode false &&
+	test_must_fail git difftool -y -t nonexistent branch
+'
+
 test_expect_success PERL 'difftool honors --gui' '
 	difftool_test_setup &&
 	test_config merge.tool bogus-tool &&
@@ -409,6 +415,20 @@ run_dir_diff_test 'difftool --dir-diff from subdirectory' '
 		git difftool --dir-diff $symlinks --extcmd ls branch >output &&
 		grep sub output &&
 		grep file output
+	)
+'
+
+run_dir_diff_test 'difftool --dir-diff from subdirectory with GIT_DIR set' '
+	(
+		GIT_DIR=$(pwd)/.git &&
+		export GIT_DIR &&
+		GIT_WORK_TREE=$(pwd) &&
+		export GIT_WORK_TREE &&
+		cd sub &&
+		git difftool --dir-diff $symlinks --extcmd ls \
+			branch -- sub >output &&
+		grep sub output &&
+		! grep file output
 	)
 '
 

@@ -18,10 +18,8 @@ static int compare_dir(const void *a_, const void *b_)
 static void dump(struct untracked_cache_dir *ucd, struct strbuf *base)
 {
 	int i, len;
-	qsort(ucd->untracked, ucd->untracked_nr, sizeof(*ucd->untracked),
-	      compare_untracked);
-	qsort(ucd->dirs, ucd->dirs_nr, sizeof(*ucd->dirs),
-	      compare_dir);
+	QSORT(ucd->untracked, ucd->untracked_nr, compare_untracked);
+	QSORT(ucd->dirs, ucd->dirs_nr, compare_dir);
 	len = base->len;
 	strbuf_addf(base, "%s/", ucd->name);
 	printf("%s %s", base->buf,
@@ -40,7 +38,7 @@ static void dump(struct untracked_cache_dir *ucd, struct strbuf *base)
 	strbuf_setlen(base, len);
 }
 
-int main(int ac, char **av)
+int cmd_main(int ac, const char **av)
 {
 	struct untracked_cache *uc;
 	struct strbuf base = STRBUF_INIT;

@@ -5,6 +5,8 @@
 #include "run-command.h"
 #include "remote.h"
 
+struct string_list;
+
 struct git_transport_options {
 	unsigned thin : 1;
 	unsigned keep : 1;
@@ -12,7 +14,10 @@ struct git_transport_options {
 	unsigned check_self_contained_and_connected : 1;
 	unsigned self_contained_and_connected : 1;
 	unsigned update_shallow : 1;
+	unsigned deepen_relative : 1;
 	int depth;
+	const char *deepen_since;
+	const struct string_list *deepen_not;
 	const char *uploadpack;
 	const char *receivepack;
 	struct push_cas_option *cas;
@@ -47,6 +52,12 @@ struct transport {
 	 * normal fetch. IOW the repository is guaranteed empty.
 	 */
 	unsigned cloning : 1;
+
+	/*
+	 * These strings will be passed to the {pre, post}-receive hook,
+	 * on the remote side, if both sides support the push options capability.
+	 */
+	const struct string_list *push_options;
 
 	/**
 	 * Returns 0 if successful, positive if the option is not
@@ -134,9 +145,9 @@ struct transport {
 #define TRANSPORT_PUSH_CERT_ALWAYS 2048
 #define TRANSPORT_PUSH_CERT_IF_ASKED 4096
 #define TRANSPORT_PUSH_ATOMIC 8192
+#define TRANSPORT_PUSH_OPTIONS 16384
 
-#define TRANSPORT_SUMMARY_WIDTH (2 * DEFAULT_ABBREV + 3)
-#define TRANSPORT_SUMMARY(x) (int)(TRANSPORT_SUMMARY_WIDTH + strlen(x) - gettext_width(x)), (x)
+extern int transport_summary_width(const struct ref *refs);
 
 /* Returns a transport suitable for the url */
 struct transport *transport_get(struct remote *, const char *);
@@ -178,6 +189,15 @@ int transport_restrict_protocols(void);
 
 /* Limit the depth of the fetch if not null */
 #define TRANS_OPT_DEPTH "depth"
+
+/* Limit the depth of the fetch based on time if not null */
+#define TRANS_OPT_DEEPEN_SINCE "deepen-since"
+
+/* Limit the depth of the fetch based on revs if not null */
+#define TRANS_OPT_DEEPEN_NOT "deepen-not"
+
+/* Limit the deepen of the fetch if not null */
+#define TRANS_OPT_DEEPEN_RELATIVE "deepen-relative"
 
 /* Aggressively fetch annotated tags if possible */
 #define TRANS_OPT_FOLLOWTAGS "followtags"
