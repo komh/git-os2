@@ -597,6 +597,7 @@ ifneq (,$(findstring OS/2,$(uname_S)))
 	COMPAT_OBJS += compat/os2.o
 	LIB_H += compat/os2-git-compat.h
 	X = .exe
+	LN_X = ln4exe
 #	htmldir=doc/git/html/
 #	prefix =
 #	INSTALL = /bin/install
