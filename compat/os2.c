@@ -302,9 +302,11 @@ int wrapped_poll_for_os2 (struct pollfd *fds, nfds_t nfds, int timeout)
   fd_set *pfd_x = NULL;
 #endif
   int fd, fd_cnt;
-  int rc;
+  int rc = 0;
   struct timeval tv;
+  struct timeval *ptv = NULL;
   nfds_t i;
+  int non_sockets = 0;
 
 #if defined(POLLIN)
   pfd_r = &fd_r;
@@ -321,6 +323,7 @@ int wrapped_poll_for_os2 (struct pollfd *fds, nfds_t nfds, int timeout)
 
   for(i=0, fd_cnt=0; i<nfds; i++) {
     fd = fds[i].fd;
+    fds[i].revents = 0;
     if (fd >= 0) {
       if (fds[i].events &
 	  ( 0
@@ -334,7 +337,16 @@ int wrapped_poll_for_os2 (struct pollfd *fds, nfds_t nfds, int timeout)
 	      | POLLPRI
 #endif
 		       ) ) {
+    struct stat stbuf;
 	assert(fd < FD_SETSIZE);
+	if (fstat(fd, &stbuf) == -1 || (errno = 0, !S_ISSOCK(stbuf.st_mode))) {
+	  if (errno == 0 && S_ISREG(stbuf.st_mode))
+	    fds[i].revents = fds[i].events & (POLLIN | POLLOUT | POLLPRI);
+	  else
+	    fds[i].revents = POLLNVAL;
+	  non_sockets++;
+	  continue;
+	}
 	if (fd >= fd_cnt) fd_cnt = fd + 1;
 #if defined(POLLIN)
 	if (fds[i].events & POLLIN) FD_SET(fd, &fd_r);
@@ -349,6 +361,9 @@ int wrapped_poll_for_os2 (struct pollfd *fds, nfds_t nfds, int timeout)
     }
   }
 
+  if (non_sockets > 0)
+    timeout = 0;
+
   if (timeout >= 0) {
     if (timeout == 0) {
       tv.tv_sec = tv.tv_usec = 0;
@@ -357,15 +372,20 @@ int wrapped_poll_for_os2 (struct pollfd *fds, nfds_t nfds, int timeout)
       tv.tv_sec = timeout / 1000;
       tv.tv_usec = (timeout % 1000) * 1000;
     }
-    rc = select(fd_cnt, pfd_r, pfd_w, pfd_x, &tv);
+
+    ptv = &tv;
   }
-  else
-    rc = select(fd_cnt, pfd_r, pfd_w, pfd_x, NULL);
+
+  if (fd_cnt > 0)
+    rc = select(fd_cnt, pfd_r, pfd_w, pfd_x, ptv);
+
+  if (rc >= 0)
+    rc += non_sockets;
 
   if (rc > 0) for (i=0; i<nfds; i++) {
     short rev;
     fd = fds[i].fd;
-    if (fd >= 0) {
+    if (fd >= 0 && fds[i].revents == 0) {
       rev = 0;
 #if defined(POLLIN)
       if (FD_ISSET(fd, &fd_r)) rev |= POLLIN;
