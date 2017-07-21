@@ -126,7 +126,18 @@ int is_executable(const char *name)
 
 	if (stat(name, &st) || /* stat, not lstat */
 	    !S_ISREG(st.st_mode))
+#ifndef __OS2__
 		return 0;
+#else
+	{
+		/* Check name.exe as well */
+		static struct strbuf buf = STRBUF_INIT;
+
+		strbuf_reset(&buf);
+		strbuf_addf(&buf, "%s.exe", name);
+		return (!stat(buf.buf, &st) && S_ISREG(st.st_mode)) ? S_IXUSR : 0;
+	}
+#endif
 
 #if defined(GIT_WINDOWS_NATIVE) || defined(__OS2__)
 	/*
@@ -188,7 +199,7 @@ static char *locate_in_PATH(const char *file)
 		return NULL;
 
 	while (1) {
-		const char *end = strchrnul(p, ':');
+		const char *end = strchrnul(p, PATH_SEP);
 
 		strbuf_reset(&buf);
 
@@ -413,7 +424,11 @@ static int prepare_cmd(struct strvec *out, const struct child_process *cmd)
 	 * Add SHELL_PATH so in the event exec fails with ENOEXEC we can
 	 * attempt to interpret the command with 'sh'.
 	 */
+#ifndef __OS2__
 	strvec_push(out, SHELL_PATH);
+#else
+	strvec_push(out, wrapped_getenv_for_os2("GIT_SHELL"));
+#endif
 
 	if (cmd->git_cmd) {
 		prepare_git_cmd(out, cmd->argv);
