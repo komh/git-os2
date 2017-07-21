@@ -768,7 +768,7 @@ ifneq (,$(findstring OS/2,$(uname_S)))
 	NO_POSIX_GOODIES = UnfortunatelyYes
 	COMPAT_CFLAGS += -Icompat
 	COMPAT_CFLAGS += -DSTRIP_EXTENSION=\".exe\"
-	COMPAT_OBJS += compat/os2.o
+	COMPAT_OBJS += compat/os2.o compat/win32/path-utils.o
 	X = .exe
 	LN_X = ln4exe
 #	htmldir=doc/git/html/

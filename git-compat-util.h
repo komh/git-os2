@@ -259,6 +259,7 @@ static inline int is_xplatform_dir_sep(int c)
 }
 
 #if defined(__OS2__)
+#include "compat/win32/path-utils.h"
 #include "compat/os2-git-compat.h"
 #endif
 #if defined(__CYGWIN__)

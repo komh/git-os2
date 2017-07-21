@@ -87,8 +87,6 @@ typedef int socklen_t;
 # define _SOCKLEN_T_DECLARED
 #endif
 
-#define has_dos_drive_prefix(path) (isalpha(*(path)) && (path)[1] == ':')
-#define is_dir_sep(c) ((c) == '/' || (c) == '\\')
 #define PATH_SEP ';'
 
 #if defined(GIT_OS2_USE_DEFAULT_BROWSER)
