@@ -87,8 +87,27 @@ typedef int socklen_t;
 # define _SOCKLEN_T_DECLARED
 #endif
 
-#define has_dos_drive_prefix(path) (isalpha(*(path)) && (path)[1] == ':')
+#define has_dos_drive_prefix(path) \
+	(isalpha(*(path)) && (path)[1] == ':' ? 2 : 0)
+static inline int git_os2_skip_dos_drive_prefix(char **path)
+{
+	int ret = has_dos_drive_prefix(*path);
+	*path += ret;
+	return ret;
+}
+#define skip_dos_drive_prefix git_os2_skip_dos_drive_prefix
 #define is_dir_sep(c) ((c) == '/' || (c) == '\\')
+static inline char *git_os2_find_last_dir_sep(const char *path)
+{
+	char *ret = NULL;
+	for (; *path; ++path)
+		if (is_dir_sep(*path))
+			ret = (char *)path;
+	return ret;
+}
+#define find_last_dir_sep git_os2_find_last_dir_sep
+int git_os2_offset_1st_component(const char *path);
+#define offset_1st_component git_os2_offset_1st_component
 #define PATH_SEP ';'
 
 #if defined(GIT_OS2_USE_DEFAULT_BROWSER)
