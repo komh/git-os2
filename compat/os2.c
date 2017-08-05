@@ -1653,6 +1653,26 @@ int setbinmode_for_file(int fd)
   return rc;
 }
 
+static
+void realloc_env(void)
+{
+  int i;
+  char **env;
+
+  /* calculate the size of environment array */
+  for (i = 0, env = environ; *env; i++, env++)
+    /* nothing */;
+
+  /* alloc array newly, and copy string of environmental varaibles */
+  env = xmalloc(sizeof(char *) * (i + 1));
+  for (i = 0; environ[i]; i++)
+    env[i] = xstrdup(environ[i]);
+  env[i] = NULL;
+
+  /* replace environ */
+  environ = env;
+}
+
 int git_os2_main_prepare (int * p_argc, char ** * p_argv)
 {
   _control87(MCW_EM, MCW_EM); /* mask all FPEs */
@@ -1706,6 +1726,13 @@ int git_os2_main_prepare (int * p_argc, char ** * p_argv)
   git_os2_prepare_direnv();
   git_os2_prepare_unixcmd(); /* check Unixish sort/find */
   wrapped_getenv_for_os2 ("GIT_SHELL"); /* warn if /bin/sh or $GIT_SHELL not exist */
+
+  /*
+   * Prevent the crash when trying to fixup commit to non-last commit with
+   * git rebase -i.
+   * kLIBC seems not to copy environmental segment correctly when fork().
+   */
+  realloc_env();
 
 #ifdef i_need_debug_output
   {
