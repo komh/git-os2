@@ -341,7 +341,7 @@ int wrapped_poll_for_os2 (struct pollfd *fds, nfds_t nfds, int timeout)
     struct stat stbuf;
 	assert(fd < FD_SETSIZE);
 	if (fstat(fd, &stbuf) == -1 || (errno = 0, !S_ISSOCK(stbuf.st_mode))) {
-	  if (errno == 0 && S_ISREG(stbuf.st_mode))
+	  if (errno == 0 && (S_ISREG(stbuf.st_mode) || S_ISFIFO(stbuf.st_mode)))
 	    fds[i].revents = fds[i].events & (POLLIN | POLLOUT | POLLPRI);
 	  else
 	    fds[i].revents = POLLNVAL;
