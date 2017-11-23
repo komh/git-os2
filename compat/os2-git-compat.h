@@ -110,6 +110,9 @@ int git_os2_offset_1st_component(const char *path);
 #define offset_1st_component git_os2_offset_1st_component
 #define PATH_SEP ';'
 
+int os2_spawnvpe(const char *cmd, const char **argv, char **deltaenv,
+                 const char *dir, int fhin, int fhout, int fherr);
+
 #if defined(GIT_OS2_USE_DEFAULT_BROWSER)
 extern void git_os2pm_open_html(const char *unixpath);
 # define open_html git_os2pm_open_html

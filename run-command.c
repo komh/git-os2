@@ -280,7 +280,7 @@ static const char **prepare_shell_cmd(struct argv_array *out, const char **argv)
 	return out->argv;
 }
 
-#ifndef GIT_WINDOWS_NATIVE
+#if !defined(GIT_WINDOWS_NATIVE) && !defined(__OS2__)
 static int child_notifier = -1;
 
 enum child_errcode {
@@ -643,7 +643,7 @@ fail_pipe:
 	trace_argv_printf(cmd->argv, "trace: run_command:");
 	fflush(NULL);
 
-#ifndef GIT_WINDOWS_NATIVE
+#if !defined(GIT_WINDOWS_NATIVE) && !defined(__OS2__)
 {
 	int notify_pipe[2];
 	int null_fd = -1;
@@ -824,8 +824,13 @@ fail_pipe:
 	else if (cmd->use_shell)
 		cmd->argv = prepare_shell_cmd(&nargv, cmd->argv);
 
+#ifndef __OS2__
 	cmd->pid = mingw_spawnvpe(cmd->argv[0], cmd->argv, (char**) cmd->env,
 			cmd->dir, fhin, fhout, fherr);
+#else
+	cmd->pid = os2_spawnvpe(cmd->argv[0], cmd->argv, (char**) cmd->env,
+			cmd->dir, fhin, fhout, fherr);
+#endif
 	failed_errno = errno;
 	if (cmd->pid < 0 && (!cmd->silent_exec_failure || errno != ENOENT))
 		error_errno("cannot spawn %s", cmd->argv[0]);
