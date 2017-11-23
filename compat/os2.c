@@ -1689,6 +1689,16 @@ int git_os2_main_prepare (int * p_argc, char ** * p_argv)
   git_os2_prepare_unixcmd(); /* check Unixish sort/find */
   wrapped_getenv_for_os2 ("GIT_SHELL"); /* warn if /bin/sh or $GIT_SHELL not exist */
 
+  /*
+   * Workaround the bug of kLIBC v0.6.6 which is to fail to execute the
+   * program when a directory with the same name in the current directory.
+   * For example, some commands such as `git push' fails if a directory named
+   * `git' in the current directory.
+   * This has effects on codes using _path2() such as spawnvpe().
+   */
+   if (!getenv("EMXPATH"))
+     putenv("EMXPATH=");
+
 #ifdef i_need_debug_output
   {
   extern const char *system_path(const char *path);
@@ -1756,6 +1766,190 @@ int git_os2_offset_1st_component(const char *path)
 	}
 
 	return pos + is_dir_sep(*pos) - path;
+}
+
+/* Copied from run-command.c */
+static char **prep_childenv(const char *const *deltaenv)
+{
+	extern char **environ;
+	char **childenv;
+	struct string_list env = STRING_LIST_INIT_DUP;
+	struct strbuf key = STRBUF_INIT;
+	const char *const *p;
+	int i;
+
+	/* Construct a sorted string list consisting of the current environ */
+	for (p = (const char *const *) environ; p && *p; p++) {
+		const char *equals = strchr(*p, '=');
+
+		if (equals) {
+			strbuf_reset(&key);
+			strbuf_add(&key, *p, equals - *p);
+			string_list_append(&env, key.buf)->util = (void *) *p;
+		} else {
+			string_list_append(&env, *p)->util = (void *) *p;
+		}
+	}
+	string_list_sort(&env);
+
+	/* Merge in 'deltaenv' with the current environ */
+	for (p = deltaenv; p && *p; p++) {
+		const char *equals = strchr(*p, '=');
+
+		if (equals) {
+			/* ('key=value'), insert or replace entry */
+			strbuf_reset(&key);
+			strbuf_add(&key, *p, equals - *p);
+			string_list_insert(&env, key.buf)->util = (void *) *p;
+		} else {
+			/* otherwise ('key') remove existing entry */
+			string_list_remove(&env, *p, 0);
+		}
+	}
+
+	/* Create an array of 'char *' to be used as the childenv */
+	childenv = xmalloc((env.nr + 1) * sizeof(char *));
+	for (i = 0; i < env.nr; i++)
+		childenv[i] = env.items[i].util;
+	childenv[env.nr] = NULL;
+
+	string_list_clear(&env, 0);
+	strbuf_release(&key);
+	return childenv;
+}
+
+/* conflict: exit() macro in git-compat-util.h */
+#undef exit
+#include <process.h>
+
+#include "strvec.h"
+
+int os2_spawnvpe(const char *cmd, const char **argv, char **deltaenv,
+		 const char *dir, int fhin, int fhout, int fherr)
+{
+	char path[_MAX_PATH];
+	char *saveddir;
+	int savedin;
+	int savedout;
+	int savederr;
+	char **childenv;
+	fd_set fds;
+	int fl;
+	int i;
+	int pid;
+	int savederrno;
+
+	if (_path2(cmd, ".exe", path, sizeof(path)) == -1)
+		return -1;
+	_fnslashify(path);
+
+	if (dir) {
+		saveddir = _getcwd2(NULL, 0);
+		if (_chdir2(dir) == -1)
+			die("cannot chdir to %s", dir);
+	}
+
+	/* Duplicate the given file handle to standard IO handle if needed */
+	if (fhin != 0) {
+		savedin = dup(0);
+		dup2(fhin, 0);
+	}
+
+	if (fhout != 1) {
+		savedout = dup(1);
+		dup2(fhout, 1);
+	}
+
+	if (fherr != 2) {
+		savederr = dup(2);
+		dup2(fherr, 2);
+	}
+
+	/*
+	 * Set FD_CLOEXEC bit of file handles other than standard IO handles
+	 * to prevent a child from inheriting them. This is the main cause of
+	 * a hang when redirecting pipe.
+	 */
+	FD_ZERO(&fds);
+	for (i = 3; i < FD_SETSIZE; i++) {
+		fl = fcntl(i, F_GETFD);
+		if (fl != -1 && !(fl & FD_CLOEXEC)) {
+			fcntl(i, F_SETFD, fl | FD_CLOEXEC);
+			FD_SET(i, &fds);
+		}
+	}
+
+	/* Build an environment from deltaenv for a child */
+	childenv = prep_childenv((const char *const *)deltaenv);
+
+	pid = spawnve(P_NOWAIT, path, (char *const *)argv, childenv);
+	savederrno = errno;
+	if (pid == -1 && errno == EACCES &&
+	    check_file_exetype(path, NULL, 0) == FILE_EXETYPE_SH) {
+		/*
+		 * Workaround for a bug of kLIBC v0.6.6 which is to fail to execute
+		 * a script in the directory whose name is the same as the interpreter
+		 * of it. Use sh -c to execute it.
+		 */
+		struct strvec shargv = STRVEC_INIT;
+
+		if (_getname(path) == path) {
+			/*
+			 * sh -c does not search a script in a current directory. To
+			 * execute the script in the current directory, prepend ./
+			 * explicitly. Assume path is sufficient to hold ./ + path itself.
+			 */
+			memmove(path + 2, path, strlen(path) + 1);
+			path[0] = '.';
+			path[1] = '/';
+		}
+
+		/* Construct arguments list for sh -c */
+		strvec_push(&shargv, wrapped_get_gitshell(NULL));
+		strvec_push(&shargv, "-c");
+		strvec_pushf(&shargv, "%s \"$@\"", path);
+		strvec_pushv(&shargv, argv);
+		pid = spawnvpe(P_NOWAIT, shargv.v[0],
+			       (char *const *)shargv.v, childenv);
+		savederrno = errno;
+
+		strvec_clear(&shargv);
+	}
+
+	free(childenv);
+
+	/* Clear FD_CLOEXEC bit which was set above */
+	for (i = 3; i < FD_SETSIZE; i++) {
+		if (FD_ISSET(i, &fds)) {
+			fcntl(i, F_SETFD, fcntl(i, F_GETFD) & ~FD_CLOEXEC);
+		}
+	}
+
+	/* Restore standard IO handles */
+	if (fhin != 0) {
+		dup2(savedin, 0);
+		close(savedin);
+	}
+
+	if (fhout != 1) {
+		dup2(savedout, 1);
+		close(savedout);
+	}
+
+	if (fherr != 2) {
+		dup2(savederr, 2);
+		close(savederr);
+	}
+
+	if (dir) {
+		if (_chdir2(saveddir) == -1)
+			die("cannot chdir to %s", saveddir);
+		free(saveddir);
+	}
+
+	errno = savederrno;
+
+	return pid;
 }
 
 /*
