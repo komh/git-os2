@@ -1692,6 +1692,16 @@ int git_os2_main_prepare (int * p_argc, char ** * p_argv)
   git_os2_prepare_unixcmd(); /* check Unixish sort/find */
   wrapped_getenv_for_os2 ("GIT_SHELL"); /* warn if /bin/sh or $GIT_SHELL not exist */
 
+  /*
+   * Workaround the bug of kLIBC v0.6.6 which is to fail to execute the
+   * program when a directory with the same name in the current directory.
+   * For example, some commands such as `git push' fails if a directory named
+   * `git' in the current directory.
+   * This has effects on codes using _path2() such as spawnvpe().
+   */
+   if (!getenv("EMXPATH"))
+     putenv("EMXPATH=");
+
 #ifdef i_need_debug_output
   {
   extern const char *system_path(const char *path);
