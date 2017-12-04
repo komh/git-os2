@@ -1865,9 +1865,12 @@ static char **prep_childenv(const char *const *deltaenv)
 
 #include <process.h>
 
+#include "argv-array.h"
+
 int os2_spawnvpe(const char *cmd, const char **argv, char **deltaenv,
                  const char *dir, int fhin, int fhout, int fherr)
 {
+	char path[_MAX_PATH];
 	char *saveddir;
 	int savedin;
 	int savedout;
@@ -1878,6 +1881,9 @@ int os2_spawnvpe(const char *cmd, const char **argv, char **deltaenv,
 	int i;
 	int pid;
 	int savederrno;
+
+	if (_path2(cmd, ".exe", path, sizeof(path)) == -1)
+		return -1;
 
 	if (dir) {
 		saveddir = _getcwd2(NULL, 0);
@@ -1918,8 +1924,39 @@ int os2_spawnvpe(const char *cmd, const char **argv, char **deltaenv,
 	/* Build an environment from deltaenv for a child */
 	childenv = prep_childenv((const char *const *)deltaenv);
 
-	pid = spawnvpe(P_NOWAIT, cmd, (char *const *)argv, childenv);
+	pid = spawnve(P_NOWAIT, path, (char *const *)argv, childenv);
 	savederrno = errno;
+	if (pid == -1 && errno == EACCES &&
+	    check_file_exetype(path, NULL, 0) == FILE_EXETYPE_SH) {
+		/*
+		 * Workaround for a bug of kLIBC v0.6.6 which is to fail to execute
+		 * a script in the directory whose name is the same as the interpreter
+		 * of it. Use sh -c to execute it.
+		 */
+		struct argv_array shargv = ARGV_ARRAY_INIT;
+
+		if (_getname(path) == path) {
+			/*
+			 * sh -c does not search a script in a current directory. To
+			 * execute the script in the current directory, prepend ./
+			 * explicitly. Assume path is sufficient to hold ./ + path itself.
+			 */
+			memmove(path + 2, path, strlen(path));
+			path[0] = '.';
+			path[1] = '/';
+		}
+
+		/* Construct arguments list for sh -c */
+		argv_array_push(&shargv, wrapped_get_gitshell(NULL));
+		argv_array_push(&shargv, "-c");
+		argv_array_pushf(&shargv, "%s \"$@\"", path);
+		argv_array_pushv(&shargv, argv);
+		pid = spawnvpe(P_NOWAIT, shargv.argv[0],
+		               (char *const *)shargv.argv, childenv);
+		savederrno = errno;
+
+		argv_array_clear(&shargv);
+	}
 
 	free(childenv);
 
