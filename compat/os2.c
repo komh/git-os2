@@ -1857,6 +1857,7 @@ int os2_spawnvpe(const char *cmd, const char **argv, char **deltaenv,
 
 	if (_path2(cmd, ".exe", path, sizeof(path)) == -1)
 		return -1;
+	_fnslashify(path);
 
 	if (dir) {
 		saveddir = _getcwd2(NULL, 0);
