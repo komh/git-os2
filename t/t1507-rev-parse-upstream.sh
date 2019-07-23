@@ -42,7 +42,7 @@ commit_subject () {
 
 error_message () {
 	(cd clone &&
-	 test_must_fail git rev-parse --verify "$@")
+	 test_must_fail git rev-parse --verify "$@" 2>../error)
 }
 
 test_expect_success '@{upstream} resolves to correct full name' '
@@ -123,9 +123,9 @@ test_expect_success 'checkout -b new my-side@{u} forks from the same' '
 
 test_expect_success 'merge my-side@{u} records the correct name' '
 (
-	cd clone || exit
-	git checkout master || exit
-	git branch -D new ;# can fail but is ok
+	cd clone &&
+	git checkout master &&
+	test_might_fail git branch -D new &&
 	git branch -t new my-side@{u} &&
 	git merge -s ours new@{u} &&
 	git show -s --pretty=tformat:%s >actual &&
@@ -138,8 +138,7 @@ test_expect_success 'branch -d other@{u}' '
 	git checkout -t -b other master &&
 	git branch -d @{u} &&
 	git for-each-ref refs/heads/master >actual &&
-	>expect &&
-	test_cmp expect actual
+	test_must_be_empty actual
 '
 
 test_expect_success 'checkout other@{u}' '
@@ -159,8 +158,8 @@ test_expect_success 'branch@{u} error message when no upstream' '
 	cat >expect <<-EOF &&
 	fatal: no upstream configured for branch ${sq}non-tracking${sq}
 	EOF
-	error_message non-tracking@{u} 2>actual &&
-	test_i18ncmp expect actual
+	error_message non-tracking@{u} &&
+	test_i18ncmp expect error
 '
 
 test_expect_success '@{u} error message when no upstream' '
@@ -175,8 +174,8 @@ test_expect_success 'branch@{u} error message with misspelt branch' '
 	cat >expect <<-EOF &&
 	fatal: no such branch: ${sq}no-such-branch${sq}
 	EOF
-	error_message no-such-branch@{u} 2>actual &&
-	test_i18ncmp expect actual
+	error_message no-such-branch@{u} &&
+	test_i18ncmp expect error
 '
 
 test_expect_success '@{u} error message when not on a branch' '
@@ -192,8 +191,8 @@ test_expect_success 'branch@{u} error message if upstream branch not fetched' '
 	cat >expect <<-EOF &&
 	fatal: upstream branch ${sq}refs/heads/side${sq} not stored as a remote-tracking branch
 	EOF
-	error_message bad-upstream@{u} 2>actual &&
-	test_i18ncmp expect actual
+	error_message bad-upstream@{u} &&
+	test_i18ncmp expect error
 '
 
 test_expect_success 'pull works when tracking a local branch' '
@@ -209,8 +208,9 @@ test_expect_success '@{u} works when tracking a local branch' '
 	test refs/heads/master = "$(full_name @{u})"
 '
 
+commit=$(git rev-parse HEAD)
 cat >expect <<EOF
-commit 8f489d01d0cc65c3b0f09504ec50b5ed02a70bd5
+commit $commit
 Reflog: master@{0} (C O Mitter <committer@example.com>)
 Reflog message: branch: Created from HEAD
 Author: A U Thor <author@example.com>
@@ -224,7 +224,7 @@ test_expect_success 'log -g other@{u}' '
 '
 
 cat >expect <<EOF
-commit 8f489d01d0cc65c3b0f09504ec50b5ed02a70bd5
+commit $commit
 Reflog: master@{Thu Apr 7 15:17:13 2005 -0700} (C O Mitter <committer@example.com>)
 Reflog message: branch: Created from HEAD
 Author: A U Thor <author@example.com>

@@ -1,5 +1,9 @@
+#include "test-tool.h"
 #include "cache.h"
 #include "refs.h"
+#include "worktree.h"
+#include "object-store.h"
+#include "repository.h"
 
 static const char *notnull(const char *arg, const char *name)
 {
@@ -20,7 +24,7 @@ static const char **get_store(const char **argv, struct ref_store **refs)
 	if (!argv[0]) {
 		die("ref store required");
 	} else if (!strcmp(argv[0], "main")) {
-		*refs = get_main_ref_store();
+		*refs = get_main_ref_store(the_repository);
 	} else if (skip_prefix(argv[0], "submodule:", &gitdir)) {
 		struct strbuf sb = STRBUF_INIT;
 		int ret;
@@ -32,6 +36,23 @@ static const char **get_store(const char **argv, struct ref_store **refs)
 		strbuf_release(&sb);
 
 		*refs = get_submodule_ref_store(gitdir);
+	} else if (skip_prefix(argv[0], "worktree:", &gitdir)) {
+		struct worktree **p, **worktrees = get_worktrees(0);
+
+		for (p = worktrees; *p; p++) {
+			struct worktree *wt = *p;
+
+			if (!wt->id) {
+				/* special case for main worktree */
+				if (!strcmp(gitdir, "main"))
+					break;
+			} else if (!strcmp(gitdir, wt->id))
+				break;
+		}
+		if (!*p)
+			die("no such worktree: %s", gitdir);
+
+		*refs = get_worktree_ref_store(*p);
 	} else
 		die("unknown backend %s", argv[0]);
 
@@ -54,12 +75,12 @@ static int cmd_pack_refs(struct ref_store *refs, const char **argv)
 static int cmd_peel_ref(struct ref_store *refs, const char **argv)
 {
 	const char *refname = notnull(*argv++, "refname");
-	unsigned char sha1[20];
+	struct object_id oid;
 	int ret;
 
-	ret = refs_peel_ref(refs, refname, sha1);
+	ret = refs_peel_ref(refs, refname, &oid);
 	if (!ret)
-		puts(sha1_to_hex(sha1));
+		puts(oid_to_hex(&oid));
 	return ret;
 }
 
@@ -75,12 +96,13 @@ static int cmd_create_symref(struct ref_store *refs, const char **argv)
 static int cmd_delete_refs(struct ref_store *refs, const char **argv)
 {
 	unsigned int flags = arg_flags(*argv++, "flags");
+	const char *msg = *argv++;
 	struct string_list refnames = STRING_LIST_INIT_NODUP;
 
 	while (*argv)
 		string_list_append(&refnames, *argv++);
 
-	return refs_delete_refs(refs, &refnames, flags);
+	return refs_delete_refs(refs, msg, &refnames, flags);
 }
 
 static int cmd_rename_ref(struct ref_store *refs, const char **argv)
@@ -108,15 +130,15 @@ static int cmd_for_each_ref(struct ref_store *refs, const char **argv)
 
 static int cmd_resolve_ref(struct ref_store *refs, const char **argv)
 {
-	unsigned char sha1[20];
+	struct object_id oid;
 	const char *refname = notnull(*argv++, "refname");
 	int resolve_flags = arg_flags(*argv++, "resolve-flags");
 	int flags;
 	const char *ref;
 
 	ref = refs_resolve_ref_unsafe(refs, refname, resolve_flags,
-				      sha1, &flags);
-	printf("%s %s 0x%x\n", sha1_to_hex(sha1), ref, flags);
+				      &oid, &flags);
+	printf("%s %s 0x%x\n", oid_to_hex(&oid), ref ? ref : "(null)", flags);
 	return ref ? 0 : 1;
 }
 
@@ -138,10 +160,10 @@ static int cmd_for_each_reflog(struct ref_store *refs, const char **argv)
 }
 
 static int each_reflog(struct object_id *old_oid, struct object_id *new_oid,
-		       const char *committer, unsigned long timestamp,
+		       const char *committer, timestamp_t timestamp,
 		       int tz, const char *msg, void *cb_data)
 {
-	printf("%s %s %s %lu %d %s\n",
+	printf("%s %s %s %"PRItime" %d %s\n",
 	       oid_to_hex(old_oid), oid_to_hex(new_oid),
 	       committer, timestamp, tz, msg);
 	return 0;
@@ -199,30 +221,30 @@ static int cmd_delete_ref(struct ref_store *refs, const char **argv)
 	const char *refname = notnull(*argv++, "refname");
 	const char *sha1_buf = notnull(*argv++, "old-sha1");
 	unsigned int flags = arg_flags(*argv++, "flags");
-	unsigned char old_sha1[20];
+	struct object_id old_oid;
 
-	if (get_sha1_hex(sha1_buf, old_sha1))
+	if (get_oid_hex(sha1_buf, &old_oid))
 		die("not sha-1");
 
-	return refs_delete_ref(refs, msg, refname, old_sha1, flags);
+	return refs_delete_ref(refs, msg, refname, &old_oid, flags);
 }
 
 static int cmd_update_ref(struct ref_store *refs, const char **argv)
 {
 	const char *msg = notnull(*argv++, "msg");
 	const char *refname = notnull(*argv++, "refname");
-	const char *new_sha1_buf = notnull(*argv++, "old-sha1");
+	const char *new_sha1_buf = notnull(*argv++, "new-sha1");
 	const char *old_sha1_buf = notnull(*argv++, "old-sha1");
 	unsigned int flags = arg_flags(*argv++, "flags");
-	unsigned char old_sha1[20];
-	unsigned char new_sha1[20];
+	struct object_id old_oid;
+	struct object_id new_oid;
 
-	if (get_sha1_hex(old_sha1_buf, old_sha1) ||
-	    get_sha1_hex(new_sha1_buf, new_sha1))
+	if (get_oid_hex(old_sha1_buf, &old_oid) ||
+	    get_oid_hex(new_sha1_buf, &new_oid))
 		die("not sha-1");
 
 	return refs_update_ref(refs, msg, refname,
-			       new_sha1, old_sha1,
+			       &new_oid, &old_oid,
 			       flags, UPDATE_REFS_DIE_ON_ERR);
 }
 
@@ -255,7 +277,7 @@ static struct command commands[] = {
 	{ NULL, NULL }
 };
 
-int cmd_main(int argc, const char **argv)
+int cmd__ref_store(int argc, const char **argv)
 {
 	struct ref_store *refs;
 	const char *func;

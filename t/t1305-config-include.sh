@@ -224,9 +224,22 @@ test_expect_success 'conditional include, early config reading' '
 		echo "[includeIf \"gitdir:foo/\"]path=bar6" >>.git/config &&
 		echo "[test]six=6" >.git/bar6 &&
 		echo 6 >expect &&
-		test-config read_early_config test.six >actual &&
+		test-tool config read_early_config test.six >actual &&
 		test_cmp expect actual
 	)
+'
+
+test_expect_success 'conditional include with /**/' '
+	REPO=foo/bar/repo &&
+	git init $REPO &&
+	cat >>$REPO/.git/config <<-\EOF &&
+	[includeIf "gitdir:**/foo/**/bar/**"]
+	path=bar7
+	EOF
+	echo "[test]seven=7" >$REPO/.git/bar7 &&
+	echo 7 >expect &&
+	git -C $REPO config test.seven >actual &&
+	test_cmp expect actual
 '
 
 test_expect_success SYMLINKS 'conditional include, set up symlinked $HOME' '
@@ -273,6 +286,29 @@ test_expect_success SYMLINKS 'conditional include, relative path with symlinks' 
 	)
 '
 
+test_expect_success SYMLINKS 'conditional include, gitdir matching symlink' '
+	ln -s foo bar &&
+	(
+		cd bar &&
+		echo "[includeIf \"gitdir:bar/\"]path=bar7" >>.git/config &&
+		echo "[test]seven=7" >.git/bar7 &&
+		echo 7 >expect &&
+		git config test.seven >actual &&
+		test_cmp expect actual
+	)
+'
+
+test_expect_success SYMLINKS 'conditional include, gitdir matching symlink, icase' '
+	(
+		cd bar &&
+		echo "[includeIf \"gitdir/i:BAR/\"]path=bar8" >>.git/config &&
+		echo "[test]eight=8" >.git/bar8 &&
+		echo 8 >expect &&
+		git config test.eight >actual &&
+		test_cmp expect actual
+	)
+'
+
 test_expect_success 'include cycles are detected' '
 	cat >.gitconfig <<-\EOF &&
 	[test]value = gitconfig
@@ -287,7 +323,7 @@ test_expect_success 'include cycles are detected' '
 	cycle
 	EOF
 	test_must_fail git config --get-all test.value 2>stderr &&
-	grep "exceeded maximum include depth" stderr
+	test_i18ngrep "exceeded maximum include depth" stderr
 '
 
 test_done

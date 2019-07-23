@@ -8,13 +8,13 @@ git-filter-branch - Rewrite branches
 SYNOPSIS
 --------
 [verse]
-'git filter-branch' [--env-filter <command>] [--tree-filter <command>]
+'git filter-branch' [--setup <command>] [--subdirectory-filter <directory>]
+	[--env-filter <command>] [--tree-filter <command>]
 	[--index-filter <command>] [--parent-filter <command>]
 	[--msg-filter <command>] [--commit-filter <command>]
-	[--tag-name-filter <command>] [--subdirectory-filter <directory>]
-	[--prune-empty]
+	[--tag-name-filter <command>] [--prune-empty]
 	[--original <namespace>] [-d <directory>] [-f | --force]
-	[--] [<rev-list options>...]
+	[--state-branch <branch>] [--] [<rev-list options>...]
 
 DESCRIPTION
 -----------
@@ -81,6 +81,18 @@ multiple commits.
 
 OPTIONS
 -------
+
+--setup <command>::
+	This is not a real filter executed for each commit but a one
+	time setup just before the loop. Therefore no commit-specific
+	variables are defined yet.  Functions or variables defined here
+	can be used or modified in the following filter steps except
+	the commit filter, for technical reasons.
+
+--subdirectory-filter <directory>::
+	Only look at the history which touches the given subdirectory.
+	The result will contain that directory (and only that) as its
+	project root. Implies <<Remap_to_ancestor>>.
 
 --env-filter <command>::
 	This filter may be used if you only need to modify the environment
@@ -160,11 +172,6 @@ be removed, buyer beware. There is also no support for changing the
 author or timestamp (or the tag message for that matter). Tags which point
 to other tags will be rewritten to point to the underlying commit.
 
---subdirectory-filter <directory>::
-	Only look at the history which touches the given subdirectory.
-	The result will contain that directory (and only that) as its
-	project root. Implies <<Remap_to_ancestor>>.
-
 --prune-empty::
 	Some filters will generate empty commits that leave the tree untouched.
 	This option instructs git-filter-branch to remove such commits if they
@@ -182,7 +189,7 @@ to other tags will be rewritten to point to the underlying commit.
 	rewriting.  When applying a tree filter, the command needs to
 	temporarily check out the tree to some directory, which may consume
 	considerable space in case of large projects.  By default it
-	does this in the '.git-rewrite/' directory but you can override
+	does this in the `.git-rewrite/` directory but you can override
 	that choice by this parameter.
 
 -f::
@@ -190,6 +197,12 @@ to other tags will be rewritten to point to the underlying commit.
 	'git filter-branch' refuses to start with an existing temporary
 	directory or when there are already refs starting with
 	'refs/original/', unless forced.
+
+--state-branch <branch>::
+	This option will cause the mapping from old to new objects to
+	be loaded from named branch upon startup and saved as a new
+	commit to that branch upon exit, enabling incremental of large
+	trees. If '<branch>' does not exist it will be created.
 
 <rev-list options>...::
 	Arguments for 'git rev-list'.  All positive refs included by
@@ -209,7 +222,15 @@ this purpose, they are instead rewritten to point at the nearest ancestor that
 was not excluded.
 
 
-Examples
+EXIT STATUS
+-----------
+
+On success, the exit status is `0`.  If the filter can't find any commits to
+rewrite, the exit status is `2`.  On any other error, the exit status may be
+any other non-zero value.
+
+
+EXAMPLES
 --------
 
 Suppose you want to remove a file (containing confidential information
@@ -267,7 +288,7 @@ git filter-branch --parent-filter \
 or even simpler:
 
 -----------------------------------------------
-echo "$commit-id $graft-id" >> .git/info/grafts
+git replace --graft $commit-id $graft-id
 git filter-branch $graft-id..HEAD
 -----------------------------------------------
 
@@ -385,7 +406,7 @@ git filter-branch --index-filter \
 
 
 
-Checklist for Shrinking a Repository
+CHECKLIST FOR SHRINKING A REPOSITORY
 ------------------------------------
 
 git-filter-branch can be used to get rid of a subset of files,
@@ -424,7 +445,7 @@ warned.
   (or if your git-gc is not new enough to support arguments to
   `--prune`, use `git repack -ad; git prune` instead).
 
-Notes
+NOTES
 -----
 
 git-filter-branch allows you to make complex shell-scripted rewrites
