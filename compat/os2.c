@@ -1699,6 +1699,13 @@ int git_os2_main_prepare (int * p_argc, char ** * p_argv)
    if (!getenv("EMXPATH"))
      putenv("EMXPATH=");
 
+  /*
+   * Make perl not translate CRLF to LF and vice versa.
+   * From git 2.20.0, applying patches using `git add -p' fails due to LF to
+   * CRLF conversion of perl.
+   */
+   putenv("PERLIO=perlio");
+
 #ifdef i_need_debug_output
   {
   extern const char *system_path(const char *path);
