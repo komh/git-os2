@@ -1635,6 +1635,92 @@ int setbinmode_for_file(int fd)
   return rc;
 }
 
+/* Conversion functions between UTF-8 and system encoding */
+
+static int fromutf8(char *out, int outsize, const char *in)
+{
+	static iconv_t cd = (iconv_t)-1;
+
+	const char *inbuf = in;
+	size_t inleft = strlen(inbuf) + 1;
+	char *outbuf = out;
+	size_t outleft = outsize;
+
+	if (cd == (iconv_t)-1)
+		cd = iconv_open("", "UTF-8");
+
+	if (iconv(cd, &inbuf, &inleft, &outbuf, &outleft) == (size_t)-1)
+		return -1;
+
+	return 0;
+}
+
+static char *fromutf8dup(const char *in)
+{
+	char *out = NULL;
+	size_t size = 256;
+	int ret = -1;
+
+	while (ret == -1) {
+		out = realloc(out, size);
+		if (!out)
+			die("Out of memory, realloc failed");
+
+		ret = fromutf8(out, size, in);
+		if (ret == -1 && errno != E2BIG) {
+			free(out);
+			return NULL;
+		}
+
+		size <<= 1;
+	}
+
+	/* Fit memory size to length of string */
+	return realloc(out, strlen(out) + 1);
+}
+
+static int toutf8(char *out, int outsize, const char *in)
+{
+	static iconv_t cd = (iconv_t)-1;
+
+	const char *inbuf = in;
+	size_t inleft = strlen(inbuf) + 1;
+	char *outbuf = out;
+	size_t outleft = outsize;
+
+	if (cd == (iconv_t)-1)
+		cd = iconv_open("UTF-8", "");
+
+	if (iconv(cd, &inbuf, &inleft, &outbuf, &outleft) == (size_t)-1)
+		return -1;
+
+	return 0;
+}
+
+static char *toutf8dup(const char *in)
+{
+	char *out = NULL;
+	size_t size = 256;
+	int ret = -1;
+
+	while( ret == -1 ) {
+		out = realloc(out, size);
+		if (!out)
+			die("Out of memory, realloc failed");
+
+		ret = toutf8(out, size, in);
+		if (ret == -1 && errno != E2BIG) {
+			free(out);
+			return NULL;
+		}
+
+		size <<= 1;
+	}
+
+	/* Fit memory size to length of string */
+	return realloc(out, strlen(out) + 1);
+}
+
 int git_os2_main_prepare (int * p_argc, char ** * p_argv)
 {
   _control87(MCW_EM, MCW_EM); /* mask all FPEs */
@@ -1672,6 +1758,14 @@ int git_os2_main_prepare (int * p_argc, char ** * p_argv)
       }
     }
 #endif
+  }
+
+  /* Conversion system encoding path to UTF-8 path */
+  for (int i = *p_argc - 1; i >= 0; i--) {
+    char *p = toutf8dup((*p_argv)[i]);
+    if (!p)
+      die("Cannot convert %s to UTF-8 encoding.\n", p);
+    (*p_argv)[i] = p;
   }
 
   setbinmode_for_file(fileno(stdin));
@@ -1831,9 +1925,13 @@ static char **prep_childenv(const char *const *deltaenv)
 
 #include "strvec.h"
 
-int os2_spawnvpe(const char *cmd, const char **argv, char **deltaenv,
-		 const char *dir, int fhin, int fhout, int fherr)
+int os2_spawnvpe(const char *ucmd, const char **uargv, char **udeltaenv,
+		const char *udir, int fhin, int fhout, int fherr)
 {
+	char cmd[_MAX_PATH];
+	const char **argv;
+	char **deltaenv;
+	char dir[_MAX_PATH];
 	char path[_MAX_PATH];
 	char *saveddir;
 	int savedin;
@@ -1843,18 +1941,50 @@ int os2_spawnvpe(const char *cmd, const char **argv, char **deltaenv,
 	fd_set fds;
 	int fl;
 	int i;
-	int pid;
+	int pid = -1;
 	int savederrno;
+	int size;
+	int delta;
+
+	if (fromutf8(cmd, sizeof(cmd), ucmd) == -1)
+		return -1;
+
+	delta = 8;
+	size = 1;   /* 1 for last NULL */
+	ALLOC_ARRAY(argv, size);
+	for (i = 0; uargv[i]; i++) {
+		if (i + 1 == size) {
+			size += delta;
+			REALLOC_ARRAY(argv, size);
+		}
+
+		argv[i] = fromutf8dup(uargv[i]);
+		if (!argv[i])
+			goto exit_cleanup;
+	}
+	argv[i] = NULL;
+
+	delta = 16;
+	size = 1;   /* 1 for last NULL */
+	ALLOC_ARRAY(deltaenv, size);
+	for (i = 0; udeltaenv[i]; i++) {
+		if (i + 1 == size) {
+			size += delta;
+			REALLOC_ARRAY(deltaenv, size);
+		}
+
+		deltaenv[i] = fromutf8dup(udeltaenv[i]);
+		if (!deltaenv[i])
+			goto exit_cleanup;
+	}
+	deltaenv[i] = NULL;
+
+	if (udir && fromutf8(dir, sizeof(dir), udir) == -1)
+		goto exit_cleanup;
 
 	if (_path2(cmd, ".exe", path, sizeof(path)) == -1)
 		return -1;
 	_fnslashify(path);
-
-	if (dir) {
-		saveddir = _getcwd2(NULL, 0);
-		if (_chdir2(dir) == -1)
-			die("cannot chdir to %s", dir);
-	}
 
 	/* Duplicate the given file handle to standard IO handle if needed */
 	if (fhin != 0) {
@@ -1888,6 +2018,12 @@ int os2_spawnvpe(const char *cmd, const char **argv, char **deltaenv,
 
 	/* Build an environment from deltaenv for a child */
 	childenv = prep_childenv((const char *const *)deltaenv);
+
+	if (udir) {
+		saveddir = _getcwd2(NULL, 0);
+		if (_chdir2(dir) == -1)
+			die("cannot chdir to %s", dir);
+	}
 
 	pid = spawnve(P_NOWAIT, path, (char *const *)argv, childenv);
 	savederrno = errno;
@@ -1923,6 +2059,12 @@ int os2_spawnvpe(const char *cmd, const char **argv, char **deltaenv,
 		strvec_clear(&shargv);
 	}
 
+	if (udir) {
+		if (_chdir2(saveddir) == -1)
+			die("cannot chdir to %s", saveddir);
+		free(saveddir);
+	}
+
 	free(childenv);
 
 	/* Clear FD_CLOEXEC bit which was set above */
@@ -1948,15 +2090,298 @@ int os2_spawnvpe(const char *cmd, const char **argv, char **deltaenv,
 		close(savederr);
 	}
 
-	if (dir) {
-		if (_chdir2(saveddir) == -1)
-			die("cannot chdir to %s", saveddir);
-		free(saveddir);
-	}
+exit_cleanup:
+	for (i = 0; deltaenv[i]; i++)
+		free(deltaenv[i]);
+	free(deltaenv);
+
+	for (i = 0; argv[i]; i++)
+		free((char *)argv[i]);
+	free(argv);
 
 	errno = savederrno;
 
 	return pid;
+}
+
+/* UTF-8 version file IO functions */
+
+int _std_unlink(const char *);
+
+int unlink(const char *upath)
+{
+	char path[PATH_MAX];
+
+	if (fromutf8(path, sizeof(path), upath) == -1)
+		return -1;
+
+	return _std_unlink(path);
+}
+
+int _std_rmdir(const char *);
+
+int rmdir(const char *upath)
+{
+	char path[PATH_MAX];
+
+	if (fromutf8(path, sizeof(path), upath) == -1)
+		return -1;
+
+	return _std_rmdir(path);
+}
+
+int _std_mkdir(const char *, mode_t);
+
+int mkdir(const char *upath, mode_t mode)
+{
+	char path[PATH_MAX];
+
+	if (fromutf8(path, sizeof(path), upath) == -1)
+		return -1;
+
+	return _std_mkdir(path, mode);
+}
+
+int _std_open(const char *, int, ...);
+
+int open(const char *upath, int oflag, ...)
+{
+	char path[PATH_MAX];
+	va_list args;
+	int pmode = 0;
+	int ret;
+
+	if (fromutf8(path, sizeof(path), upath) == -1)
+		return -1;
+
+	va_start(args, oflag);
+
+	if (oflag & O_CREAT)
+		pmode = va_arg(args, int);
+
+	va_end(args);
+
+	return _std_open(path, oflag, pmode);
+}
+
+FILE *_std_fopen(const char *, const char *);
+
+#undef fopen
+FILE *fopen(const char *upath, const char *mode)
+{
+	char path[PATH_MAX];
+
+	if (fromutf8(path, sizeof(path), upath) == -1)
+		return NULL;
+
+	return _std_fopen(upath, mode);
+}
+
+FILE *_std_freopen(const char *, const char *, FILE *);
+
+FILE *freopen(const char *upath, const char *mode, FILE *stream)
+{
+	char path[PATH_MAX];
+
+	if (fromutf8(path, sizeof(path), upath) == -1)
+		return NULL;
+
+	return _std_freopen(upath, mode, stream);
+}
+
+int _std_access(const char *, int);
+
+int access(const char *upath, int mode)
+{
+	char path[PATH_MAX];
+
+	if (fromutf8(path, sizeof(path), upath) == -1)
+		return -1;
+
+	return _std_access(upath, mode);
+}
+
+int _std_chdir(const char *);
+
+int chdir(const char *upath)
+{
+	char path[PATH_MAX];
+
+	if (fromutf8(path, sizeof(path), upath) == -1)
+		return -1;
+
+	return _std_chdir(path);
+}
+
+int _std_chmod(const char *, int);
+
+int chmod(const char *upath, int pmode)
+{
+	char path[PATH_MAX];
+
+	if (fromutf8(path, sizeof(path), upath) == -1)
+		return -1;
+
+	return _std_chmod(path, pmode);
+}
+
+int _std_lstat(const char *, struct stat *);
+
+int lstat(const char *upath, struct stat *buffer)
+{
+	char path[PATH_MAX];
+
+	if (fromutf8(path, sizeof(path), upath) == -1)
+		return -1;
+
+	return _std_lstat(path, buffer);
+}
+
+int _std_stat(const char *, struct stat *);
+
+int stat(const char *upath, struct stat *buffer)
+{
+	char path[PATH_MAX];
+
+	if (fromutf8(path, sizeof(path), upath) == -1)
+		return -1;
+
+	return _std_stat(path, buffer);
+}
+
+int _std_utime(const char *, const struct utimbuf *);
+
+int utime(const char *upath, const struct utimbuf *times)
+{
+	char path[PATH_MAX];
+
+	if (fromutf8(path, sizeof(path), upath) == -1)
+		return -1;
+
+	return _std_utime(path, times);
+}
+
+char *_std_mktemp(char *);
+
+char *mktemp(char *ustr)
+{
+	static char upath[PATH_MAX * 4];
+
+	char str[PATH_MAX];
+	char *path;
+
+	if (fromutf8(str, sizeof(str), ustr) == -1)
+		return NULL;
+
+	path = _std_mktemp(str);
+	if (!path)
+		return NULL;
+
+	if (toutf8(upath, sizeof(upath), path) == -1)
+		return NULL;
+
+	return upath;
+}
+
+int _std_mkstemp(char *);
+
+int mkstemp(char *ustr)
+{
+	char str[PATH_MAX];
+
+	if (fromutf8(str, sizeof(str), ustr) == -1)
+		return -1;
+
+	return _std_mkstemp(str);
+}
+
+char *_std_getcwd(char *, size_t);
+
+char *getcwd(char *ubuf, size_t size)
+{
+	char buf[PATH_MAX];
+
+	/* do not consider ubuf == NULL */
+	if (!_std_getcwd(buf, sizeof(buf)))
+		return NULL;
+
+	if (toutf8(ubuf, size, buf) == -1)
+		return NULL;
+
+	return ubuf;
+}
+
+int _std_rename(const char *, const char *);
+
+int rename(const char *uold, const char *unew)
+{
+	char oldname[PATH_MAX];
+	char newname[PATH_MAX];
+
+	if (fromutf8(oldname, sizeof(oldname), uold) == -1 ||
+	    fromutf8(newname, sizeof(newname), unew) == -1)
+		return -1;
+
+	return _std_rename(oldname, newname);
+}
+
+int _std_link(const char *, const char *);
+
+int link(const char *upath1, const char *upath2)
+{
+	char path1[PATH_MAX];
+	char path2[PATH_MAX];
+
+	if (fromutf8(path1, sizeof(path1), upath1) == -1 ||
+	    fromutf8(path2, sizeof(path2), upath2) == -1)
+		return -1;
+
+	return _std_link(path1, path2);
+}
+
+/* UTF-8 version getenv()/putenv() */
+char *_std_getenv(const char *);
+
+char *getenv(const char *uname)
+{
+#define GETENV_MAX_RETAIN 64
+	static char *uvalues[GETENV_MAX_RETAIN];
+	static int index;
+
+	char *name;
+	char *value;
+	char *uvalue;
+
+	name = fromutf8dup(uname);
+	if (!name)
+		return NULL;
+
+	value = _std_getenv(name);
+	free(name);
+	if (!value)
+		return NULL;
+
+	uvalue = toutf8dup(value);
+
+	free(uvalues[index]);
+	uvalues[index++] = uvalue;
+
+	index %= GETENV_MAX_RETAIN;
+
+	return uvalue;
+}
+
+int _std_putenv(const char *);
+
+int putenv(const char *ustr)
+{
+	char *str;
+
+	str = fromutf8dup(ustr);
+	if (!str)
+		return -1;
+
+	return _std_putenv(str);
 }
 
 /*
