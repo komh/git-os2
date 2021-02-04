@@ -7,7 +7,6 @@
 #include "commit.h"
 #include "tag.h"
 #include "alloc.h"
-#include "object-store.h"
 #include "packfile.h"
 #include "commit-graph.h"
 
@@ -59,9 +58,9 @@ int type_from_string_gently(const char *str, ssize_t len, int gentle)
  * the specified sha1.  n must be a power of 2.  Please note that the
  * return value is *not* consistent across computer architectures.
  */
-static unsigned int hash_obj(const unsigned char *sha1, unsigned int n)
+static unsigned int hash_obj(const struct object_id *oid, unsigned int n)
 {
-	return sha1hash(sha1) & (n - 1);
+	return oidhash(oid) & (n - 1);
 }
 
 /*
@@ -71,7 +70,7 @@ static unsigned int hash_obj(const unsigned char *sha1, unsigned int n)
  */
 static void insert_obj_hash(struct object *obj, struct object **hash, unsigned int size)
 {
-	unsigned int j = hash_obj(obj->oid.hash, size);
+	unsigned int j = hash_obj(&obj->oid, size);
 
 	while (hash[j]) {
 		j++;
@@ -85,7 +84,7 @@ static void insert_obj_hash(struct object *obj, struct object **hash, unsigned i
  * Look up the record for the given sha1 in the hash map stored in
  * obj_hash.  Return NULL if it was not found.
  */
-struct object *lookup_object(struct repository *r, const unsigned char *sha1)
+struct object *lookup_object(struct repository *r, const struct object_id *oid)
 {
 	unsigned int i, first;
 	struct object *obj;
@@ -93,9 +92,9 @@ struct object *lookup_object(struct repository *r, const unsigned char *sha1)
 	if (!r->parsed_objects->obj_hash)
 		return NULL;
 
-	first = i = hash_obj(sha1, r->parsed_objects->obj_hash_size);
+	first = i = hash_obj(oid, r->parsed_objects->obj_hash_size);
 	while ((obj = r->parsed_objects->obj_hash[i]) != NULL) {
-		if (hasheq(sha1, obj->oid.hash))
+		if (oideq(oid, &obj->oid))
 			break;
 		i++;
 		if (i == r->parsed_objects->obj_hash_size)
@@ -141,13 +140,13 @@ static void grow_object_hash(struct repository *r)
 	r->parsed_objects->obj_hash_size = new_hash_size;
 }
 
-void *create_object(struct repository *r, const unsigned char *sha1, void *o)
+void *create_object(struct repository *r, const struct object_id *oid, void *o)
 {
 	struct object *obj = o;
 
 	obj->parsed = 0;
 	obj->flags = 0;
-	hashcpy(obj->oid.hash, sha1);
+	oidcpy(&obj->oid, oid);
 
 	if (r->parsed_objects->obj_hash_size - 1 <= r->parsed_objects->nr_objs * 2)
 		grow_object_hash(r);
@@ -158,13 +157,13 @@ void *create_object(struct repository *r, const unsigned char *sha1, void *o)
 	return obj;
 }
 
-void *object_as_type(struct repository *r, struct object *obj, enum object_type type, int quiet)
+void *object_as_type(struct object *obj, enum object_type type, int quiet)
 {
 	if (obj->type == type)
 		return obj;
 	else if (obj->type == OBJ_NONE) {
 		if (type == OBJ_COMMIT)
-			init_commit_node(r, (struct commit *) obj);
+			init_commit_node((struct commit *) obj);
 		else
 			obj->type = type;
 		return obj;
@@ -178,11 +177,11 @@ void *object_as_type(struct repository *r, struct object *obj, enum object_type 
 	}
 }
 
-struct object *lookup_unknown_object(const unsigned char *sha1)
+struct object *lookup_unknown_object(const struct object_id *oid)
 {
-	struct object *obj = lookup_object(the_repository, sha1);
+	struct object *obj = lookup_object(the_repository, oid);
 	if (!obj)
-		obj = create_object(the_repository, sha1,
+		obj = create_object(the_repository, oid,
 				    alloc_object_node(the_repository));
 	return obj;
 }
@@ -256,24 +255,25 @@ struct object *parse_object(struct repository *r, const struct object_id *oid)
 	void *buffer;
 	struct object *obj;
 
-	obj = lookup_object(r, oid->hash);
+	obj = lookup_object(r, oid);
 	if (obj && obj->parsed)
 		return obj;
 
 	if ((obj && obj->type == OBJ_BLOB && repo_has_object_file(r, oid)) ||
 	    (!obj && repo_has_object_file(r, oid) &&
 	     oid_object_info(r, oid, NULL) == OBJ_BLOB)) {
-		if (check_object_signature(repl, NULL, 0, NULL) < 0) {
+		if (check_object_signature(r, repl, NULL, 0, NULL) < 0) {
 			error(_("hash mismatch %s"), oid_to_hex(oid));
 			return NULL;
 		}
 		parse_blob_buffer(lookup_blob(r, oid), NULL, 0);
-		return lookup_object(r, oid->hash);
+		return lookup_object(r, oid);
 	}
 
 	buffer = repo_read_object_file(r, oid, &type, &size);
 	if (buffer) {
-		if (check_object_signature(repl, buffer, size, type_name(type)) < 0) {
+		if (check_object_signature(r, repl, buffer, size,
+					   type_name(type)) < 0) {
 			free(buffer);
 			error(_("hash mismatch %s"), oid_to_hex(repl));
 			return NULL;
@@ -306,6 +306,15 @@ int object_list_contains(struct object_list *list, struct object *obj)
 		list = list->next;
 	}
 	return 0;
+}
+
+void object_list_free(struct object_list **list)
+{
+	while (*list) {
+		struct object_list *p = *list;
+		*list = p->next;
+		free(p);
+	}
 }
 
 /*
@@ -444,12 +453,12 @@ void clear_object_flags(unsigned flags)
 	}
 }
 
-void clear_commit_marks_all(unsigned int flags)
+void repo_clear_commit_marks(struct repository *r, unsigned int flags)
 {
 	int i;
 
-	for (i = 0; i < the_repository->parsed_objects->obj_hash_size; i++) {
-		struct object *obj = the_repository->parsed_objects->obj_hash[i];
+	for (i = 0; i < r->parsed_objects->obj_hash_size; i++) {
+		struct object *obj = r->parsed_objects->obj_hash[i];
 		if (obj && obj->type == OBJ_COMMIT)
 			obj->flags &= ~flags;
 	}
@@ -480,6 +489,8 @@ struct raw_object_store *raw_object_store_new(void)
 
 	memset(o, 0, sizeof(*o));
 	INIT_LIST_HEAD(&o->packed_git_mru);
+	hashmap_init(&o->pack_map, pack_map_entry_cmp, NULL, 0);
+	pthread_mutex_init(&o->replace_mutex, NULL);
 	return o;
 }
 
@@ -507,6 +518,7 @@ void raw_object_store_clear(struct raw_object_store *o)
 
 	oidmap_free(o->replace_map, 1);
 	FREE_AND_NULL(o->replace_map);
+	pthread_mutex_destroy(&o->replace_mutex);
 
 	free_commit_graph(o->commit_graph);
 	o->commit_graph = NULL;
@@ -517,8 +529,10 @@ void raw_object_store_clear(struct raw_object_store *o)
 	o->loaded_alternates = 0;
 
 	INIT_LIST_HEAD(&o->packed_git_mru);
-	close_all_packs(o);
+	close_object_store(o);
 	o->packed_git = NULL;
+
+	hashmap_clear(&o->pack_map);
 }
 
 void parsed_object_pool_clear(struct parsed_object_pool *o)

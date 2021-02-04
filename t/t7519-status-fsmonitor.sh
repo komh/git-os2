@@ -32,11 +32,12 @@ write_integration_script () {
 		echo "$0: exactly 2 arguments expected"
 		exit 2
 	fi
-	if test "$1" != 1
+	if test "$1" != 2
 	then
 		echo "Unsupported core.fsmonitor hook version." >&2
 		exit 1
 	fi
+	printf "last_update_token\0"
 	printf "untracked\0"
 	printf "dir1/untracked\0"
 	printf "dir2/untracked\0"
@@ -106,6 +107,9 @@ EOF
 
 # test that "update-index --fsmonitor-valid" sets the fsmonitor valid bit
 test_expect_success 'update-index --fsmonitor-valid" sets the fsmonitor valid bit' '
+	write_script .git/hooks/fsmonitor-test<<-\EOF &&
+		printf "last_update_token\0"
+	EOF
 	git update-index --fsmonitor &&
 	git update-index --fsmonitor-valid dir1/modified &&
 	git update-index --fsmonitor-valid dir2/modified &&
@@ -164,6 +168,9 @@ EOF
 
 # test that newly added files are marked valid
 test_expect_success 'newly added files are marked valid' '
+	write_script .git/hooks/fsmonitor-test<<-\EOF &&
+		printf "last_update_token\0"
+	EOF
 	git add new &&
 	git add dir1/new &&
 	git add dir2/new &&
@@ -203,6 +210,7 @@ EOF
 # test that *only* files returned by the integration script get flagged as invalid
 test_expect_success '*only* files returned by the integration script get flagged as invalid' '
 	write_script .git/hooks/fsmonitor-test<<-\EOF &&
+	printf "last_update_token\0"
 	printf "dir1/modified\0"
 	EOF
 	clean_repo &&
@@ -218,11 +226,12 @@ test_expect_success '*only* files returned by the integration script get flagged
 # Ensure commands that call refresh_index() to move the index back in time
 # properly invalidate the fsmonitor cache
 test_expect_success 'refresh_index() invalidates fsmonitor cache' '
-	write_script .git/hooks/fsmonitor-test<<-\EOF &&
-	EOF
 	clean_repo &&
 	dirty_repo &&
+	write_integration_script &&
 	git add . &&
+	write_script .git/hooks/fsmonitor-test<<-\EOF &&
+	EOF
 	git commit -m "to reset" &&
 	git reset HEAD~1 &&
 	git status >actual &&
@@ -271,6 +280,7 @@ do
 		# (if enabled) files unless it is told about them.
 		test_expect_success "status doesn't detect unreported modifications" '
 			write_script .git/hooks/fsmonitor-test<<-\EOF &&
+			printf "last_update_token\0"
 			:>marker
 			EOF
 			clean_repo &&
@@ -294,7 +304,7 @@ do
 	done
 done
 
-# test that splitting the index dosn't interfere
+# test that splitting the index doesn't interfere
 test_expect_success 'splitting the index results in the same state' '
 	write_integration_script &&
 	dirty_repo &&
@@ -352,6 +362,25 @@ test_expect_success 'discard_index() also discards fsmonitor info' '
 	test-tool read-cache --print-and-refresh=tracked 2 >actual &&
 	printf "tracked is%s up to date\n" "" " not" >expect &&
 	test_cmp expect actual
+'
+
+# Test unstaging entries that:
+#  - Are not flagged with CE_FSMONITOR_VALID
+#  - Have a position in the index >= the number of entries present in the index
+#    after unstaging.
+test_expect_success 'status succeeds after staging/unstaging' '
+	test_create_repo fsmonitor-stage-unstage &&
+	(
+		cd fsmonitor-stage-unstage &&
+		test_commit initial &&
+		git update-index --fsmonitor &&
+		removed=$(test_seq 1 100 | sed "s/^/z/") &&
+		touch $removed &&
+		git add $removed &&
+		git config core.fsmonitor "$TEST_DIRECTORY/t7519/fsmonitor-env" &&
+		FSMONITOR_LIST="$removed" git restore -S $removed &&
+		FSMONITOR_LIST="$removed" git status
+	)
 '
 
 test_done

@@ -18,7 +18,7 @@
 #include "run-command.h"
 #include "exec-cmd.h"
 #include "parse-options.h"
-#include "argv-array.h"
+#include "strvec.h"
 #include "strbuf.h"
 #include "lockfile.h"
 #include "object-store.h"
@@ -125,12 +125,15 @@ struct working_tree_entry {
 };
 
 static int working_tree_entry_cmp(const void *unused_cmp_data,
-				  const void *entry,
-				  const void *entry_or_key,
+				  const struct hashmap_entry *eptr,
+				  const struct hashmap_entry *entry_or_key,
 				  const void *unused_keydata)
 {
-	const struct working_tree_entry *a = entry;
-	const struct working_tree_entry *b = entry_or_key;
+	const struct working_tree_entry *a, *b;
+
+	a = container_of(eptr, const struct working_tree_entry, entry);
+	b = container_of(entry_or_key, const struct working_tree_entry, entry);
+
 	return strcmp(a->path, b->path);
 }
 
@@ -145,12 +148,14 @@ struct pair_entry {
 };
 
 static int pair_cmp(const void *unused_cmp_data,
-		    const void *entry,
-		    const void *entry_or_key,
+		    const struct hashmap_entry *eptr,
+		    const struct hashmap_entry *entry_or_key,
 		    const void *unused_keydata)
 {
-	const struct pair_entry *a = entry;
-	const struct pair_entry *b = entry_or_key;
+	const struct pair_entry *a, *b;
+
+	a = container_of(eptr, const struct pair_entry, entry);
+	b = container_of(entry_or_key, const struct pair_entry, entry);
 
 	return strcmp(a->path, b->path);
 }
@@ -161,14 +166,14 @@ static void add_left_or_right(struct hashmap *map, const char *path,
 	struct pair_entry *e, *existing;
 
 	FLEX_ALLOC_STR(e, path, path);
-	hashmap_entry_init(e, strhash(path));
-	existing = hashmap_get(map, e, NULL);
+	hashmap_entry_init(&e->entry, strhash(path));
+	existing = hashmap_get_entry(map, e, entry, NULL);
 	if (existing) {
 		free(e);
 		e = existing;
 	} else {
 		e->left[0] = e->right[0] = '\0';
-		hashmap_add(map, e);
+		hashmap_add(map, &e->entry);
 	}
 	strlcpy(is_right ? e->right : e->left, content, PATH_MAX);
 }
@@ -179,12 +184,14 @@ struct path_entry {
 };
 
 static int path_entry_cmp(const void *unused_cmp_data,
-			  const void *entry,
-			  const void *entry_or_key,
+			  const struct hashmap_entry *eptr,
+			  const struct hashmap_entry *entry_or_key,
 			  const void *key)
 {
-	const struct path_entry *a = entry;
-	const struct path_entry *b = entry_or_key;
+	const struct path_entry *a, *b;
+
+	a = container_of(eptr, const struct path_entry, entry);
+	b = container_of(entry_or_key, const struct path_entry, entry);
 
 	return strcmp(a->path, key ? key : b->path);
 }
@@ -203,10 +210,10 @@ static void changed_files(struct hashmap *result, const char *index_path,
 	strbuf_addf(&index_env, "GIT_INDEX_FILE=%s", index_path);
 	env[0] = index_env.buf;
 
-	argv_array_pushl(&update_index.args,
-			 "--git-dir", git_dir, "--work-tree", workdir,
-			 "update-index", "--really-refresh", "-q",
-			 "--unmerged", NULL);
+	strvec_pushl(&update_index.args,
+		     "--git-dir", git_dir, "--work-tree", workdir,
+		     "update-index", "--really-refresh", "-q",
+		     "--unmerged", NULL);
 	update_index.no_stdin = 1;
 	update_index.no_stdout = 1;
 	update_index.no_stderr = 1;
@@ -218,9 +225,9 @@ static void changed_files(struct hashmap *result, const char *index_path,
 	/* Ignore any errors of update-index */
 	run_command(&update_index);
 
-	argv_array_pushl(&diff_files.args,
-			 "--git-dir", git_dir, "--work-tree", workdir,
-			 "diff-files", "--name-only", "-z", NULL);
+	strvec_pushl(&diff_files.args,
+		     "--git-dir", git_dir, "--work-tree", workdir,
+		     "diff-files", "--name-only", "-z", NULL);
 	diff_files.no_stdin = 1;
 	diff_files.git_cmd = 1;
 	diff_files.use_shell = 0;
@@ -234,8 +241,8 @@ static void changed_files(struct hashmap *result, const char *index_path,
 	while (!strbuf_getline_nul(&buf, fp)) {
 		struct path_entry *entry;
 		FLEX_ALLOC_STR(entry, path, buf.buf);
-		hashmap_entry_init(entry, strhash(buf.buf));
-		hashmap_add(result, entry);
+		hashmap_entry_init(&entry->entry, strhash(buf.buf));
+		hashmap_add(result, &entry->entry);
 	}
 	fclose(fp);
 	if (finish_command(&diff_files))
@@ -335,7 +342,10 @@ static int run_dir_diff(const char *extcmd, int symlinks, const char *prefix,
 	const char *workdir, *tmp;
 	int ret = 0, i;
 	FILE *fp;
-	struct hashmap working_tree_dups, submodules, symlinks2;
+	struct hashmap working_tree_dups = HASHMAP_INIT(working_tree_entry_cmp,
+							NULL);
+	struct hashmap submodules = HASHMAP_INIT(pair_cmp, NULL);
+	struct hashmap symlinks2 = HASHMAP_INIT(pair_cmp, NULL);
 	struct hashmap_iter iter;
 	struct pair_entry *entry;
 	struct index_state wtindex;
@@ -376,20 +386,16 @@ static int run_dir_diff(const char *extcmd, int symlinks, const char *prefix,
 	rdir_len = rdir.len;
 	wtdir_len = wtdir.len;
 
-	hashmap_init(&working_tree_dups, working_tree_entry_cmp, NULL, 0);
-	hashmap_init(&submodules, pair_cmp, NULL, 0);
-	hashmap_init(&symlinks2, pair_cmp, NULL, 0);
-
 	child.no_stdin = 1;
 	child.git_cmd = 1;
 	child.use_shell = 0;
 	child.clean_on_exit = 1;
 	child.dir = prefix;
 	child.out = -1;
-	argv_array_pushl(&child.args, "diff", "--raw", "--no-abbrev", "-z",
-			 NULL);
+	strvec_pushl(&child.args, "diff", "--raw", "--no-abbrev", "-z",
+		     NULL);
 	for (i = 0; i < argc; i++)
-		argv_array_push(&child.args, argv[i]);
+		strvec_push(&child.args, argv[i]);
 	if (start_command(&child))
 		die("could not obtain raw diff");
 	fp = xfdopen(child.out, "r");
@@ -461,12 +467,13 @@ static int run_dir_diff(const char *extcmd, int symlinks, const char *prefix,
 
 			/* Avoid duplicate working_tree entries */
 			FLEX_ALLOC_STR(entry, path, dst_path);
-			hashmap_entry_init(entry, strhash(dst_path));
-			if (hashmap_get(&working_tree_dups, entry, NULL)) {
+			hashmap_entry_init(&entry->entry, strhash(dst_path));
+			if (hashmap_get(&working_tree_dups, &entry->entry,
+					NULL)) {
 				free(entry);
 				continue;
 			}
-			hashmap_add(&working_tree_dups, entry);
+			hashmap_add(&working_tree_dups, &entry->entry);
 
 			if (!use_wt_file(workdir, dst_path, &roid)) {
 				if (checkout_path(rmode, &roid, dst_path,
@@ -530,8 +537,8 @@ static int run_dir_diff(const char *extcmd, int symlinks, const char *prefix,
 	 * temporary file to both the left and right directories to show the
 	 * change in the recorded SHA1 for the submodule.
 	 */
-	hashmap_iter_init(&submodules, &iter);
-	while ((entry = hashmap_iter_next(&iter))) {
+	hashmap_for_each_entry(&submodules, &iter, entry,
+				entry /* member name */) {
 		if (*entry->left) {
 			add_path(&ldir, ldir_len, entry->path);
 			ensure_leading_directories(ldir.buf);
@@ -549,8 +556,8 @@ static int run_dir_diff(const char *extcmd, int symlinks, const char *prefix,
 	 * shows only the link itself, not the contents of the link target.
 	 * This loop replicates that behavior.
 	 */
-	hashmap_iter_init(&symlinks2, &iter);
-	while ((entry = hashmap_iter_next(&iter))) {
+	hashmap_for_each_entry(&symlinks2, &iter, entry,
+				entry /* member name */) {
 		if (*entry->left) {
 			add_path(&ldir, ldir_len, entry->path);
 			ensure_leading_directories(ldir.buf);
@@ -659,7 +666,7 @@ finish:
 static int run_file_diff(int prompt, const char *prefix,
 			 int argc, const char **argv)
 {
-	struct argv_array args = ARGV_ARRAY_INIT;
+	struct strvec args = STRVEC_INIT;
 	const char *env[] = {
 		"GIT_PAGER=", "GIT_EXTERNAL_DIFF=git-difftool--helper", NULL,
 		NULL
@@ -672,10 +679,10 @@ static int run_file_diff(int prompt, const char *prefix,
 		env[2] = "GIT_DIFFTOOL_NO_PROMPT=true";
 
 
-	argv_array_push(&args, "diff");
+	strvec_push(&args, "diff");
 	for (i = 0; i < argc; i++)
-		argv_array_push(&args, argv[i]);
-	ret = run_command_v_opt_cd_env(args.argv, RUN_GIT_CMD, prefix, env);
+		strvec_push(&args, argv[i]);
+	ret = run_command_v_opt_cd_env(args.v, RUN_GIT_CMD, prefix, env);
 	exit(ret);
 }
 

@@ -8,6 +8,7 @@
 #include "pkt-line.h"
 #include "sub-process.h"
 #include "utf8.h"
+#include "ll-merge.h"
 
 /*
  * convert.c - convert a file when checking it out and checking it in.
@@ -194,7 +195,7 @@ static enum eol output_eol(enum crlf_action crlf_action)
 	return core_eol;
 }
 
-static void check_global_conv_flags_eol(const char *path, enum crlf_action crlf_action,
+static void check_global_conv_flags_eol(const char *path,
 			    struct text_stat *old_stats, struct text_stat *new_stats,
 			    int conv_flags)
 {
@@ -269,8 +270,12 @@ static int will_convert_lf_to_crlf(struct text_stat *stats,
 static int validate_encoding(const char *path, const char *enc,
 		      const char *data, size_t len, int die_on_error)
 {
+	const char *stripped;
+
 	/* We only check for UTF here as UTF?? can be an alias for UTF-?? */
-	if (istarts_with(enc, "UTF")) {
+	if (skip_iprefix(enc, "UTF", &stripped)) {
+		skip_prefix(stripped, "-", &stripped);
+
 		/*
 		 * Check for detectable errors in UTF encodings
 		 */
@@ -284,15 +289,10 @@ static int validate_encoding(const char *path, const char *enc,
 			 */
 			const char *advise_msg = _(
 				"The file '%s' contains a byte order "
-				"mark (BOM). Please use UTF-%s as "
+				"mark (BOM). Please use UTF-%.*s as "
 				"working-tree-encoding.");
-			const char *stripped = NULL;
-			char *upper = xstrdup_toupper(enc);
-			upper[strlen(upper)-2] = '\0';
-			if (!skip_prefix(upper, "UTF-", &stripped))
-				skip_prefix(stripped, "UTF", &stripped);
-			advise(advise_msg, path, stripped);
-			free(upper);
+			int stripped_len = strlen(stripped) - strlen("BE");
+			advise(advise_msg, path, stripped_len, stripped);
 			if (die_on_error)
 				die(error_msg, path, enc);
 			else {
@@ -307,12 +307,7 @@ static int validate_encoding(const char *path, const char *enc,
 				"mark (BOM). Please use UTF-%sBE or UTF-%sLE "
 				"(depending on the byte order) as "
 				"working-tree-encoding.");
-			const char *stripped = NULL;
-			char *upper = xstrdup_toupper(enc);
-			if (!skip_prefix(upper, "UTF-", &stripped))
-				skip_prefix(stripped, "UTF", &stripped);
 			advise(advise_msg, path, stripped, stripped);
-			free(upper);
 			if (die_on_error)
 				die(error_msg, path, enc);
 			else {
@@ -417,7 +412,7 @@ static int encode_to_git(const char *path, const char *src, size_t src_len,
 	if (!dst) {
 		/*
 		 * We could add the blob "as-is" to Git. However, on checkout
-		 * we would try to reencode to the original encoding. This
+		 * we would try to re-encode to the original encoding. This
 		 * would fail and we would leave the user with a messed-up
 		 * working tree. Let's try to avoid this by screaming loud.
 		 */
@@ -552,7 +547,7 @@ static int crlf_to_git(const struct index_state *istate,
 			new_stats.crlf += new_stats.lonelf;
 			new_stats.lonelf = 0;
 		}
-		check_global_conv_flags_eol(path, crlf_action, &stats, &new_stats, conv_flags);
+		check_global_conv_flags_eol(path, &stats, &new_stats, conv_flags);
 	}
 	if (!convert_crlf_into_lf)
 		return 0;
@@ -643,7 +638,6 @@ static int filter_buffer_or_fd(int in, int out, void *data)
 	struct child_process child_process = CHILD_PROCESS_INIT;
 	struct filter_params *params = (struct filter_params *)data;
 	int write_err, status;
-	const char *argv[] = { NULL, NULL };
 
 	/* apply % substitution to cmd */
 	struct strbuf cmd = STRBUF_INIT;
@@ -661,9 +655,7 @@ static int filter_buffer_or_fd(int in, int out, void *data)
 	strbuf_expand(&cmd, params->cmd, strbuf_expand_dict_cb, &dict);
 	strbuf_release(&path);
 
-	argv[0] = cmd.buf;
-
-	child_process.argv = argv;
+	strvec_push(&child_process.args, cmd.buf);
 	child_process.use_shell = 1;
 	child_process.in = -1;
 	child_process.out = out;
@@ -802,6 +794,7 @@ static void handle_filter_error(const struct strbuf *filter_status,
 static int apply_multi_file_filter(const char *path, const char *src, size_t len,
 				   int fd, struct strbuf *dst, const char *cmd,
 				   const unsigned int wanted_capability,
+				   const struct checkout_metadata *meta,
 				   struct delayed_checkout *dco)
 {
 	int err;
@@ -859,6 +852,24 @@ static int apply_multi_file_filter(const char *path, const char *src, size_t len
 	err = packet_write_fmt_gently(process->in, "pathname=%s\n", path);
 	if (err)
 		goto done;
+
+	if (meta && meta->refname) {
+		err = packet_write_fmt_gently(process->in, "ref=%s\n", meta->refname);
+		if (err)
+			goto done;
+	}
+
+	if (meta && !is_null_oid(&meta->treeish)) {
+		err = packet_write_fmt_gently(process->in, "treeish=%s\n", oid_to_hex(&meta->treeish));
+		if (err)
+			goto done;
+	}
+
+	if (meta && !is_null_oid(&meta->blob)) {
+		err = packet_write_fmt_gently(process->in, "blob=%s\n", oid_to_hex(&meta->blob));
+		if (err)
+			goto done;
+	}
 
 	if ((entry->supported_capabilities & CAP_DELAY) &&
 	    dco && dco->state == CE_CAN_DELAY) {
@@ -976,6 +987,7 @@ static struct convert_driver {
 static int apply_filter(const char *path, const char *src, size_t len,
 			int fd, struct strbuf *dst, struct convert_driver *drv,
 			const unsigned int wanted_capability,
+			const struct checkout_metadata *meta,
 			struct delayed_checkout *dco)
 {
 	const char *cmd = NULL;
@@ -995,7 +1007,7 @@ static int apply_filter(const char *path, const char *src, size_t len,
 		return apply_single_file_filter(path, src, len, fd, dst, cmd);
 	else if (drv->process && *drv->process)
 		return apply_multi_file_filter(path, src, len, fd, dst,
-			drv->process, wanted_capability, dco);
+			drv->process, wanted_capability, meta, dco);
 
 	return 0;
 }
@@ -1003,7 +1015,7 @@ static int apply_filter(const char *path, const char *src, size_t len,
 static int read_convert_config(const char *var, const char *value, void *cb)
 {
 	const char *key, *name;
-	int namelen;
+	size_t namelen;
 	struct convert_driver *drv;
 
 	/*
@@ -1151,7 +1163,7 @@ static int ident_to_worktree(const char *src, size_t len,
 	/* are we "faking" in place editing ? */
 	if (src == buf->buf)
 		to_free = strbuf_detach(buf, NULL);
-	hash_object_file(src, len, "blob", &oid);
+	hash_object_file(the_hash_algo, src, len, "blob", &oid);
 
 	strbuf_grow(buf, len + cnt * (the_hash_algo->hexsz + 3));
 	for (;;) {
@@ -1293,10 +1305,11 @@ struct conv_attrs {
 	const char *working_tree_encoding; /* Supported encoding or default encoding if NULL */
 };
 
+static struct attr_check *check;
+
 static void convert_attrs(const struct index_state *istate,
 			  struct conv_attrs *ca, const char *path)
 {
-	static struct attr_check *check;
 	struct attr_check_item *ccheck = NULL;
 
 	if (!check) {
@@ -1339,6 +1352,23 @@ static void convert_attrs(const struct index_state *istate,
 		ca->crlf_action = CRLF_AUTO_INPUT;
 }
 
+void reset_parsed_attributes(void)
+{
+	struct convert_driver *drv, *next;
+
+	attr_check_free(check);
+	check = NULL;
+	reset_merge_attributes();
+
+	for (drv = user_convert; drv; drv = next) {
+		next = drv->next;
+		free((void *)drv->name);
+		free(drv);
+	}
+	user_convert = NULL;
+	user_convert_tail = NULL;
+}
+
 int would_convert_to_git_filter_fd(const struct index_state *istate, const char *path)
 {
 	struct conv_attrs ca;
@@ -1355,7 +1385,7 @@ int would_convert_to_git_filter_fd(const struct index_state *istate, const char 
 	if (!ca.drv->required)
 		return 0;
 
-	return apply_filter(path, NULL, 0, -1, NULL, ca.drv, CAP_CLEAN, NULL);
+	return apply_filter(path, NULL, 0, -1, NULL, ca.drv, CAP_CLEAN, NULL, NULL);
 }
 
 const char *get_convert_attr_ascii(const struct index_state *istate, const char *path)
@@ -1393,7 +1423,7 @@ int convert_to_git(const struct index_state *istate,
 
 	convert_attrs(istate, &ca, path);
 
-	ret |= apply_filter(path, src, len, -1, dst, ca.drv, CAP_CLEAN, NULL);
+	ret |= apply_filter(path, src, len, -1, dst, ca.drv, CAP_CLEAN, NULL, NULL);
 	if (!ret && ca.drv && ca.drv->required)
 		die(_("%s: clean filter '%s' failed"), path, ca.drv->name);
 
@@ -1428,7 +1458,7 @@ void convert_to_git_filter_fd(const struct index_state *istate,
 	assert(ca.drv);
 	assert(ca.drv->clean || ca.drv->process);
 
-	if (!apply_filter(path, NULL, 0, fd, dst, ca.drv, CAP_CLEAN, NULL))
+	if (!apply_filter(path, NULL, 0, fd, dst, ca.drv, CAP_CLEAN, NULL, NULL))
 		die(_("%s: clean filter '%s' failed"), path, ca.drv->name);
 
 	encode_to_git(path, dst->buf, dst->len, dst, ca.working_tree_encoding, conv_flags);
@@ -1439,7 +1469,9 @@ void convert_to_git_filter_fd(const struct index_state *istate,
 static int convert_to_working_tree_internal(const struct index_state *istate,
 					    const char *path, const char *src,
 					    size_t len, struct strbuf *dst,
-					    int normalizing, struct delayed_checkout *dco)
+					    int normalizing,
+					    const struct checkout_metadata *meta,
+					    struct delayed_checkout *dco)
 {
 	int ret = 0, ret_filter = 0;
 	struct conv_attrs ca;
@@ -1471,7 +1503,7 @@ static int convert_to_working_tree_internal(const struct index_state *istate,
 	}
 
 	ret_filter = apply_filter(
-		path, src, len, -1, dst, ca.drv, CAP_SMUDGE, dco);
+		path, src, len, -1, dst, ca.drv, CAP_SMUDGE, meta, dco);
 	if (!ret_filter && ca.drv && ca.drv->required)
 		die(_("%s: smudge filter %s failed"), path, ca.drv->name);
 
@@ -1481,22 +1513,24 @@ static int convert_to_working_tree_internal(const struct index_state *istate,
 int async_convert_to_working_tree(const struct index_state *istate,
 				  const char *path, const char *src,
 				  size_t len, struct strbuf *dst,
+				  const struct checkout_metadata *meta,
 				  void *dco)
 {
-	return convert_to_working_tree_internal(istate, path, src, len, dst, 0, dco);
+	return convert_to_working_tree_internal(istate, path, src, len, dst, 0, meta, dco);
 }
 
 int convert_to_working_tree(const struct index_state *istate,
 			    const char *path, const char *src,
-			    size_t len, struct strbuf *dst)
+			    size_t len, struct strbuf *dst,
+			    const struct checkout_metadata *meta)
 {
-	return convert_to_working_tree_internal(istate, path, src, len, dst, 0, NULL);
+	return convert_to_working_tree_internal(istate, path, src, len, dst, 0, meta, NULL);
 }
 
 int renormalize_buffer(const struct index_state *istate, const char *path,
 		       const char *src, size_t len, struct strbuf *dst)
 {
-	int ret = convert_to_working_tree_internal(istate, path, src, len, dst, 1, NULL);
+	int ret = convert_to_working_tree_internal(istate, path, src, len, dst, 1, NULL, NULL);
 	if (ret) {
 		src = dst->buf;
 		len = dst->len;
@@ -1927,7 +1961,7 @@ static struct stream_filter *ident_filter(const struct object_id *oid)
  * the contents cannot be filtered without reading the whole thing
  * in-core.
  *
- * Note that you would be crazy to set CRLF, smuge/clean or ident to a
+ * Note that you would be crazy to set CRLF, smudge/clean or ident to a
  * large binary blob you would want us not to slurp into the memory!
  */
 struct stream_filter *get_stream_filter(const struct index_state *istate,
@@ -1968,4 +2002,26 @@ int stream_filter(struct stream_filter *filter,
 		  char *output, size_t *osize_p)
 {
 	return filter->vtbl->filter(filter, input, isize_p, output, osize_p);
+}
+
+void init_checkout_metadata(struct checkout_metadata *meta, const char *refname,
+			    const struct object_id *treeish,
+			    const struct object_id *blob)
+{
+	memset(meta, 0, sizeof(*meta));
+	if (refname)
+		meta->refname = refname;
+	if (treeish)
+		oidcpy(&meta->treeish, treeish);
+	if (blob)
+		oidcpy(&meta->blob, blob);
+}
+
+void clone_checkout_metadata(struct checkout_metadata *dst,
+			     const struct checkout_metadata *src,
+			     const struct object_id *blob)
+{
+	memcpy(dst, src, sizeof(*dst));
+	if (blob)
+		oidcpy(&dst->blob, blob);
 }

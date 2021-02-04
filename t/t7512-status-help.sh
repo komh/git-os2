@@ -33,7 +33,6 @@ You have unmerged paths.
 
 Unmerged paths:
   (use "git add <file>..." to mark resolution)
-
 	both modified:   main.txt
 
 no changes added to commit (use "git add" and/or "git commit -a")
@@ -54,7 +53,6 @@ All conflicts fixed but you are still merging.
   (use "git commit" to conclude merge)
 
 Changes to be committed:
-
 	modified:   main.txt
 
 Untracked files not listed (use -u option to show untracked files)
@@ -73,10 +71,10 @@ test_expect_success 'prepare for rebase conflicts' '
 '
 
 
-test_expect_success 'status when rebase in progress before resolving conflicts' '
+test_expect_success 'status when rebase --apply in progress before resolving conflicts' '
 	test_when_finished "git rebase --abort" &&
 	ONTO=$(git rev-parse --short HEAD^^) &&
-	test_must_fail git rebase HEAD^ --onto HEAD^^ &&
+	test_must_fail git rebase --apply HEAD^ --onto HEAD^^ &&
 	cat >expected <<EOF &&
 rebase in progress; onto $ONTO
 You are currently rebasing branch '\''rebase_conflicts'\'' on '\''$ONTO'\''.
@@ -85,9 +83,8 @@ You are currently rebasing branch '\''rebase_conflicts'\'' on '\''$ONTO'\''.
   (use "git rebase --abort" to check out the original branch)
 
 Unmerged paths:
-  (use "git reset HEAD <file>..." to unstage)
+  (use "git restore --staged <file>..." to unstage)
   (use "git add <file>..." to mark resolution)
-
 	both modified:   main.txt
 
 no changes added to commit (use "git add" and/or "git commit -a")
@@ -97,11 +94,11 @@ EOF
 '
 
 
-test_expect_success 'status when rebase in progress before rebase --continue' '
+test_expect_success 'status when rebase --apply in progress before rebase --continue' '
 	git reset --hard rebase_conflicts &&
 	test_when_finished "git rebase --abort" &&
 	ONTO=$(git rev-parse --short HEAD^^) &&
-	test_must_fail git rebase HEAD^ --onto HEAD^^ &&
+	test_must_fail git rebase --apply HEAD^ --onto HEAD^^ &&
 	echo three >main.txt &&
 	git add main.txt &&
 	cat >expected <<EOF &&
@@ -110,8 +107,7 @@ You are currently rebasing branch '\''rebase_conflicts'\'' on '\''$ONTO'\''.
   (all conflicts fixed: run "git rebase --continue")
 
 Changes to be committed:
-  (use "git reset HEAD <file>..." to unstage)
-
+  (use "git restore --staged <file>..." to unstage)
 	modified:   main.txt
 
 Untracked files not listed (use -u option to show untracked files)
@@ -148,9 +144,8 @@ You are currently rebasing branch '\''rebase_i_conflicts_second'\'' on '\''$ONTO
   (use "git rebase --abort" to check out the original branch)
 
 Unmerged paths:
-  (use "git reset HEAD <file>..." to unstage)
+  (use "git restore --staged <file>..." to unstage)
   (use "git add <file>..." to mark resolution)
-
 	both modified:   main.txt
 
 no changes added to commit (use "git add" and/or "git commit -a")
@@ -176,8 +171,7 @@ You are currently rebasing branch '\''rebase_i_conflicts_second'\'' on '\''$ONTO
   (all conflicts fixed: run "git rebase --continue")
 
 Changes to be committed:
-  (use "git reset HEAD <file>..." to unstage)
-
+  (use "git restore --staged <file>..." to unstage)
 	modified:   main.txt
 
 Untracked files not listed (use -u option to show untracked files)
@@ -246,8 +240,7 @@ You are currently splitting a commit while rebasing branch '\''split_commit'\'' 
 
 Changes not staged for commit:
   (use "git add <file>..." to update what will be committed)
-  (use "git checkout -- <file>..." to discard changes in working directory)
-
+  (use "git restore <file>..." to discard changes in working directory)
 	modified:   main.txt
 
 no changes added to commit (use "git add" and/or "git commit -a")
@@ -354,8 +347,7 @@ You are currently splitting a commit while rebasing branch '\''several_edits'\''
 
 Changes not staged for commit:
   (use "git add <file>..." to update what will be committed)
-  (use "git checkout -- <file>..." to discard changes in working directory)
-
+  (use "git restore <file>..." to discard changes in working directory)
 	modified:   main.txt
 
 no changes added to commit (use "git add" and/or "git commit -a")
@@ -453,8 +445,7 @@ You are currently splitting a commit while rebasing branch '\''several_edits'\''
 
 Changes not staged for commit:
   (use "git add <file>..." to update what will be committed)
-  (use "git checkout -- <file>..." to discard changes in working directory)
-
+  (use "git restore <file>..." to discard changes in working directory)
 	modified:   main.txt
 
 no changes added to commit (use "git add" and/or "git commit -a")
@@ -557,8 +548,7 @@ You are currently splitting a commit while rebasing branch '\''several_edits'\''
 
 Changes not staged for commit:
   (use "git add <file>..." to update what will be committed)
-  (use "git checkout -- <file>..." to discard changes in working directory)
-
+  (use "git restore <file>..." to discard changes in working directory)
 	modified:   main.txt
 
 no changes added to commit (use "git add" and/or "git commit -a")
@@ -698,7 +688,7 @@ EOF
 '
 
 
-test_expect_success 'status when rebase conflicts with statushints disabled' '
+test_expect_success 'status when rebase --apply conflicts with statushints disabled' '
 	git reset --hard master &&
 	git checkout -b statushints_disabled &&
 	test_when_finished "git config --local advice.statushints true" &&
@@ -708,7 +698,7 @@ test_expect_success 'status when rebase conflicts with statushints disabled' '
 	test_commit three_statushints main.txt three &&
 	test_when_finished "git rebase --abort" &&
 	ONTO=$(git rev-parse --short HEAD^^) &&
-	test_must_fail git rebase HEAD^ --onto HEAD^^ &&
+	test_must_fail git rebase --apply HEAD^ --onto HEAD^^ &&
 	cat >expected <<EOF &&
 rebase in progress; onto $ONTO
 You are currently rebasing branch '\''statushints_disabled'\'' on '\''$ONTO'\''.
@@ -743,11 +733,11 @@ test_expect_success 'status when cherry-picking before resolving conflicts' '
 On branch cherry_branch
 You are currently cherry-picking commit $TO_CHERRY_PICK.
   (fix conflicts and run "git cherry-pick --continue")
+  (use "git cherry-pick --skip" to skip this patch)
   (use "git cherry-pick --abort" to cancel the cherry-pick operation)
 
 Unmerged paths:
   (use "git add <file>..." to mark resolution)
-
 	both modified:   main.txt
 
 no changes added to commit (use "git add" and/or "git commit -a")
@@ -768,10 +758,10 @@ test_expect_success 'status when cherry-picking after resolving conflicts' '
 On branch cherry_branch
 You are currently cherry-picking commit $TO_CHERRY_PICK.
   (all conflicts fixed: run "git cherry-pick --continue")
+  (use "git cherry-pick --skip" to skip this patch)
   (use "git cherry-pick --abort" to cancel the cherry-pick operation)
 
 Changes to be committed:
-
 	modified:   main.txt
 
 Untracked files not listed (use -u option to show untracked files)
@@ -790,12 +780,29 @@ test_expect_success 'status when cherry-picking after committing conflict resolu
 On branch cherry_branch
 Cherry-pick currently in progress.
   (run "git cherry-pick --continue" to continue)
+  (use "git cherry-pick --skip" to skip this patch)
   (use "git cherry-pick --abort" to cancel the cherry-pick operation)
 
 nothing to commit (use -u to show untracked files)
 EOF
 	git status --untracked-files=no >actual &&
 	test_i18ncmp expected actual
+'
+
+test_expect_success 'status shows cherry-pick with invalid oid' '
+	mkdir .git/sequencer &&
+	test_write_lines "pick invalid-oid" >.git/sequencer/todo &&
+	git status --untracked-files=no >actual 2>err &&
+	git cherry-pick --quit &&
+	test_must_be_empty err &&
+	test_i18ncmp expected actual
+'
+
+test_expect_success 'status does not show error if .git/sequencer is a file' '
+	test_when_finished "rm .git/sequencer" &&
+	test_write_lines hello >.git/sequencer &&
+	git status --untracked-files=no 2>err &&
+	test_must_be_empty err
 '
 
 test_expect_success 'status showing detached at and from a tag' '
@@ -831,12 +838,12 @@ test_expect_success 'status while reverting commit (conflicts)' '
 On branch master
 You are currently reverting commit $TO_REVERT.
   (fix conflicts and run "git revert --continue")
+  (use "git revert --skip" to skip this patch)
   (use "git revert --abort" to cancel the revert operation)
 
 Unmerged paths:
-  (use "git reset HEAD <file>..." to unstage)
+  (use "git restore --staged <file>..." to unstage)
   (use "git add <file>..." to mark resolution)
-
 	both modified:   to-revert.txt
 
 no changes added to commit (use "git add" and/or "git commit -a")
@@ -852,11 +859,11 @@ test_expect_success 'status while reverting commit (conflicts resolved)' '
 On branch master
 You are currently reverting commit $TO_REVERT.
   (all conflicts fixed: run "git revert --continue")
+  (use "git revert --skip" to skip this patch)
   (use "git revert --abort" to cancel the revert operation)
 
 Changes to be committed:
-  (use "git reset HEAD <file>..." to unstage)
-
+  (use "git restore --staged <file>..." to unstage)
 	modified:   to-revert.txt
 
 Untracked files not listed (use -u option to show untracked files)
@@ -885,6 +892,7 @@ test_expect_success 'status while reverting after committing conflict resolution
 On branch master
 Revert currently in progress.
   (run "git revert --continue" to continue)
+  (use "git revert --skip" to skip this patch)
   (use "git revert --abort" to cancel the revert operation)
 
 nothing to commit (use -u to show untracked files)

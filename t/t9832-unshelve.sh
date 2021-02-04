@@ -22,12 +22,18 @@ test_expect_success 'init depot' '
 		: >file_to_move &&
 		p4 add file_to_delete &&
 		p4 add file_to_move &&
-		p4 submit -d "add files to delete"
+		p4 submit -d "add files to delete" &&
+		echo file_to_integrate >file_to_integrate &&
+		p4 add file_to_integrate &&
+		p4 submit -d "add file to integrate"
 	)
 '
 
+# Create an initial clone, with a commit unrelated to the P4 change
+# on HEAD
 test_expect_success 'initial clone' '
-	git p4 clone --dest="$git" //depot/@all
+	git p4 clone --dest="$git" //depot/@all &&
+    test_commit -C "$git" "unrelated"
 '
 
 test_expect_success 'create shelved changelist' '
@@ -40,6 +46,7 @@ test_expect_success 'create shelved changelist' '
 		p4 delete file_to_delete &&
 		p4 edit file_to_move &&
 		p4 move file_to_move moved_file &&
+		p4 integrate file_to_integrate integrated_file &&
 		p4 opened &&
 		p4 shelve -i <<EOF
 Change: new
@@ -53,6 +60,7 @@ Files:
 	//depot/file_to_delete
 	//depot/file_to_move
 	//depot/moved_file
+	//depot/integrated_file
 EOF
 
 	) &&
@@ -60,11 +68,13 @@ EOF
 		cd "$git" &&
 		change=$(last_shelved_change) &&
 		git p4 unshelve $change &&
-		git show refs/remotes/p4-unshelved/$change | grep -q "Further description" &&
+		git show refs/remotes/p4-unshelved/$change >actual &&
+		grep -q "Further description" actual &&
 		git cherry-pick refs/remotes/p4-unshelved/$change &&
 		test_path_is_file file2 &&
 		test_cmp file1 "$cli"/file1 &&
 		test_cmp file2 "$cli"/file2 &&
+		test_cmp file_to_integrate "$cli"/integrated_file &&
 		test_path_is_missing file_to_delete &&
 		test_path_is_missing file_to_move &&
 		test_path_is_file moved_file

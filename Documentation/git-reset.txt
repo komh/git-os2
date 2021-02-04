@@ -8,33 +8,36 @@ git-reset - Reset current HEAD to the specified state
 SYNOPSIS
 --------
 [verse]
-'git reset' [-q] [<tree-ish>] [--] <paths>...
-'git reset' (--patch | -p) [<tree-ish>] [--] [<paths>...]
+'git reset' [-q] [<tree-ish>] [--] <pathspec>...
+'git reset' [-q] [--pathspec-from-file=<file> [--pathspec-file-nul]] [<tree-ish>]
+'git reset' (--patch | -p) [<tree-ish>] [--] [<pathspec>...]
 'git reset' [--soft | --mixed [-N] | --hard | --merge | --keep] [-q] [<commit>]
 
 DESCRIPTION
 -----------
-In the first and second form, copy entries from `<tree-ish>` to the index.
-In the third form, set the current branch head (`HEAD`) to `<commit>`,
+In the first three forms, copy entries from `<tree-ish>` to the index.
+In the last form, set the current branch head (`HEAD`) to `<commit>`,
 optionally modifying index and working tree to match.
 The `<tree-ish>`/`<commit>` defaults to `HEAD` in all forms.
 
-'git reset' [-q] [<tree-ish>] [--] <paths>...::
-	This form resets the index entries for all `<paths>` to their
-	state at `<tree-ish>`.  (It does not affect the working tree or
-	the current branch.)
+'git reset' [-q] [<tree-ish>] [--] <pathspec>...::
+'git reset' [-q] [--pathspec-from-file=<file> [--pathspec-file-nul]] [<tree-ish>]::
+	These forms reset the index entries for all paths that match the
+	`<pathspec>` to their state at `<tree-ish>`.  (It does not affect
+	the working tree or the current branch.)
 +
-This means that `git reset <paths>` is the opposite of `git add
-<paths>`.
+This means that `git reset <pathspec>` is the opposite of `git add
+<pathspec>`. This command is equivalent to
+`git restore [--source=<tree-ish>] --staged <pathspec>...`.
 +
-After running `git reset <paths>` to update the index entry, you can
-use linkgit:git-checkout[1] to check the contents out of the index to
-the working tree.
-Alternatively, using linkgit:git-checkout[1] and specifying a commit, you
+After running `git reset <pathspec>` to update the index entry, you can
+use linkgit:git-restore[1] to check the contents out of the index to
+the working tree. Alternatively, using linkgit:git-restore[1]
+and specifying a commit with `--source`, you
 can copy the contents of a path out of a commit to the index and to the
 working tree in one go.
 
-'git reset' (--patch | -p) [<tree-ish>] [--] [<paths>...]::
+'git reset' (--patch | -p) [<tree-ish>] [--] [<pathspec>...]::
 	Interactively select hunks in the difference between the index
 	and `<tree-ish>` (defaults to `HEAD`).  The chosen hunks are applied
 	in reverse to the index.
@@ -84,10 +87,16 @@ but carries forward unmerged index entries.
 	different between `<commit>` and `HEAD`.
 	If a file that is different between `<commit>` and `HEAD` has local
 	changes, reset is aborted.
+
+--[no-]recurse-submodules::
+	When the working tree is updated, using --recurse-submodules will
+	also recursively reset the working tree of all active submodules
+	according to the commit recorded in the superproject, also setting
+	the submodules' HEAD to be detached at that commit.
 --
 
-If you want to undo a commit other than the latest on a branch,
-linkgit:git-revert[1] is your friend.
+See "Reset, restore and revert" in linkgit:git[1] for the differences
+between the three commands.
 
 
 OPTIONS
@@ -100,6 +109,26 @@ OPTIONS
 	`reset.quiet` config option. `--quiet` and `--no-quiet` will
 	override the default behavior.
 
+--pathspec-from-file=<file>::
+	Pathspec is passed in `<file>` instead of commandline args. If
+	`<file>` is exactly `-` then standard input is used. Pathspec
+	elements are separated by LF or CR/LF. Pathspec elements can be
+	quoted as explained for the configuration variable `core.quotePath`
+	(see linkgit:git-config[1]). See also `--pathspec-file-nul` and
+	global `--literal-pathspecs`.
+
+--pathspec-file-nul::
+	Only meaningful with `--pathspec-from-file`. Pathspec elements are
+	separated with NUL character and all other characters are taken
+	literally (including newlines and quotes).
+
+\--::
+	Do not interpret any more arguments as options.
+
+<pathspec>...::
+	Limits the paths affected by the operation.
++
+For more details, see the 'pathspec' entry in linkgit:gitglossary[7].
 
 EXAMPLES
 --------
@@ -149,9 +178,9 @@ See also the `--amend` option to linkgit:git-commit[1].
 Undo a commit, making it a topic branch::
 +
 ------------
-$ git branch topic/wip     <1>
-$ git reset --hard HEAD~3  <2>
-$ git checkout topic/wip   <3>
+$ git branch topic/wip          <1>
+$ git reset --hard HEAD~3       <2>
+$ git switch topic/wip          <3>
 ------------
 +
 <1> You have made some commits, but realize they were premature
@@ -232,13 +261,13 @@ working tree are not in any shape to be committed yet, but you
 need to get to the other branch for a quick bugfix.
 +
 ------------
-$ git checkout feature ;# you were working in "feature" branch and
-$ work work work       ;# got interrupted
+$ git switch feature  ;# you were working in "feature" branch and
+$ work work work      ;# got interrupted
 $ git commit -a -m "snapshot WIP"                 <1>
-$ git checkout master
+$ git switch master
 $ fix fix fix
 $ git commit ;# commit with real log
-$ git checkout feature
+$ git switch feature
 $ git reset --soft HEAD^ ;# go back to WIP state  <2>
 $ git reset                                       <3>
 ------------
@@ -279,18 +308,18 @@ reset it while keeping the changes in your working tree.
 +
 ------------
 $ git tag start
-$ git checkout -b branch1
+$ git switch -c branch1
 $ edit
 $ git commit ...                            <1>
 $ edit
-$ git checkout -b branch2                   <2>
+$ git switch -c branch2                     <2>
 $ git reset --keep start                    <3>
 ------------
 +
 <1> This commits your first edits in `branch1`.
 <2> In the ideal world, you could have realized that the earlier
     commit did not belong to the new topic when you created and switched
-    to `branch2` (i.e. `git checkout -b branch2 start`), but nobody is
+    to `branch2` (i.e. `git switch -c branch2 start`), but nobody is
     perfect.
 <3> But you can use `reset --keep` to remove the unwanted commit after
     you switched to `branch2`.

@@ -16,11 +16,15 @@ compiler:
 
 matrix:
   include:
-    - env: jobname=GIT_TEST_GETTEXT_POISON
+    - env: jobname=GETTEXT_POISON
       os: linux
       compiler:
       addons:
       before_install:
+    - env: jobname=linux-gcc-4.8
+      os: linux
+      dist: trusty
+      compiler:
     - env: jobname=Linux32
       os: linux
       compiler:
@@ -28,7 +32,15 @@ matrix:
       services:
         - docker
       before_install:
-      script: ci/run-linux32-docker.sh
+      script: ci/run-docker.sh
+    - env: jobname=linux-musl
+      os: linux
+      compiler:
+      addons:
+      services:
+        - docker
+      before_install:
+      script: ci/run-docker.sh
     - env: jobname=StaticAnalysis
       os: linux
       compiler:

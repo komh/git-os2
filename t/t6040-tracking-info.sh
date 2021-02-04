@@ -38,7 +38,7 @@ test_expect_success setup '
 	advance h
 '
 
-script='s/^..\(b.\) *[0-9a-f]* \(.*\)$/\1 \2/p'
+t6040_script='s/^..\(b.\) *[0-9a-f]* \(.*\)$/\1 \2/p'
 cat >expect <<\EOF
 b1 [ahead 1, behind 1] d
 b2 [ahead 1, behind 1] d
@@ -53,7 +53,7 @@ test_expect_success 'branch -v' '
 		cd test &&
 		git branch -v
 	) |
-	sed -n -e "$script" >actual &&
+	sed -n -e "$t6040_script" >actual &&
 	test_i18ncmp expect actual
 '
 
@@ -71,7 +71,7 @@ test_expect_success 'branch -vv' '
 		cd test &&
 		git branch -vv
 	) |
-	sed -n -e "$script" >actual &&
+	sed -n -e "$t6040_script" >actual &&
 	test_i18ncmp expect actual
 '
 
@@ -160,6 +160,19 @@ test_expect_success 'status -s -b --no-ahead-behind (diverged from upstream)' '
 '
 
 cat >expect <<\EOF
+## b1...origin/master [different]
+EOF
+
+test_expect_success 'status.aheadbehind=false status -s -b (diverged from upstream)' '
+	(
+		cd test &&
+		git checkout b1 >/dev/null &&
+		git -c status.aheadbehind=false status -s -b | head -1
+	) >actual &&
+	test_i18ncmp expect actual
+'
+
+cat >expect <<\EOF
 On branch b1
 Your branch and 'origin/master' have diverged,
 and have 1 and 1 different commits each, respectively.
@@ -174,6 +187,15 @@ test_expect_success 'status --long --branch' '
 	test_i18ncmp expect actual
 '
 
+test_expect_success 'status --long --branch' '
+	(
+		cd test &&
+		git checkout b1 >/dev/null &&
+		git -c status.aheadbehind=true status --long -b | head -3
+	) >actual &&
+	test_i18ncmp expect actual
+'
+
 cat >expect <<\EOF
 On branch b1
 Your branch and 'origin/master' refer to different commits.
@@ -184,6 +206,15 @@ test_expect_success 'status --long --branch --no-ahead-behind' '
 		cd test &&
 		git checkout b1 >/dev/null &&
 		git status --long -b --no-ahead-behind | head -2
+	) >actual &&
+	test_i18ncmp expect actual
+'
+
+test_expect_success 'status.aheadbehind=false status --long --branch' '
+	(
+		cd test &&
+		git checkout b1 >/dev/null &&
+		git -c status.aheadbehind=false status --long -b | head -2
 	) >actual &&
 	test_i18ncmp expect actual
 '
@@ -233,25 +264,25 @@ test_expect_success 'fail to track annotated tags' '
 test_expect_success '--set-upstream-to does not change branch' '
 	git branch from-master master &&
 	git branch --set-upstream-to master from-master &&
-	git branch from-master2 master &&
-	test_must_fail git config branch.from-master2.merge > actual &&
-	git rev-list from-master2 &&
-	git update-ref refs/heads/from-master2 from-master2^ &&
-	git rev-parse from-master2 >expect2 &&
-	git branch --set-upstream-to master from-master2 &&
+	git branch from-topic_2 master &&
+	test_must_fail git config branch.from-topic_2.merge > actual &&
+	git rev-list from-topic_2 &&
+	git update-ref refs/heads/from-topic_2 from-topic_2^ &&
+	git rev-parse from-topic_2 >expect2 &&
+	git branch --set-upstream-to master from-topic_2 &&
 	git config branch.from-master.merge > actual &&
-	git rev-parse from-master2 >actual2 &&
+	git rev-parse from-topic_2 >actual2 &&
 	grep -q "^refs/heads/master$" actual &&
 	cmp expect2 actual2
 '
 
 test_expect_success '--set-upstream-to @{-1}' '
 	git checkout follower &&
-	git checkout from-master2 &&
-	git config branch.from-master2.merge > expect2 &&
+	git checkout from-topic_2 &&
+	git config branch.from-topic_2.merge > expect2 &&
 	git branch --set-upstream-to @{-1} from-master &&
 	git config branch.from-master.merge > actual &&
-	git config branch.from-master2.merge > actual2 &&
+	git config branch.from-topic_2.merge > actual2 &&
 	git branch --set-upstream-to follower from-master &&
 	git config branch.from-master.merge > expect &&
 	test_cmp expect2 actual2 &&

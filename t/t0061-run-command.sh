@@ -12,6 +12,10 @@ cat >hello-script <<-EOF
 	cat hello-script
 EOF
 
+test_expect_success MINGW 'subprocess inherits only std handles' '
+	test-tool run-command inherited-handle
+'
+
 test_expect_success 'start_command reports ENOENT (slash)' '
 	test-tool run-command start-command-ENOENT ./does-not-exist 2>err &&
 	test_i18ngrep "\./does-not-exist" err
@@ -208,6 +212,25 @@ test_expect_success MINGW 'verify curlies are quoted properly' '
 	a{b}c
 	EOF
 	test_cmp expect actual
+'
+
+test_expect_success MINGW 'can spawn .bat with argv[0] containing spaces' '
+	bat="$TRASH_DIRECTORY/bat with spaces in name.bat" &&
+
+	# Every .bat invocation will log its arguments to file "out"
+	rm -f out &&
+	echo "echo %* >>out" >"$bat" &&
+
+	# Ask git to invoke .bat; clone will fail due to fake SSH helper
+	test_must_fail env GIT_SSH="$bat" git clone myhost:src ssh-clone &&
+
+	# Spawning .bat can fail if there are two quoted cmd.exe arguments.
+	# .bat itself is first (due to spaces in name), so just one more is
+	# needed to verify. GIT_SSH will invoke .bat multiple times:
+	# 1) -G myhost
+	# 2) myhost "git-upload-pack src"
+	# First invocation will always succeed. Test the second one.
+	grep "git-upload-pack" out
 '
 
 test_done

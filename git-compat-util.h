@@ -1,6 +1,15 @@
 #ifndef GIT_COMPAT_UTIL_H
 #define GIT_COMPAT_UTIL_H
 
+#ifdef USE_MSVC_CRTDBG
+/*
+ * For these to work they must appear very early in each
+ * file -- before most of the standard header files.
+ */
+#include <stdlib.h>
+#include <crtdbg.h>
+#endif
+
 #define _FILE_OFFSET_BITS 64
 
 
@@ -68,7 +77,7 @@
 #endif
 /*
  * ARRAY_SIZE - get the number of elements in a visible array
- *  <at> x: the array whose size you want.
+ * @x: the array whose size you want.
  *
  * This does not work on pointers, or arrays declared as [], or
  * function parameters.  With correct compiler support, such usage
@@ -243,8 +252,10 @@ typedef unsigned long uintptr_t;
 #ifdef PRECOMPOSE_UNICODE
 #include "compat/precompose_utf8.h"
 #else
-#define precompose_str(in,i_nfd2nfc)
-#define precompose_argv(c,v)
+static inline void precompose_argv(int argc, const char **argv)
+{
+	; /* nothing */
+}
 #define probe_utf8_pathname_composition()
 #endif
 
@@ -261,7 +272,9 @@ struct itimerval {
 #endif
 
 #ifdef NO_SETITIMER
-#define setitimer(which,value,ovalue)
+static inline int setitimer(int which, const struct itimerval *value, struct itimerval *newvalue) {
+	return 0; /* pretend success */
+}
 #endif
 
 #ifndef NO_LIBGEN_H
@@ -311,30 +324,11 @@ char *gitdirname(char *);
 #define PATH_MAX 4096
 #endif
 
-#ifndef PRIuMAX
-#define PRIuMAX "llu"
-#endif
-
-#ifndef SCNuMAX
-#define SCNuMAX PRIuMAX
-#endif
-
-#ifndef PRIu32
-#define PRIu32 "u"
-#endif
-
-#ifndef PRIx32
-#define PRIx32 "x"
-#endif
-
-#ifndef PRIo32
-#define PRIo32 "o"
-#endif
-
 typedef uintmax_t timestamp_t;
 #define PRItime PRIuMAX
 #define parse_timestamp strtoumax
 #define TIME_MAX UINTMAX_MAX
+#define TIME_MIN 0
 
 #ifndef PATH_SEP
 #define PATH_SEP ':'
@@ -387,12 +381,24 @@ static inline int git_offset_1st_component(const char *path)
 #define offset_1st_component git_offset_1st_component
 #endif
 
+#ifndef is_valid_path
+#define is_valid_path(path) 1
+#endif
+
 #ifndef find_last_dir_sep
 static inline char *git_find_last_dir_sep(const char *path)
 {
 	return strrchr(path, '/');
 }
 #define find_last_dir_sep git_find_last_dir_sep
+#endif
+
+#ifndef has_dir_sep
+static inline int git_has_dir_sep(const char *path)
+{
+	return !!strchr(path, '/');
+}
+#define has_dir_sep(path) git_has_dir_sep(path)
 #endif
 
 #ifndef query_user_email
@@ -483,11 +489,13 @@ static inline int const_error(void)
 #define error_errno(...) (error_errno(__VA_ARGS__), const_error())
 #endif
 
-void set_die_routine(NORETURN_PTR void (*routine)(const char *err, va_list params));
-void set_error_routine(void (*routine)(const char *err, va_list params));
-extern void (*get_error_routine(void))(const char *err, va_list params);
-void set_warn_routine(void (*routine)(const char *warn, va_list params));
-extern void (*get_warn_routine(void))(const char *warn, va_list params);
+typedef void (*report_fn)(const char *, va_list params);
+
+void set_die_routine(NORETURN_PTR report_fn routine);
+void set_error_routine(report_fn routine);
+report_fn get_error_routine(void);
+void set_warn_routine(report_fn routine);
+report_fn get_warn_routine(void);
 void set_die_is_recursing_routine(int (*routine)(void));
 
 int starts_with(const char *str, const char *prefix);
@@ -809,9 +817,6 @@ const char *inet_ntop(int af, const void *src, char *dst, size_t size);
 int git_atexit(void (*handler)(void));
 #endif
 
-typedef void (*try_to_free_t)(size_t);
-try_to_free_t set_try_to_free_routine(try_to_free_t);
-
 static inline size_t st_add(size_t a, size_t b)
 {
 	if (unsigned_add_overflows(a, b))
@@ -868,6 +873,12 @@ int xmkstemp_mode(char *temp_filename, int mode);
 char *xgetcwd(void);
 FILE *fopen_for_writing(const char *path);
 FILE *fopen_or_warn(const char *path, const char *mode);
+
+/*
+ * Like strncmp, but only return zero if s is NUL-terminated and exactly len
+ * characters long.  If it is not, consider it greater than t.
+ */
+int xstrncmpz(const char *s, const char *t, size_t len);
 
 /*
  * FREE_AND_NULL(ptr) is like free(ptr) followed by ptr = NULL. Note
@@ -1085,10 +1096,10 @@ static inline int strtol_i(char const *s, int base, int *result)
 	return 0;
 }
 
+void git_stable_qsort(void *base, size_t nmemb, size_t size,
+		      int(*compar)(const void *, const void *));
 #ifdef INTERNAL_QSORT
-void git_qsort(void *base, size_t nmemb, size_t size,
-	       int(*compar)(const void *, const void *));
-#define qsort git_qsort
+#define qsort git_stable_qsort
 #endif
 
 #define QSORT(base, n, compar) sane_qsort((base), (n), sizeof(*(base)), compar)
@@ -1098,6 +1109,9 @@ static inline void sane_qsort(void *base, size_t nmemb, size_t size,
 	if (nmemb > 1)
 		qsort(base, nmemb, size, compar);
 }
+
+#define STABLE_QSORT(base, n, compar) \
+	git_stable_qsort((base), (n), sizeof(*(base)), compar)
 
 #ifndef HAVE_ISO_QSORT_S
 int git_qsort_s(void *base, size_t nmemb, size_t size,
@@ -1214,13 +1228,6 @@ int access_or_die(const char *path, int mode, unsigned flag);
 /* Warn on an inaccessible file if errno indicates this is an error */
 int warn_on_fopen_errors(const char *path);
 
-#ifdef GMTIME_UNRELIABLE_ERRORS
-struct tm *git_gmtime(const time_t *);
-struct tm *git_gmtime_r(const time_t *, struct tm *);
-#define gmtime git_gmtime
-#define gmtime_r git_gmtime_r
-#endif
-
 #if !defined(USE_PARENS_AROUND_GETTEXT_N) && defined(__GNUC__)
 #define USE_PARENS_AROUND_GETTEXT_N 1
 #endif
@@ -1230,8 +1237,14 @@ struct tm *git_gmtime_r(const time_t *, struct tm *);
 #endif
 
 #ifndef _POSIX_THREAD_SAFE_FUNCTIONS
-#define flockfile(fh)
-#define funlockfile(fh)
+static inline void flockfile(FILE *fh)
+{
+	; /* nothing */
+}
+static inline void funlockfile(FILE *fh)
+{
+	; /* nothing */
+}
 #define getc_unlocked(fh) getc(fh)
 #endif
 
@@ -1302,5 +1315,45 @@ void unleak_memory(const void *ptr, size_t len);
  * replace system names.
  */
 #include "banned.h"
+
+/*
+ * container_of - Get the address of an object containing a field.
+ *
+ * @ptr: pointer to the field.
+ * @type: type of the object.
+ * @member: name of the field within the object.
+ */
+#define container_of(ptr, type, member) \
+	((type *) ((char *)(ptr) - offsetof(type, member)))
+
+/*
+ * helper function for `container_of_or_null' to avoid multiple
+ * evaluation of @ptr
+ */
+static inline void *container_of_or_null_offset(void *ptr, size_t offset)
+{
+	return ptr ? (char *)ptr - offset : NULL;
+}
+
+/*
+ * like `container_of', but allows returned value to be NULL
+ */
+#define container_of_or_null(ptr, type, member) \
+	(type *)container_of_or_null_offset(ptr, offsetof(type, member))
+
+/*
+ * like offsetof(), but takes a pointer to a a variable of type which
+ * contains @member, instead of a specified type.
+ * @ptr is subject to multiple evaluation since we can't rely on __typeof__
+ * everywhere.
+ */
+#if defined(__GNUC__) /* clang sets this, too */
+#define OFFSETOF_VAR(ptr, member) offsetof(__typeof__(*ptr), member)
+#else /* !__GNUC__ */
+#define OFFSETOF_VAR(ptr, member) \
+	((uintptr_t)&(ptr)->member - (uintptr_t)(ptr))
+#endif /* !__GNUC__ */
+
+void sleep_millisec(int millisec);
 
 #endif

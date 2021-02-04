@@ -199,6 +199,43 @@ test_expect_success JSON_PP 'event stream, list config' '
 	test_cmp expect actual
 '
 
+# Test listing of all "interesting" environment variables.
+
+test_expect_success JSON_PP 'event stream, list env vars' '
+	test_when_finished "rm trace.event actual expect" &&
+	GIT_TRACE2_EVENT="$(pwd)/trace.event" \
+		GIT_TRACE2_ENV_VARS="A_VAR,OTHER_VAR,MISSING" \
+		A_VAR=1 OTHER_VAR="hello world" test-tool trace2 001return 0 &&
+	perl "$TEST_DIRECTORY/t0212/parse_events.perl" <trace.event >actual &&
+	sed -e "s/^|//" >expect <<-EOF &&
+	|VAR1 = {
+	|  "_SID0_":{
+	|    "argv":[
+	|      "_EXE_",
+	|      "trace2",
+	|      "001return",
+	|      "0"
+	|    ],
+	|    "exit_code":0,
+	|    "hierarchy":"trace2",
+	|    "name":"trace2",
+	|    "params":[
+	|      {
+	|        "param":"A_VAR",
+	|        "value":"1"
+	|      },
+	|      {
+	|        "param":"OTHER_VAR",
+	|        "value":"hello world"
+	|      }
+	|    ],
+	|    "version":"$V"
+	|  }
+	|};
+	EOF
+	test_cmp expect actual
+'
+
 test_expect_success JSON_PP 'basic trace2_data' '
 	test_when_finished "rm trace.event actual expect" &&
 	GIT_TRACE2_EVENT="$(pwd)/trace.event" test-tool trace2 006data test_category k1 v1 test_category k2 v2 &&
@@ -263,6 +300,25 @@ test_expect_success JSON_PP 'using global config, event stream, error event' '
 	|};
 	EOF
 	test_cmp expect actual
+'
+
+test_expect_success 'discard traces when there are too many files' '
+	mkdir trace_target_dir &&
+	test_when_finished "rm -r trace_target_dir" &&
+	(
+		GIT_TRACE2_MAX_FILES=5 &&
+		export GIT_TRACE2_MAX_FILES &&
+		cd trace_target_dir &&
+		test_seq $GIT_TRACE2_MAX_FILES >../expected_filenames.txt &&
+		xargs touch <../expected_filenames.txt &&
+		cd .. &&
+		GIT_TRACE2_EVENT="$(pwd)/trace_target_dir" test-tool trace2 001return 0
+	) &&
+	echo git-trace2-discard >>expected_filenames.txt &&
+	ls trace_target_dir >ls_output.txt &&
+	test_cmp expected_filenames.txt ls_output.txt &&
+	head -n1 trace_target_dir/git-trace2-discard | grep \"event\":\"version\" &&
+	head -n2 trace_target_dir/git-trace2-discard | tail -n1 | grep \"event\":\"too_many_files\"
 '
 
 test_done

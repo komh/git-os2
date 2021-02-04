@@ -82,6 +82,13 @@ test_expect_success 'bisect fails if given any junk instead of revs' '
 	git bisect bad $HASH4
 '
 
+test_expect_success 'bisect start without -- takes unknown arg as pathspec' '
+	git bisect reset &&
+	git bisect start foo bar &&
+	grep foo ".git/BISECT_NAMES" &&
+	grep bar ".git/BISECT_NAMES"
+'
+
 test_expect_success 'bisect reset: back in the master branch' '
 	git bisect reset &&
 	echo "* master" > branch.expect &&
@@ -148,7 +155,7 @@ test_expect_success 'bisect start: no ".git/BISECT_START" created if junk rev' '
 	test_must_fail git bisect start $HASH4 foo -- &&
 	git branch > branch.output &&
 	grep "* other" branch.output > /dev/null &&
-	test_must_fail test -e .git/BISECT_START
+	test_path_is_missing .git/BISECT_START
 '
 
 test_expect_success 'bisect start: existing ".git/BISECT_START" not modified if junk rev' '
@@ -166,7 +173,7 @@ test_expect_success 'bisect start: no ".git/BISECT_START" if mistaken rev' '
 	test_must_fail git bisect start $HASH1 $HASH4 -- &&
 	git branch > branch.output &&
 	grep "* other" branch.output > /dev/null &&
-	test_must_fail test -e .git/BISECT_START
+	test_path_is_missing .git/BISECT_START
 '
 
 test_expect_success 'bisect start: no ".git/BISECT_START" if checkout error' '
@@ -175,7 +182,7 @@ test_expect_success 'bisect start: no ".git/BISECT_START" if checkout error' '
 	git branch &&
 	git branch > branch.output &&
 	grep "* other" branch.output > /dev/null &&
-	test_must_fail test -e .git/BISECT_START &&
+	test_path_is_missing .git/BISECT_START &&
 	test -z "$(git for-each-ref "refs/bisect/*")" &&
 	git checkout HEAD hello
 '
@@ -243,32 +250,30 @@ test_expect_success 'bisect skip: with commit both bad and skipped' '
 '
 
 # We want to automatically find the commit that
-# introduced "Another" into hello.
-test_expect_success \
-    '"git bisect run" simple case' \
-    'echo "#"\!"/bin/sh" > test_script.sh &&
-     echo "grep Another hello > /dev/null" >> test_script.sh &&
-     echo "test \$? -ne 0" >> test_script.sh &&
-     chmod +x test_script.sh &&
-     git bisect start &&
-     git bisect good $HASH1 &&
-     git bisect bad $HASH4 &&
-     git bisect run ./test_script.sh > my_bisect_log.txt &&
-     grep "$HASH3 is the first bad commit" my_bisect_log.txt &&
-     git bisect reset'
+# added "Another" into hello.
+test_expect_success '"git bisect run" simple case' '
+	write_script test_script.sh <<-\EOF &&
+	! grep Another hello >/dev/null
+	EOF
+	git bisect start &&
+	git bisect good $HASH1 &&
+	git bisect bad $HASH4 &&
+	git bisect run ./test_script.sh >my_bisect_log.txt &&
+	grep "$HASH3 is the first bad commit" my_bisect_log.txt &&
+	git bisect reset
+'
 
 # We want to automatically find the commit that
-# introduced "Ciao" into hello.
-test_expect_success \
-    '"git bisect run" with more complex "git bisect start"' \
-    'echo "#"\!"/bin/sh" > test_script.sh &&
-     echo "grep Ciao hello > /dev/null" >> test_script.sh &&
-     echo "test \$? -ne 0" >> test_script.sh &&
-     chmod +x test_script.sh &&
-     git bisect start $HASH4 $HASH1 &&
-     git bisect run ./test_script.sh > my_bisect_log.txt &&
-     grep "$HASH4 is the first bad commit" my_bisect_log.txt &&
-     git bisect reset'
+# added "Ciao" into hello.
+test_expect_success '"git bisect run" with more complex "git bisect start"' '
+	write_script test_script.sh <<-\EOF &&
+	! grep Ciao hello >/dev/null
+	EOF
+	git bisect start $HASH4 $HASH1 &&
+	git bisect run ./test_script.sh >my_bisect_log.txt &&
+	grep "$HASH4 is the first bad commit" my_bisect_log.txt &&
+	git bisect reset
+'
 
 # $HASH1 is good, $HASH5 is bad, we skip $HASH3
 # but $HASH4 is good,
@@ -295,24 +300,17 @@ HASH6=
 test_expect_success 'bisect run & skip: cannot tell between 2' '
 	add_line_into_file "6: Yet a line." hello &&
 	HASH6=$(git rev-parse --verify HEAD) &&
-	echo "#"\!"/bin/sh" > test_script.sh &&
-	echo "sed -ne \\\$p hello | grep Ciao > /dev/null && exit 125" >> test_script.sh &&
-	echo "grep line hello > /dev/null" >> test_script.sh &&
-	echo "test \$? -ne 0" >> test_script.sh &&
-	chmod +x test_script.sh &&
+	write_script test_script.sh <<-\EOF &&
+	sed -ne \$p hello | grep Ciao >/dev/null && exit 125
+	! grep line hello >/dev/null
+	EOF
 	git bisect start $HASH6 $HASH1 &&
-	if git bisect run ./test_script.sh > my_bisect_log.txt
-	then
-		echo Oops, should have failed.
-		false
-	else
-		test $? -eq 2 &&
-		grep "first bad commit could be any of" my_bisect_log.txt &&
-		! grep $HASH3 my_bisect_log.txt &&
-		! grep $HASH6 my_bisect_log.txt &&
-		grep $HASH4 my_bisect_log.txt &&
-		grep $HASH5 my_bisect_log.txt
-	fi
+	test_expect_code 2 git bisect run ./test_script.sh >my_bisect_log.txt &&
+	grep "first bad commit could be any of" my_bisect_log.txt &&
+	! grep $HASH3 my_bisect_log.txt &&
+	! grep $HASH6 my_bisect_log.txt &&
+	grep $HASH4 my_bisect_log.txt &&
+	grep $HASH5 my_bisect_log.txt
 '
 
 HASH7=
@@ -320,14 +318,13 @@ test_expect_success 'bisect run & skip: find first bad' '
 	git bisect reset &&
 	add_line_into_file "7: Should be the last line." hello &&
 	HASH7=$(git rev-parse --verify HEAD) &&
-	echo "#"\!"/bin/sh" > test_script.sh &&
-	echo "sed -ne \\\$p hello | grep Ciao > /dev/null && exit 125" >> test_script.sh &&
-	echo "sed -ne \\\$p hello | grep day > /dev/null && exit 125" >> test_script.sh &&
-	echo "grep Yet hello > /dev/null" >> test_script.sh &&
-	echo "test \$? -ne 0" >> test_script.sh &&
-	chmod +x test_script.sh &&
+	write_script test_script.sh <<-\EOF &&
+	sed -ne \$p hello | grep Ciao >/dev/null && exit 125
+	sed -ne \$p hello | grep day >/dev/null && exit 125
+	! grep Yet hello >/dev/null
+	EOF
 	git bisect start $HASH7 $HASH1 &&
-	git bisect run ./test_script.sh > my_bisect_log.txt &&
+	git bisect run ./test_script.sh >my_bisect_log.txt &&
 	grep "$HASH6 is the first bad commit" my_bisect_log.txt
 '
 
@@ -458,6 +455,24 @@ test_expect_success 'many merge bases creation' '
 	grep "$SIDE_HASH5" merge_bases.txt
 '
 
+# We want to automatically find the merge that
+# added "line" into hello.
+test_expect_success '"git bisect run --first-parent" simple case' '
+	git rev-list --first-parent $B_HASH ^$HASH4 >first_parent_chain.txt &&
+	write_script test_script.sh <<-\EOF &&
+	grep $(git rev-parse HEAD) first_parent_chain.txt || exit -1
+	! grep line hello >/dev/null
+	EOF
+	git bisect start --first-parent &&
+	test_path_is_file ".git/BISECT_FIRST_PARENT" &&
+	git bisect good $HASH4 &&
+	git bisect bad $B_HASH &&
+	git bisect run ./test_script.sh >my_bisect_log.txt &&
+	grep "$B_HASH is the first bad commit" my_bisect_log.txt &&
+	git bisect reset &&
+	test_path_is_missing .git/BISECT_FIRST_PARENT
+'
+
 test_expect_success 'good merge bases when good and bad are siblings' '
 	git bisect start "$B_HASH" "$A_HASH" > my_bisect_log.txt &&
 	test_i18ngrep "merge base must be tested" my_bisect_log.txt &&
@@ -482,10 +497,10 @@ test_expect_success 'optimized merge base checks' '
 	git bisect good > my_bisect_log2.txt &&
 	test -f ".git/BISECT_ANCESTORS_OK" &&
 	test "$HASH6" = $(git rev-parse --verify HEAD) &&
-	git bisect bad > my_bisect_log3.txt &&
+	git bisect bad &&
 	git bisect good "$A_HASH" > my_bisect_log4.txt &&
 	test_i18ngrep "merge base must be tested" my_bisect_log4.txt &&
-	test_must_fail test -f ".git/BISECT_ANCESTORS_OK"
+	test_path_is_missing ".git/BISECT_ANCESTORS_OK"
 '
 
 # This creates another side branch called "parallel" with some files
@@ -615,6 +630,7 @@ test_expect_success 'broken branch creation' '
 	git add missing/MISSING &&
 	git commit -m "6(broken): Added file that will be deleted" &&
 	git tag BROKEN_HASH6 &&
+	deleted=$(git rev-parse --verify HEAD:missing) &&
 	add_line_into_file "7(broken): second line on a broken branch" hello2 &&
 	git tag BROKEN_HASH7 &&
 	add_line_into_file "8(broken): third line on a broken branch" hello2 &&
@@ -622,12 +638,12 @@ test_expect_success 'broken branch creation' '
 	git rm missing/MISSING &&
 	git commit -m "9(broken): Remove missing file" &&
 	git tag BROKEN_HASH9 &&
-	rm .git/objects/39/f7e61a724187ab767d2e08442d9b6b9dab587d
+	rm .git/objects/$(test_oid_to_path $deleted)
 '
 
 echo "" > expected.ok
 cat > expected.missing-tree.default <<EOF
-fatal: unable to read tree 39f7e61a724187ab767d2e08442d9b6b9dab587d
+fatal: unable to read tree $deleted
 EOF
 
 test_expect_success 'bisect fails if tree is broken on start commit' '
@@ -713,12 +729,12 @@ test_expect_success 'bisect: demonstrate identification of damage boundary' "
 "
 
 cat > expected.bisect-log <<EOF
-# bad: [32a594a3fdac2d57cf6d02987e30eec68511498c] Add <4: Ciao for now> into <hello>.
-# good: [7b7f204a749c3125d5224ed61ea2ae1187ad046f] Add <2: A new day for git> into <hello>.
-git bisect start '32a594a3fdac2d57cf6d02987e30eec68511498c' '7b7f204a749c3125d5224ed61ea2ae1187ad046f'
-# good: [3de952f2416b6084f557ec417709eac740c6818c] Add <3: Another new day for git> into <hello>.
-git bisect good 3de952f2416b6084f557ec417709eac740c6818c
-# first bad commit: [32a594a3fdac2d57cf6d02987e30eec68511498c] Add <4: Ciao for now> into <hello>.
+# bad: [$HASH4] Add <4: Ciao for now> into <hello>.
+# good: [$HASH2] Add <2: A new day for git> into <hello>.
+git bisect start '$HASH4' '$HASH2'
+# good: [$HASH3] Add <3: Another new day for git> into <hello>.
+git bisect good $HASH3
+# first bad commit: [$HASH4] Add <4: Ciao for now> into <hello>.
 EOF
 
 test_expect_success 'bisect log: successful result' '
@@ -731,14 +747,14 @@ test_expect_success 'bisect log: successful result' '
 '
 
 cat > expected.bisect-skip-log <<EOF
-# bad: [32a594a3fdac2d57cf6d02987e30eec68511498c] Add <4: Ciao for now> into <hello>.
-# good: [7b7f204a749c3125d5224ed61ea2ae1187ad046f] Add <2: A new day for git> into <hello>.
-git bisect start '32a594a3fdac2d57cf6d02987e30eec68511498c' '7b7f204a749c3125d5224ed61ea2ae1187ad046f'
-# skip: [3de952f2416b6084f557ec417709eac740c6818c] Add <3: Another new day for git> into <hello>.
-git bisect skip 3de952f2416b6084f557ec417709eac740c6818c
+# bad: [$HASH4] Add <4: Ciao for now> into <hello>.
+# good: [$HASH2] Add <2: A new day for git> into <hello>.
+git bisect start '$HASH4' '$HASH2'
+# skip: [$HASH3] Add <3: Another new day for git> into <hello>.
+git bisect skip $HASH3
 # only skipped commits left to test
-# possible first bad commit: [32a594a3fdac2d57cf6d02987e30eec68511498c] Add <4: Ciao for now> into <hello>.
-# possible first bad commit: [3de952f2416b6084f557ec417709eac740c6818c] Add <3: Another new day for git> into <hello>.
+# possible first bad commit: [$HASH4] Add <4: Ciao for now> into <hello>.
+# possible first bad commit: [$HASH3] Add <3: Another new day for git> into <hello>.
 EOF
 
 test_expect_success 'bisect log: only skip commits left' '
@@ -788,6 +804,13 @@ test_expect_success 'bisect start with one new and old' '
 test_expect_success 'bisect replay with old and new' '
 	git bisect replay log_to_replay.txt >bisect_result &&
 	grep "$HASH2 is the first new commit" bisect_result &&
+	git bisect reset
+'
+
+test_expect_success 'bisect replay with CRLF log' '
+	append_cr <log_to_replay.txt >log_to_replay_crlf.txt &&
+	git bisect replay log_to_replay_crlf.txt >bisect_result_crlf &&
+	grep "$HASH2 is the first new commit" bisect_result_crlf &&
 	git bisect reset
 '
 
@@ -858,7 +881,9 @@ test_expect_success 'bisect cannot mix terms' '
 
 test_expect_success 'bisect terms rejects invalid terms' '
 	git bisect reset &&
+	test_must_fail git bisect start --term-good &&
 	test_must_fail git bisect start --term-good invalid..term &&
+	test_must_fail git bisect start --term-bad &&
 	test_must_fail git bisect terms --term-bad invalid..term &&
 	test_must_fail git bisect terms --term-good bad &&
 	test_must_fail git bisect terms --term-good old &&

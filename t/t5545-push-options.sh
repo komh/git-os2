@@ -115,7 +115,7 @@ test_expect_success 'push options and submodules' '
 
 	git -C parent submodule add ../upstream workbench &&
 	git -C parent/workbench remote add up ../../upstream &&
-	git -C parent commit -m "add submoule" &&
+	git -C parent commit -m "add submodule" &&
 
 	test_commit -C parent/workbench two &&
 	git -C parent add workbench &&
@@ -277,5 +277,8 @@ test_expect_success 'push options keep quoted characters intact (http)' '
 	echo "\"embedded quotes\"" >expect &&
 	test_cmp expect "$HTTPD_DOCUMENT_ROOT_PATH"/upstream.git/hooks/pre-receive.push_options
 '
+
+# DO NOT add non-httpd-specific tests here, because the last part of this
+# test script is only executed when httpd is available and enabled.
 
 test_done

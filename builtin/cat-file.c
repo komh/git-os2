@@ -12,9 +12,10 @@
 #include "userdiff.h"
 #include "streaming.h"
 #include "tree-walk.h"
-#include "sha1-array.h"
+#include "oid-array.h"
 #include "packfile.h"
 #include "object-store.h"
+#include "promisor-remote.h"
 
 struct batch_options {
 	int enabled;
@@ -41,7 +42,10 @@ static int filter_object(const char *path, unsigned mode,
 			     oid_to_hex(oid), path);
 	if ((type == OBJ_BLOB) && S_ISREG(mode)) {
 		struct strbuf strbuf = STRBUF_INIT;
-		if (convert_to_working_tree(&the_index, path, *buf, *size, &strbuf)) {
+		struct checkout_metadata meta;
+
+		init_checkout_metadata(&meta, NULL, NULL, oid);
+		if (convert_to_working_tree(&the_index, path, *buf, *size, &strbuf, &meta)) {
 			free(*buf);
 			*size = strbuf.len;
 			*buf = strbuf_detach(&strbuf, NULL);
@@ -172,7 +176,8 @@ static int cat_one_file(int opt, const char *exp_type, const char *obj_name,
 			 * fall-back to the usual case.
 			 */
 		}
-		buf = read_object_with_reference(&oid, exp_type, &size, NULL);
+		buf = read_object_with_reference(the_repository,
+						 &oid, exp_type, &size, NULL);
 		break;
 
 	default:
@@ -260,7 +265,7 @@ static void expand_atom(struct strbuf *sb, const char *atom, int len,
 			strbuf_addstr(sb, data->rest);
 	} else if (is_atom("deltabase", atom, len)) {
 		if (data->mark_query)
-			data->info.delta_base_sha1 = data->delta_base_oid.hash;
+			data->info.delta_base_oid = &data->delta_base_oid;
 		else
 			strbuf_addstr(sb,
 				      oid_to_hex(&data->delta_base_oid));
@@ -523,8 +528,8 @@ static int batch_objects(struct batch_options *opt)
 	if (opt->all_objects) {
 		struct object_cb_data cb;
 
-		if (repository_format_partial_clone)
-			warning("This repository has extensions.partialClone set. Some objects may not be loaded.");
+		if (has_promisor_remote())
+			warning("This repository uses promisor remotes. Some objects may not be loaded.");
 
 		cb.opt = opt;
 		cb.expand = &data;
@@ -591,7 +596,7 @@ static int batch_objects(struct batch_options *opt)
 
 static const char * const cat_file_usage[] = {
 	N_("git cat-file (-t [--allow-unknown-type] | -s [--allow-unknown-type] | -e | -p | <type> | --textconv | --filters) [--path=<path>] <object>"),
-	N_("git cat-file (--batch | --batch-check) [--follow-symlinks] [--textconv | --filters]"),
+	N_("git cat-file (--batch[=<format>] | --batch-check[=<format>]) [--follow-symlinks] [--textconv | --filters]"),
 	NULL
 };
 
@@ -645,14 +650,14 @@ int cmd_cat_file(int argc, const char **argv, const char *prefix)
 		OPT_BOOL(0, "allow-unknown-type", &unknown_type,
 			  N_("allow -s and -t to work with broken/corrupt objects")),
 		OPT_BOOL(0, "buffer", &batch.buffer_output, N_("buffer --batch output")),
-		{ OPTION_CALLBACK, 0, "batch", &batch, "format",
+		OPT_CALLBACK_F(0, "batch", &batch, "format",
 			N_("show info and content of objects fed from the standard input"),
 			PARSE_OPT_OPTARG | PARSE_OPT_NONEG,
-			batch_option_callback },
-		{ OPTION_CALLBACK, 0, "batch-check", &batch, "format",
+			batch_option_callback),
+		OPT_CALLBACK_F(0, "batch-check", &batch, "format",
 			N_("show info about objects fed from the standard input"),
 			PARSE_OPT_OPTARG | PARSE_OPT_NONEG,
-			batch_option_callback },
+			batch_option_callback),
 		OPT_BOOL(0, "follow-symlinks", &batch.follow_symlinks,
 			 N_("follow in-tree symlinks (used with --batch or --batch-check)")),
 		OPT_BOOL(0, "batch-all-objects", &batch.all_objects,

@@ -14,9 +14,10 @@
 #include "refs.h"
 #include "fmt-merge-msg.h"
 #include "commit.h"
-#include "argv-array.h"
+#include "strvec.h"
 #include "object-store.h"
 #include "chdir-notify.h"
+#include "shallow.h"
 
 int trust_executable_bit = 1;
 int trust_ctime = 1;
@@ -31,13 +32,11 @@ int warn_ambiguous_refs = 1;
 int warn_on_object_refname_ambiguity = 1;
 int ref_paranoia = -1;
 int repository_format_precious_objects;
-char *repository_format_partial_clone;
-const char *core_partial_clone_filter_default;
 int repository_format_worktree_config;
 const char *git_commit_encoding;
 const char *git_log_output_encoding;
-const char *apply_default_whitespace;
-const char *apply_default_ignorewhitespace;
+char *apply_default_whitespace;
+char *apply_default_ignorewhitespace;
 const char *git_attributes_file;
 const char *git_hooks_path;
 int zlib_compression_level = Z_BEST_SPEED;
@@ -69,6 +68,7 @@ enum object_creation_mode object_creation_mode = OBJECT_CREATION_MODE;
 char *notes_ref_name;
 int grafts_replace_parents = 1;
 int core_apply_sparse_checkout;
+int core_sparse_checkout_cone;
 int merge_log_config = -1;
 int precomposed_unicode = -1; /* see probe_utf8_pathname_composition() */
 unsigned long pack_size_limit_cfg;
@@ -80,7 +80,7 @@ enum log_refs_config log_all_ref_updates = LOG_REFS_UNSET;
 int protect_hfs = PROTECT_HFS_DEFAULT;
 
 #ifndef PROTECT_NTFS_DEFAULT
-#define PROTECT_NTFS_DEFAULT 0
+#define PROTECT_NTFS_DEFAULT 1
 #endif
 int protect_ntfs = PROTECT_NTFS_DEFAULT;
 const char *core_fsmonitor;
@@ -156,15 +156,15 @@ static char *expand_namespace(const char *raw_namespace)
  * Wrapper of getenv() that returns a strdup value. This value is kept
  * in argv to be freed later.
  */
-static const char *getenv_safe(struct argv_array *argv, const char *name)
+static const char *getenv_safe(struct strvec *argv, const char *name)
 {
 	const char *value = getenv(name);
 
 	if (!value)
 		return NULL;
 
-	argv_array_push(argv, value);
-	return argv->argv[argv->argc - 1];
+	strvec_push(argv, value);
+	return argv->v[argv->nr - 1];
 }
 
 void setup_git_env(const char *git_dir)
@@ -172,7 +172,7 @@ void setup_git_env(const char *git_dir)
 	const char *shallow_file;
 	const char *replace_ref_base;
 	struct set_gitdir_args args = { NULL };
-	struct argv_array to_free = ARGV_ARRAY_INIT;
+	struct strvec to_free = STRVEC_INIT;
 
 	args.commondir = getenv_safe(&to_free, GIT_COMMON_DIR_ENVIRONMENT);
 	args.object_dir = getenv_safe(&to_free, DB_ENVIRONMENT);
@@ -180,7 +180,7 @@ void setup_git_env(const char *git_dir)
 	args.index_file = getenv_safe(&to_free, INDEX_ENVIRONMENT);
 	args.alternate_db = getenv_safe(&to_free, ALTERNATE_DB_ENVIRONMENT);
 	repo_set_gitdir(the_repository, git_dir, &args);
-	argv_array_clear(&to_free);
+	strvec_clear(&to_free);
 
 	if (getenv(NO_REPLACE_OBJECTS_ENVIRONMENT))
 		read_replace_refs = 0;
@@ -255,8 +255,11 @@ static int git_work_tree_initialized;
  */
 void set_git_work_tree(const char *new_work_tree)
 {
+	struct strbuf realpath = STRBUF_INIT;
+
 	if (git_work_tree_initialized) {
-		new_work_tree = real_path(new_work_tree);
+		strbuf_realpath(&realpath, new_work_tree, 1);
+		new_work_tree = realpath.buf;
 		if (strcmp(new_work_tree, the_repository->worktree))
 			die("internal error: work tree has already been set\n"
 			    "Current worktree: %s\nNew worktree: %s",
@@ -265,6 +268,8 @@ void set_git_work_tree(const char *new_work_tree)
 	}
 	git_work_tree_initialized = 1;
 	repo_set_worktree(the_repository, new_work_tree);
+
+	strbuf_release(&realpath);
 }
 
 const char *get_git_work_tree(void)
@@ -346,11 +351,20 @@ static void update_relative_gitdir(const char *name,
 	free(path);
 }
 
-void set_git_dir(const char *path)
+void set_git_dir(const char *path, int make_realpath)
 {
+	struct strbuf realpath = STRBUF_INIT;
+
+	if (make_realpath) {
+		strbuf_realpath(&realpath, path, 1);
+		path = realpath.buf;
+	}
+
 	set_git_dir_1(path);
 	if (!is_absolute_path(path))
 		chdir_notify_register(NULL, update_relative_gitdir, NULL);
+
+	strbuf_release(&realpath);
 }
 
 const char *get_log_output_encoding(void)

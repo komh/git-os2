@@ -4,6 +4,12 @@ test_description='Test workflows involving pull request.'
 
 . ./test-lib.sh
 
+if ! test_have_prereq PERL
+then
+	skip_all='skipping request-pull tests, perl not available'
+	test_done
+fi
+
 test_expect_success 'setup' '
 
 	git init --bare upstream.git &&
@@ -144,7 +150,6 @@ test_expect_success 'pull request after push' '
 		git request-pull initial origin master:for-upstream >../request
 	) &&
 	sed -nf read-request.sed <request >digest &&
-	cat digest &&
 	{
 		read task &&
 		read repository &&
@@ -173,7 +178,6 @@ test_expect_success 'request asks HEAD to be pulled' '
 		git request-pull initial "$downstream_url" >../request
 	) &&
 	sed -nf read-request.sed <request >digest &&
-	cat digest &&
 	{
 		read task &&
 		read repository &&
@@ -243,6 +247,59 @@ test_expect_success 'request-pull ignores OPTIONS_KEEPDASHDASH poison' '
 		git push origin master:for-upstream &&
 		git request-pull -- initial "$downstream_url" master:for-upstream >../request
 	)
+
+'
+
+test_expect_success 'request-pull quotes regex metacharacters properly' '
+
+	rm -fr downstream.git &&
+	git init --bare downstream.git &&
+	(
+		cd local &&
+		git checkout initial &&
+		git merge --ff-only master &&
+		git tag -mrelease v2.0 &&
+		git push origin refs/tags/v2.0:refs/tags/v2-0 &&
+		test_must_fail git request-pull initial "$downstream_url" tags/v2.0 \
+			2>../err
+	) &&
+	grep "No match for commit .*" err &&
+	grep "Are you sure you pushed" err
+
+'
+
+test_expect_success 'pull request with mismatched object' '
+
+	rm -fr downstream.git &&
+	git init --bare downstream.git &&
+	(
+		cd local &&
+		git checkout initial &&
+		git merge --ff-only master &&
+		git push origin HEAD:refs/tags/full &&
+		test_must_fail git request-pull initial "$downstream_url" tags/full \
+			2>../err
+	) &&
+	grep "points to a different object" err &&
+	grep "Are you sure you pushed" err
+
+'
+
+test_expect_success 'pull request with stale object' '
+
+	rm -fr downstream.git &&
+	git init --bare downstream.git &&
+	(
+		cd local &&
+		git checkout initial &&
+		git merge --ff-only master &&
+		git push origin refs/tags/full &&
+		git tag -f -m"Thirty-one days" full &&
+		test_must_fail git request-pull initial "$downstream_url" tags/full \
+			2>../err
+	) &&
+	grep "points to a different object" err &&
+	grep "Are you sure you pushed" err
 
 '
 

@@ -269,8 +269,10 @@ static int note_tree_insert(struct notes_tree *t, struct int_node *tree,
 		case PTR_TYPE_NOTE:
 			if (oideq(&l->key_oid, &entry->key_oid)) {
 				/* skip concatenation if l == entry */
-				if (oideq(&l->val_oid, &entry->val_oid))
+				if (oideq(&l->val_oid, &entry->val_oid)) {
+					free(entry);
 					return 0;
+				}
 
 				ret = combine_notes(&l->val_oid,
 						    &entry->val_oid);
@@ -397,7 +399,7 @@ static void load_subtree(struct notes_tree *t, struct leaf_node *subtree,
 	struct name_entry entry;
 	const unsigned hashsz = the_hash_algo->rawsz;
 
-	buf = fill_tree_descriptor(&desc, &subtree->val_oid);
+	buf = fill_tree_descriptor(the_repository, &desc, &subtree->val_oid);
 	if (!buf)
 		die("Could not read %s for notes-index",
 		     oid_to_hex(&subtree->val_oid));
@@ -458,7 +460,7 @@ static void load_subtree(struct notes_tree *t, struct leaf_node *subtree,
 			die("Failed to load %s %s into notes tree "
 			    "from %s",
 			    type == PTR_TYPE_NOTE ? "note" : "subtree",
-			    oid_to_hex(&l->key_oid), t->ref);
+			    oid_to_hex(&object_oid), t->ref);
 
 		continue;
 
@@ -574,16 +576,16 @@ redo:
 			 * the note tree that have not yet been explored. There
 			 * is a direct relationship between subtree entries at
 			 * level 'n' in the tree, and the 'fanout' variable:
-			 * Subtree entries at level 'n <= 2 * fanout' should be
+			 * Subtree entries at level 'n < 2 * fanout' should be
 			 * preserved, since they correspond exactly to a fanout
 			 * directory in the on-disk structure. However, subtree
-			 * entries at level 'n > 2 * fanout' should NOT be
+			 * entries at level 'n >= 2 * fanout' should NOT be
 			 * preserved, but rather consolidated into the above
 			 * notes tree level. We achieve this by unconditionally
 			 * unpacking subtree entries that exist below the
 			 * threshold level at 'n = 2 * fanout'.
 			 */
-			if (n <= 2 * fanout &&
+			if (n < 2 * fanout &&
 			    flags & FOR_EACH_NOTE_YIELD_SUBTREES) {
 				/* invoke callback with subtree */
 				unsigned int path_len =
@@ -600,7 +602,7 @@ redo:
 					 path,
 					 cb_data);
 			}
-			if (n > fanout * 2 ||
+			if (n >= 2 * fanout ||
 			    !(flags & FOR_EACH_NOTE_DONT_UNPACK_SUBTREES)) {
 				/* unpack subtree and resume traversal */
 				tree->a[i] = NULL;
@@ -721,13 +723,15 @@ static int write_each_note_helper(struct tree_write_stack *tws,
 
 struct write_each_note_data {
 	struct tree_write_stack *root;
-	struct non_note *next_non_note;
+	struct non_note **nn_list;
+	struct non_note *nn_prev;
 };
 
 static int write_each_non_note_until(const char *note_path,
 		struct write_each_note_data *d)
 {
-	struct non_note *n = d->next_non_note;
+	struct non_note *p = d->nn_prev;
+	struct non_note *n = p ? p->next : *d->nn_list;
 	int cmp = 0, ret;
 	while (n && (!note_path || (cmp = strcmp(n->path, note_path)) <= 0)) {
 		if (note_path && cmp == 0)
@@ -738,9 +742,10 @@ static int write_each_non_note_until(const char *note_path,
 			if (ret)
 				return ret;
 		}
+		p = n;
 		n = n->next;
 	}
-	d->next_non_note = n;
+	d->nn_prev = p;
 	return 0;
 }
 
@@ -965,7 +970,7 @@ static int notes_display_config(const char *k, const char *v, void *cb)
 
 	if (*load_refs && !strcmp(k, "notes.displayref")) {
 		if (!v)
-			config_error_nonbool(k);
+			return config_error_nonbool(k);
 		string_list_add_refs_by_glob(&display_notes_refs, v);
 	}
 
@@ -1015,7 +1020,7 @@ void init_notes(struct notes_tree *t, const char *notes_ref,
 		return;
 	if (flags & NOTES_INIT_WRITABLE && read_ref(notes_ref, &object_oid))
 		die("Cannot use notes ref %s", notes_ref);
-	if (get_tree_entry(&object_oid, "", &oid, &mode))
+	if (get_tree_entry(the_repository, &object_oid, "", &oid, &mode))
 		die("Failed to read notes tree referenced by %s (%s)",
 		    notes_ref, oid_to_hex(&object_oid));
 
@@ -1040,6 +1045,39 @@ struct notes_tree **load_notes_trees(struct string_list *refs, int flags)
 }
 
 void init_display_notes(struct display_notes_opt *opt)
+{
+	memset(opt, 0, sizeof(*opt));
+	opt->use_default_notes = -1;
+}
+
+void enable_default_display_notes(struct display_notes_opt *opt, int *show_notes)
+{
+	opt->use_default_notes = 1;
+	*show_notes = 1;
+}
+
+void enable_ref_display_notes(struct display_notes_opt *opt, int *show_notes,
+		const char *ref) {
+	struct strbuf buf = STRBUF_INIT;
+	strbuf_addstr(&buf, ref);
+	expand_notes_ref(&buf);
+	string_list_append(&opt->extra_notes_refs,
+			strbuf_detach(&buf, NULL));
+	*show_notes = 1;
+}
+
+void disable_display_notes(struct display_notes_opt *opt, int *show_notes)
+{
+	opt->use_default_notes = -1;
+	/* we have been strdup'ing ourselves, so trick
+	 * string_list into free()ing strings */
+	opt->extra_notes_refs.strdup_strings = 1;
+	string_list_clear(&opt->extra_notes_refs, 0);
+	opt->extra_notes_refs.strdup_strings = 0;
+	*show_notes = 0;
+}
+
+void load_display_notes(struct display_notes_opt *opt)
 {
 	char *display_ref_env;
 	int load_config_refs = 0;
@@ -1142,7 +1180,8 @@ int write_notes_tree(struct notes_tree *t, struct object_id *result)
 	strbuf_init(&root.buf, 256 * (32 + the_hash_algo->hexsz)); /* assume 256 entries */
 	root.path[0] = root.path[1] = '\0';
 	cb_data.root = &root;
-	cb_data.next_non_note = t->first_non_note;
+	cb_data.nn_list = &(t->first_non_note);
+	cb_data.nn_prev = NULL;
 
 	/* Write tree objects representing current notes tree */
 	flags = FOR_EACH_NOTE_DONT_UNPACK_SUBTREES |
@@ -1244,10 +1283,8 @@ static void format_note(struct notes_tree *t, const struct object_id *object_oid
 		if (!ref || !strcmp(ref, GIT_NOTES_DEFAULT_REF)) {
 			strbuf_addstr(sb, "\nNotes:\n");
 		} else {
-			if (starts_with(ref, "refs/"))
-				ref += 5;
-			if (starts_with(ref, "notes/"))
-				ref += 6;
+			skip_prefix(ref, "refs/", &ref);
+			skip_prefix(ref, "notes/", &ref);
 			strbuf_addf(sb, "\nNotes (%s):\n", ref);
 		}
 	}
@@ -1297,9 +1334,9 @@ void expand_notes_ref(struct strbuf *sb)
 	if (starts_with(sb->buf, "refs/notes/"))
 		return; /* we're happy */
 	else if (starts_with(sb->buf, "notes/"))
-		strbuf_insert(sb, 0, "refs/", 5);
+		strbuf_insertstr(sb, 0, "refs/");
 	else
-		strbuf_insert(sb, 0, "refs/notes/", 11);
+		strbuf_insertstr(sb, 0, "refs/notes/");
 }
 
 void expand_loose_notes_ref(struct strbuf *sb)

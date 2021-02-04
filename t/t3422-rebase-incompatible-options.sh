@@ -61,8 +61,6 @@ test_rebase_am_only () {
 }
 
 test_rebase_am_only --whitespace=fix
-test_rebase_am_only --ignore-whitespace
-test_rebase_am_only --committer-date-is-author-date
 test_rebase_am_only -C4
 
 test_expect_success REBASE_P '--preserve-merges incompatible with --signoff' '
@@ -74,16 +72,6 @@ test_expect_success REBASE_P \
 	'--preserve-merges incompatible with --rebase-merges' '
 	git checkout B^0 &&
 	test_must_fail git rebase --preserve-merges --rebase-merges A
-'
-
-test_expect_success '--rebase-merges incompatible with --strategy' '
-	git checkout B^0 &&
-	test_must_fail git rebase --rebase-merges -s resolve A
-'
-
-test_expect_success '--rebase-merges incompatible with --strategy-option' '
-	git checkout B^0 &&
-	test_must_fail git rebase --rebase-merges -Xignore-space-change A
 '
 
 test_done

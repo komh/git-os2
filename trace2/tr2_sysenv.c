@@ -29,6 +29,8 @@ struct tr2_sysenv_entry {
 static struct tr2_sysenv_entry tr2_sysenv_settings[] = {
 	[TR2_SYSENV_CFG_PARAM]     = { "GIT_TRACE2_CONFIG_PARAMS",
 				       "trace2.configparams" },
+	[TR2_SYSENV_ENV_VARS]      = { "GIT_TRACE2_ENV_VARS",
+				       "trace2.envvars" },
 
 	[TR2_SYSENV_DST_DEBUG]     = { "GIT_TRACE2_DST_DEBUG",
 				       "trace2.destinationdebug" },
@@ -49,6 +51,9 @@ static struct tr2_sysenv_entry tr2_sysenv_settings[] = {
 				       "trace2.perftarget" },
 	[TR2_SYSENV_PERF_BRIEF]    = { "GIT_TRACE2_PERF_BRIEF",
 				       "trace2.perfbrief" },
+
+	[TR2_SYSENV_MAX_FILES]     = { "GIT_TRACE2_MAX_FILES",
+				       "trace2.maxfiles" },
 };
 /* clang-format on */
 

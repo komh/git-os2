@@ -128,8 +128,9 @@ static void show_dir_entry(const struct index_state *istate,
 	if (len > ent->len)
 		die("git ls-files: internal error - directory entry not superset of prefix");
 
-	if (!dir_path_match(istate, ent, &pathspec, len, ps_matched))
-		return;
+	/* If ps_matches is non-NULL, figure out which pathspec(s) match. */
+	if (ps_matched)
+		dir_path_match(istate, ent, &pathspec, len, ps_matched);
 
 	fputs(tag, stdout);
 	write_eolinfo(istate, NULL, ent->name);
@@ -373,7 +374,7 @@ static void prune_index(struct index_state *istate,
 	first = pos;
 	last = istate->cache_nr;
 	while (last > first) {
-		int next = (last + first) >> 1;
+		int next = first + ((last - first) >> 1);
 		const struct cache_entry *ce = istate->cache[next];
 		if (!strncmp(ce->name, prefix, prefixlen)) {
 			first = next+1;
@@ -492,7 +493,7 @@ static int option_parse_exclude_from(const struct option *opt,
 	BUG_ON_OPT_NEG(unset);
 
 	exc_given = 1;
-	add_excludes_from_file(dir, arg);
+	add_patterns_from_file(dir, arg);
 
 	return 0;
 }
@@ -516,7 +517,7 @@ int cmd_ls_files(int argc, const char **argv, const char *cmd_prefix)
 	int require_work_tree = 0, show_tag = 0, i;
 	const char *max_prefix;
 	struct dir_struct dir;
-	struct exclude_list *el;
+	struct pattern_list *pl;
 	struct string_list exclude_list = STRING_LIST_INIT_NODUP;
 	struct option builtin_ls_files_options[] = {
 		/* Think twice before adding "--nul" synonym to this */
@@ -554,18 +555,18 @@ int cmd_ls_files(int argc, const char **argv, const char *cmd_prefix)
 			N_("show unmerged files in the output")),
 		OPT_BOOL(0, "resolve-undo", &show_resolve_undo,
 			    N_("show resolve-undo information")),
-		{ OPTION_CALLBACK, 'x', "exclude", &exclude_list, N_("pattern"),
+		OPT_CALLBACK_F('x', "exclude", &exclude_list, N_("pattern"),
 			N_("skip files matching pattern"),
-			PARSE_OPT_NONEG, option_parse_exclude },
-		{ OPTION_CALLBACK, 'X', "exclude-from", &dir, N_("file"),
+			PARSE_OPT_NONEG, option_parse_exclude),
+		OPT_CALLBACK_F('X', "exclude-from", &dir, N_("file"),
 			N_("exclude patterns are read from <file>"),
-			PARSE_OPT_NONEG, option_parse_exclude_from },
+			PARSE_OPT_NONEG, option_parse_exclude_from),
 		OPT_STRING(0, "exclude-per-directory", &dir.exclude_per_dir, N_("file"),
 			N_("read additional per-directory exclude patterns in <file>")),
-		{ OPTION_CALLBACK, 0, "exclude-standard", &dir, NULL,
+		OPT_CALLBACK_F(0, "exclude-standard", &dir, NULL,
 			N_("add the standard git exclusions"),
 			PARSE_OPT_NOARG | PARSE_OPT_NONEG,
-			option_parse_exclude_standard },
+			option_parse_exclude_standard),
 		OPT_SET_INT_F(0, "full-name", &prefix_len,
 			      N_("make the output relative to the project top directory"),
 			      0, PARSE_OPT_NONEG),
@@ -583,7 +584,7 @@ int cmd_ls_files(int argc, const char **argv, const char *cmd_prefix)
 	if (argc == 2 && !strcmp(argv[1], "-h"))
 		usage_with_options(ls_files_usage, builtin_ls_files_options);
 
-	memset(&dir, 0, sizeof(dir));
+	dir_init(&dir);
 	prefix = cmd_prefix;
 	if (prefix)
 		prefix_len = strlen(prefix);
@@ -594,9 +595,9 @@ int cmd_ls_files(int argc, const char **argv, const char *cmd_prefix)
 
 	argc = parse_options(argc, argv, prefix, builtin_ls_files_options,
 			ls_files_usage, 0);
-	el = add_exclude_list(&dir, EXC_CMDL, "--exclude option");
+	pl = add_pattern_list(&dir, EXC_CMDL, "--exclude option");
 	for (i = 0; i < exclude_list.nr; i++) {
-		add_exclude(exclude_list.items[i].string, "", 0, el, --exclude_args);
+		add_pattern(exclude_list.items[i].string, "", 0, pl, --exclude_args);
 	}
 	if (show_tag || show_valid_bit || show_fsmonitor_bit) {
 		tag_cached = "H ";
@@ -687,6 +688,6 @@ int cmd_ls_files(int argc, const char **argv, const char *cmd_prefix)
 		return bad ? 1 : 0;
 	}
 
-	UNLEAK(dir);
+	dir_clear(&dir);
 	return 0;
 }

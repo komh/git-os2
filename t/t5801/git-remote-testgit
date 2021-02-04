@@ -11,13 +11,15 @@ fi
 url=$2
 
 dir="$GIT_DIR/testgit/$alias"
-prefix="refs/testgit/$alias"
 
-default_refspec="refs/heads/*:${prefix}/heads/*"
+h_refspec="refs/heads/*:refs/testgit/$alias/heads/*"
+t_refspec="refs/tags/*:refs/testgit/$alias/tags/*"
 
-refspec="${GIT_REMOTE_TESTGIT_REFSPEC-$default_refspec}"
-
-test -z "$refspec" && prefix="refs"
+if test -n "$GIT_REMOTE_TESTGIT_NOREFSPEC"
+then
+	h_refspec=""
+	t_refspec=""
+fi
 
 GIT_DIR="$url/.git"
 export GIT_DIR
@@ -40,7 +42,8 @@ do
 	capabilities)
 		echo 'import'
 		echo 'export'
-		test -n "$refspec" && echo "refspec $refspec"
+		test -n "$h_refspec" && echo "refspec $h_refspec"
+		test -n "$t_refspec" && echo "refspec $t_refspec"
 		if test -n "$gitmarks"
 		then
 			echo "*import-marks $gitmarks"
@@ -49,10 +52,12 @@ do
 		test -n "$GIT_REMOTE_TESTGIT_SIGNED_TAGS" && echo "signed-tags"
 		test -n "$GIT_REMOTE_TESTGIT_NO_PRIVATE_UPDATE" && echo "no-private-update"
 		echo 'option'
+		echo 'object-format'
 		echo
 		;;
 	list)
-		git for-each-ref --format='? %(refname)' 'refs/heads/'
+		echo ":object-format $(git rev-parse --show-object-format=storage)"
+		git for-each-ref --format='? %(refname)' 'refs/heads/' 'refs/tags/'
 		head=$(git symbolic-ref HEAD)
 		echo "@$head HEAD"
 		echo
@@ -81,10 +86,11 @@ do
 
 		echo "feature done"
 		git fast-export \
+			${h_refspec:+"--refspec=$h_refspec"} \
+			${t_refspec:+"--refspec=$t_refspec"} \
 			${testgitmarks:+"--import-marks=$testgitmarks"} \
 			${testgitmarks:+"--export-marks=$testgitmarks"} \
-			$refs |
-		sed -e "s#refs/heads/#${prefix}/heads/#g"
+			$refs
 		echo "done"
 		;;
 	export)
@@ -133,6 +139,10 @@ do
 		case $opt in
 		force)
 			test $val = "true" && force="true" || force=
+			echo "ok"
+			;;
+		object-format)
+			test $val = "true" && object_format="true" || object_format=
 			echo "ok"
 			;;
 		*)

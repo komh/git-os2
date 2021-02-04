@@ -60,29 +60,6 @@ test_expect_success 'commits with no parents are sent regardless of skip distanc
 	have_not_sent c6 c4 c3
 '
 
-test_expect_success 'unknown fetch.negotiationAlgorithm values error out' '
-	rm -rf server client trace &&
-	git init server &&
-	test_commit -C server to_fetch &&
-
-	git init client &&
-	test_commit -C client on_client &&
-	git -C client checkout on_client &&
-
-	test_config -C client fetch.negotiationAlgorithm invalid &&
-	test_must_fail git -C client fetch "$(pwd)/server" 2>err &&
-	test_i18ngrep "unknown fetch negotiation algorithm" err &&
-
-	# Explicit "default" value
-	test_config -C client fetch.negotiationAlgorithm default &&
-	git -C client -c fetch.negotiationAlgorithm=default fetch "$(pwd)/server" &&
-
-	# Implementation detail: If there is nothing to fetch, we will not error out
-	test_config -C client fetch.negotiationAlgorithm invalid &&
-	git -C client fetch "$(pwd)/server" 2>err &&
-	test_i18ngrep ! "unknown fetch negotiation algorithm" err
-'
-
 test_expect_success 'when two skips collide, favor the larger one' '
 	rm -rf server client trace &&
 	git init server &&
@@ -130,7 +107,11 @@ test_expect_success 'use ref advertisement to filter out commits' '
 
 	# The ref advertisement itself is filtered when protocol v2 is used, so
 	# use v0.
-	GIT_TEST_PROTOCOL_VERSION= trace_fetch client origin to_fetch &&
+	(
+		GIT_TEST_PROTOCOL_VERSION=0 &&
+		export GIT_TEST_PROTOCOL_VERSION &&
+		trace_fetch client origin to_fetch
+	) &&
 	have_sent c5 c4^ c2side &&
 	have_not_sent c4 c4^^ c4^^^
 '
@@ -192,7 +173,17 @@ test_expect_success 'do not send "have" with ancestors of commits that server AC
 	test_commit -C server commit-on-b1 &&
 
 	test_config -C client fetch.negotiationalgorithm skipping &&
-	trace_fetch client "$(pwd)/server" to_fetch &&
+
+	# NEEDSWORK: The number of "have"s sent depends on whether the transport
+	# is stateful. If the overspecification of the result were reduced, this
+	# test could be used for both stateful and stateless transports.
+	(
+		# Force protocol v0, in which local transport is stateful (in
+		# protocol v2 it is stateless).
+		GIT_TEST_PROTOCOL_VERSION=0 &&
+		export GIT_TEST_PROTOCOL_VERSION &&
+		trace_fetch client "$(pwd)/server" to_fetch
+	) &&
 	grep "  fetch" trace &&
 
 	# fetch-pack sends 2 requests each containing 16 "have" lines before

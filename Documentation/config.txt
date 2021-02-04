@@ -3,11 +3,12 @@ CONFIGURATION FILE
 
 The Git configuration file contains a number of variables that affect
 the Git commands' behavior. The files `.git/config` and optionally
-`config.worktree` (see `extensions.worktreeConfig` below) in each
-repository are used to store the configuration for that repository, and
-`$HOME/.gitconfig` is used to store a per-user configuration as
-fallback values for the `.git/config` file. The file `/etc/gitconfig`
-can be used to store a system-wide default configuration.
+`config.worktree` (see the "CONFIGURATION FILE" section of
+linkgit:git-worktree[1]) in each repository are used to store the
+configuration for that repository, and `$HOME/.gitconfig` is used to
+store a per-user configuration as fallback values for the `.git/config`
+file. The file `/etc/gitconfig` can be used to store a system-wide
+default configuration.
 
 The configuration variables are used by both the Git plumbing
 and the porcelains. The variables are divided into sections, wherein
@@ -63,7 +64,7 @@ The variable names are case-insensitive, allow only alphanumeric characters
 and `-`, and must start with an alphabetic character.
 
 A line that defines a value can be continued to the next line by
-ending it with a `\`; the backquote and the end-of-line are
+ending it with a `\`; the backslash and the end-of-line are
 stripped.  Leading whitespaces after 'name =', the remainder of the
 line after the first comment character '#' or ';', and trailing
 whitespaces of the line are discarded unless they are enclosed in
@@ -142,7 +143,21 @@ refer to linkgit:gitignore[5] for details. For convenience:
 
 `gitdir/i`::
 	This is the same as `gitdir` except that matching is done
-	case-insensitively (e.g. on case-insensitive file sytems)
+	case-insensitively (e.g. on case-insensitive file systems)
+
+`onbranch`::
+	The data that follows the keyword `onbranch:` is taken to be a
+	pattern with standard globbing wildcards and two additional
+	ones, `**/` and `/**`, that can match multiple path components.
+	If we are in a worktree where the name of the branch that is
+	currently checked out matches the pattern, the include condition
+	is met.
++
+If the pattern ends with `/`, `**` will be automatically added. For
+example, the pattern `foo/` becomes `foo/**`. In other words, it matches
+all branches that begin with `foo/`. This is useful if your branches are
+organized hierarchically and you would like to apply a configuration to
+all the branches in that hierarchy.
 
 A few more notes on matching via `gitdir` and `gitdir/i`:
 
@@ -164,47 +179,54 @@ to either specify only the realpath version, or both versions.
 Example
 ~~~~~~~
 
-	# Core variables
-	[core]
-		; Don't trust file modes
-		filemode = false
+----
+# Core variables
+[core]
+	; Don't trust file modes
+	filemode = false
 
-	# Our diff algorithm
-	[diff]
-		external = /usr/local/bin/diff-wrapper
-		renames = true
+# Our diff algorithm
+[diff]
+	external = /usr/local/bin/diff-wrapper
+	renames = true
 
-	[branch "devel"]
-		remote = origin
-		merge = refs/heads/devel
+[branch "devel"]
+	remote = origin
+	merge = refs/heads/devel
 
-	# Proxy settings
-	[core]
-		gitProxy="ssh" for "kernel.org"
-		gitProxy=default-proxy ; for the rest
+# Proxy settings
+[core]
+	gitProxy="ssh" for "kernel.org"
+	gitProxy=default-proxy ; for the rest
 
-	[include]
-		path = /path/to/foo.inc ; include by absolute path
-		path = foo.inc ; find "foo.inc" relative to the current file
-		path = ~/foo.inc ; find "foo.inc" in your `$HOME` directory
+[include]
+	path = /path/to/foo.inc ; include by absolute path
+	path = foo.inc ; find "foo.inc" relative to the current file
+	path = ~/foo.inc ; find "foo.inc" in your `$HOME` directory
 
-	; include if $GIT_DIR is /path/to/foo/.git
-	[includeIf "gitdir:/path/to/foo/.git"]
-		path = /path/to/foo.inc
+; include if $GIT_DIR is /path/to/foo/.git
+[includeIf "gitdir:/path/to/foo/.git"]
+	path = /path/to/foo.inc
 
-	; include for all repositories inside /path/to/group
-	[includeIf "gitdir:/path/to/group/"]
-		path = /path/to/foo.inc
+; include for all repositories inside /path/to/group
+[includeIf "gitdir:/path/to/group/"]
+	path = /path/to/foo.inc
 
-	; include for all repositories inside $HOME/to/group
-	[includeIf "gitdir:~/to/group/"]
-		path = /path/to/foo.inc
+; include for all repositories inside $HOME/to/group
+[includeIf "gitdir:~/to/group/"]
+	path = /path/to/foo.inc
 
-	; relative paths are always relative to the including
-	; file (if the condition is true); their location is not
-	; affected by the condition
-	[includeIf "gitdir:/path/to/group/"]
-		path = foo.inc
+; relative paths are always relative to the including
+; file (if the condition is true); their location is not
+; affected by the condition
+[includeIf "gitdir:/path/to/group/"]
+	path = foo.inc
+
+; include only if we are in a worktree where foo-branch is
+; currently checked out
+[includeIf "onbranch:foo-branch"]
+	path = foo.inc
+----
 
 Values
 ~~~~~~
@@ -242,7 +264,9 @@ color::
 +
 The basic colors accepted are `normal`, `black`, `red`, `green`, `yellow`,
 `blue`, `magenta`, `cyan` and `white`.  The first color given is the
-foreground; the second is the background.
+foreground; the second is the background.  All the basic colors except
+`normal` have a bright variant that can be specified by prefixing the
+color with `bright`, like `brightred`.
 +
 Colors may also be given as numbers between 0 and 255; these use ANSI
 256-color mode (but note that not all terminals may support this).  If
@@ -310,11 +334,15 @@ include::config/checkout.txt[]
 
 include::config/clean.txt[]
 
+include::config/clone.txt[]
+
 include::config/color.txt[]
 
 include::config/column.txt[]
 
 include::config/commit.txt[]
+
+include::config/commitgraph.txt[]
 
 include::config/credential.txt[]
 
@@ -324,7 +352,11 @@ include::config/diff.txt[]
 
 include::config/difftool.txt[]
 
+include::config/extensions.txt[]
+
 include::config/fastimport.txt[]
+
+include::config/feature.txt[]
 
 include::config/fetch.txt[]
 
@@ -369,6 +401,8 @@ include::config/log.txt[]
 include::config/mailinfo.txt[]
 
 include::config/mailmap.txt[]
+
+include::config/maintenance.txt[]
 
 include::config/man.txt[]
 
@@ -421,6 +455,8 @@ include::config/stash.txt[]
 include::config/submodule.txt[]
 
 include::config/tag.txt[]
+
+include::config/tar.txt[]
 
 include::config/trace2.txt[]
 

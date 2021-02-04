@@ -1,40 +1,80 @@
 #ifndef DIR_H
 #define DIR_H
 
-/* See Documentation/technical/api-directory-listing.txt */
-
 #include "cache.h"
+#include "hashmap.h"
 #include "strbuf.h"
+
+/**
+ * The directory listing API is used to enumerate paths in the work tree,
+ * optionally taking `.git/info/exclude` and `.gitignore` files per directory
+ * into account.
+ */
+
+/**
+ * Calling sequence
+ * ----------------
+ *
+ * Note: The index may be checked for .gitignore files that are
+ * CE_SKIP_WORKTREE marked. If you want to exclude files, make sure you have
+ * loaded the index first.
+ *
+ * - Prepare `struct dir_struct dir` using `dir_init()` function.
+ *
+ * - To add single exclude pattern, call `add_pattern_list()` and then
+ *   `add_pattern()`.
+ *
+ * - To add patterns from a file (e.g. `.git/info/exclude`), call
+ *   `add_patterns_from_file()` , and/or set `dir.exclude_per_dir`.
+ *
+ * - A short-hand function `setup_standard_excludes()` can be used to set
+ *   up the standard set of exclude settings, instead of manually calling
+ *   the add_pattern*() family of functions.
+ *
+ * - Call `fill_directory()`.
+ *
+ * - Use `dir.entries[]` and `dir.ignored[]`.
+ *
+ * - Call `dir_clear()` when the contained elements are no longer in use.
+ *
+ */
 
 struct dir_entry {
 	unsigned int len;
 	char name[FLEX_ARRAY]; /* more */
 };
 
-#define EXC_FLAG_NODIR 1
-#define EXC_FLAG_ENDSWITH 4
-#define EXC_FLAG_MUSTBEDIR 8
-#define EXC_FLAG_NEGATIVE 16
+#define PATTERN_FLAG_NODIR 1
+#define PATTERN_FLAG_ENDSWITH 4
+#define PATTERN_FLAG_MUSTBEDIR 8
+#define PATTERN_FLAG_NEGATIVE 16
 
-struct exclude {
+struct path_pattern {
 	/*
-	 * This allows callers of last_exclude_matching() etc.
+	 * This allows callers of last_matching_pattern() etc.
 	 * to determine the origin of the matching pattern.
 	 */
-	struct exclude_list *el;
+	struct pattern_list *pl;
 
 	const char *pattern;
 	int patternlen;
 	int nowildcardlen;
 	const char *base;
 	int baselen;
-	unsigned flags;		/* EXC_FLAG_* */
+	unsigned flags;		/* PATTERN_FLAG_* */
 
 	/*
 	 * Counting starts from 1 for line numbers in ignore files,
 	 * and from -1 decrementing for patterns from CLI args.
 	 */
 	int srcpos;
+};
+
+/* used for hashmaps for cone patterns */
+struct pattern_entry {
+	struct hashmap_entry ent;
+	char *pattern;
+	size_t patternlen;
 };
 
 /*
@@ -44,7 +84,7 @@ struct exclude {
  * can also be used to represent the list of --exclude values passed
  * via CLI args.
  */
-struct exclude_list {
+struct pattern_list {
 	int nr;
 	int alloc;
 
@@ -54,7 +94,27 @@ struct exclude_list {
 	/* origin of list, e.g. path to filename, or descriptive string */
 	const char *src;
 
-	struct exclude **excludes;
+	struct path_pattern **patterns;
+
+	/*
+	 * While scanning the excludes, we attempt to match the patterns
+	 * with a more restricted set that allows us to use hashsets for
+	 * matching logic, which is faster than the linear lookup in the
+	 * excludes array above. If non-zero, that check succeeded.
+	 */
+	unsigned use_cone_patterns;
+	unsigned full_cone;
+
+	/*
+	 * Stores paths where everything starting with those paths
+	 * is included.
+	 */
+	struct hashmap recursive_hashmap;
+
+	/*
+	 * Used to check single-level parents of blobs.
+	 */
+	struct hashmap parent_hashmap;
 };
 
 /*
@@ -72,7 +132,7 @@ struct exclude_stack {
 
 struct exclude_list_group {
 	int nr, alloc;
-	struct exclude_list *el;
+	struct pattern_list *pl;
 };
 
 struct oid_stat {
@@ -144,24 +204,101 @@ struct untracked_cache {
 	unsigned int use_fsmonitor : 1;
 };
 
+/**
+ * structure is used to pass directory traversal options to the library and to
+ * record the paths discovered. A single `struct dir_struct` is used regardless
+ * of whether or not the traversal recursively descends into subdirectories.
+ */
 struct dir_struct {
-	int nr, alloc;
-	int ignored_nr, ignored_alloc;
+
+	/* The number of members in `entries[]` array. */
+	int nr;
+
+	/* Internal use; keeps track of allocation of `entries[]` array.*/
+	int alloc;
+
+	/* The number of members in `ignored[]` array. */
+	int ignored_nr;
+
+	int ignored_alloc;
+
+	/* bit-field of options */
 	enum {
+
+		/**
+		 * Return just ignored files in `entries[]`, not untracked files.
+		 * This flag is mutually exclusive with `DIR_SHOW_IGNORED_TOO`.
+		 */
 		DIR_SHOW_IGNORED = 1<<0,
+
+		/* Include a directory that is not tracked. */
 		DIR_SHOW_OTHER_DIRECTORIES = 1<<1,
+
+		/* Do not include a directory that is not tracked and is empty. */
 		DIR_HIDE_EMPTY_DIRECTORIES = 1<<2,
+
+		/**
+		 * If set, recurse into a directory that looks like a Git directory.
+		 * Otherwise it is shown as a directory.
+		 */
 		DIR_NO_GITLINKS = 1<<3,
+
+		/**
+		 * Special mode for git-add. Return ignored files in `ignored[]` and
+		 * untracked files in `entries[]`. Only returns ignored files that match
+		 * pathspec exactly (no wildcards). Does not recurse into ignored
+		 * directories.
+		 */
 		DIR_COLLECT_IGNORED = 1<<4,
+
+		/**
+		 * Similar to `DIR_SHOW_IGNORED`, but return ignored files in
+		 * `ignored[]` in addition to untracked files in `entries[]`.
+		 * This flag is mutually exclusive with `DIR_SHOW_IGNORED`.
+		 */
 		DIR_SHOW_IGNORED_TOO = 1<<5,
+
 		DIR_COLLECT_KILLED_ONLY = 1<<6,
+
+		/**
+		 * Only has meaning if `DIR_SHOW_IGNORED_TOO` is also set; if this is
+		 * set, the untracked contents of untracked directories are also
+		 * returned in `entries[]`.
+		 */
 		DIR_KEEP_UNTRACKED_CONTENTS = 1<<7,
-		DIR_SHOW_IGNORED_TOO_MODE_MATCHING = 1<<8
+
+		/**
+		 * Only has meaning if `DIR_SHOW_IGNORED_TOO` is also set; if this is
+		 * set, returns ignored files and directories that match an exclude
+		 * pattern. If a directory matches an exclude pattern, then the
+		 * directory is returned and the contained paths are not. A directory
+		 * that does not match an exclude pattern will not be returned even if
+		 * all of its contents are ignored. In this case, the contents are
+		 * returned as individual entries.
+		 *
+		 * If this is set, files and directories that explicitly match an ignore
+		 * pattern are reported. Implicitly ignored directories (directories that
+		 * do not match an ignore pattern, but whose contents are all ignored)
+		 * are not reported, instead all of the contents are reported.
+		 */
+		DIR_SHOW_IGNORED_TOO_MODE_MATCHING = 1<<8,
+
+		DIR_SKIP_NESTED_GIT = 1<<9
 	} flags;
+
+	/* An array of `struct dir_entry`, each element of which describes a path. */
 	struct dir_entry **entries;
+
+	/**
+	 * used for ignored paths with the `DIR_SHOW_IGNORED_TOO` and
+	 * `DIR_COLLECT_IGNORED` flags.
+	 */
 	struct dir_entry **ignored;
 
-	/* Exclude info */
+	/**
+	 * The name of the file to be read in each directory for excluded files
+	 * (typically `.gitignore`).
+	 */
 	const char *exclude_per_dir;
 
 	/*
@@ -191,7 +328,7 @@ struct dir_struct {
 	 * matching exclude struct if the directory is excluded.
 	 */
 	struct exclude_stack *exclude_stack;
-	struct exclude *exclude;
+	struct path_pattern *pattern;
 	struct strbuf basebuf;
 
 	/* Enable untracked file cache if set */
@@ -211,8 +348,9 @@ int count_slashes(const char *s);
  * when populating the seen[] array.
  */
 #define MATCHED_RECURSIVELY 1
-#define MATCHED_FNMATCH 2
-#define MATCHED_EXACTLY 3
+#define MATCHED_RECURSIVELY_LEADING_PATHSPEC 2
+#define MATCHED_FNMATCH 3
+#define MATCHED_EXACTLY 4
 int simple_length(const char *match);
 int no_wildcard(const char *string);
 char *common_prefix(const struct pathspec *pathspec);
@@ -223,6 +361,8 @@ int match_pathspec(const struct index_state *istate,
 int report_path_error(const char *ps_matched, const struct pathspec *pathspec);
 int within_depth(const char *name, int namelen, int depth, int max_depth);
 
+void dir_init(struct dir_struct *dir);
+
 int fill_directory(struct dir_struct *dir,
 		   struct index_state *istate,
 		   const struct pathspec *pathspec);
@@ -230,10 +370,24 @@ int read_directory(struct dir_struct *, struct index_state *istate,
 		   const char *path, int len,
 		   const struct pathspec *pathspec);
 
-int is_excluded_from_list(const char *pathname, int pathlen,
-			  const char *basename, int *dtype,
-			  struct exclude_list *el,
-			  struct index_state *istate);
+enum pattern_match_result {
+	UNDECIDED = -1,
+	NOT_MATCHED = 0,
+	MATCHED = 1,
+	MATCHED_RECURSIVE = 2,
+};
+
+/*
+ * Scan the list of patterns to determine if the ordered list
+ * of patterns matches on 'pathname'.
+ *
+ * Return 1 for a match, 0 for not matched and -1 for undecided.
+ */
+enum pattern_match_result path_matches_pattern_list(const char *pathname,
+				int pathlen,
+				const char *basename, int *dtype,
+				struct pattern_list *pl,
+				struct index_state *istate);
 struct dir_entry *dir_add_ignored(struct dir_struct *dir,
 				  struct index_state *istate,
 				  const char *pathname, int len);
@@ -248,27 +402,34 @@ int match_pathname(const char *, int,
 		   const char *, int,
 		   const char *, int, int, unsigned);
 
-struct exclude *last_exclude_matching(struct dir_struct *dir,
-				      struct index_state *istate,
-				      const char *name, int *dtype);
+struct path_pattern *last_matching_pattern(struct dir_struct *dir,
+					   struct index_state *istate,
+					   const char *name, int *dtype);
 
 int is_excluded(struct dir_struct *dir,
 		struct index_state *istate,
 		const char *name, int *dtype);
 
-struct exclude_list *add_exclude_list(struct dir_struct *dir,
+int pl_hashmap_cmp(const void *unused_cmp_data,
+		   const struct hashmap_entry *a,
+		   const struct hashmap_entry *b,
+		   const void *key);
+int hashmap_contains_parent(struct hashmap *map,
+			    const char *path,
+			    struct strbuf *buffer);
+struct pattern_list *add_pattern_list(struct dir_struct *dir,
 				      int group_type, const char *src);
-int add_excludes_from_file_to_list(const char *fname, const char *base, int baselen,
-				   struct exclude_list *el, struct  index_state *istate);
-void add_excludes_from_file(struct dir_struct *, const char *fname);
-int add_excludes_from_blob_to_list(struct object_id *oid,
+int add_patterns_from_file_to_list(const char *fname, const char *base, int baselen,
+				   struct pattern_list *pl, struct  index_state *istate);
+void add_patterns_from_file(struct dir_struct *, const char *fname);
+int add_patterns_from_blob_to_list(struct object_id *oid,
 				   const char *base, int baselen,
-				   struct exclude_list *el);
-void parse_exclude_pattern(const char **string, int *patternlen, unsigned *flags, int *nowildcardlen);
-void add_exclude(const char *string, const char *base,
-		 int baselen, struct exclude_list *el, int srcpos);
-void clear_exclude_list(struct exclude_list *el);
-void clear_directory(struct dir_struct *dir);
+				   struct pattern_list *pl);
+void parse_path_pattern(const char **string, int *patternlen, unsigned *flags, int *nowildcardlen);
+void add_pattern(const char *string, const char *base,
+		 int baselen, struct pattern_list *pl, int srcpos);
+void clear_pattern_list(struct pattern_list *pl);
+void dir_clear(struct dir_struct *dir);
 
 int repo_file_exists(struct repository *repo, const char *path);
 int file_exists(const char *);

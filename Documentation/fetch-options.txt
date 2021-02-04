@@ -61,9 +61,16 @@ this option multiple times, one for each matching ref name.
 See also the `fetch.negotiationAlgorithm` configuration variable
 documented in linkgit:git-config[1].
 
-ifndef::git-pull[]
 --dry-run::
 	Show what would be done, without making any changes.
+
+ifndef::git-pull[]
+--[no-]write-fetch-head::
+	Write the list of remote refs fetched in the `FETCH_HEAD`
+	file directly under `$GIT_DIR`.  This is the default.
+	Passing `--no-write-fetch-head` from the command line tells
+	Git not to write the file.  Under `--dry-run` option, the
+	file is never written.
 endif::git-pull[]
 
 -f::
@@ -88,6 +95,17 @@ ifndef::git-pull[]
 	Allow several <repository> and <group> arguments to be
 	specified. No <refspec>s may be specified.
 
+--[no-]auto-maintenance::
+--[no-]auto-gc::
+	Run `git maintenance run --auto` at the end to perform automatic
+	repository maintenance if needed. (`--[no-]auto-gc` is a synonym.)
+	This is enabled by default.
+
+--[no-]write-commit-graph::
+	Write a commit-graph after fetching. This overrides the config
+	setting `fetch.writeCommitGraph`.
+endif::git-pull[]
+
 -p::
 --prune::
 	Before fetching, remove any remote-tracking references that no
@@ -99,6 +117,7 @@ ifndef::git-pull[]
 	was cloned with the --mirror option), then they are also
 	subject to pruning. Supplying `--prune-tags` is a shorthand for
 	providing the tag refspec.
+ifndef::git-pull[]
 +
 See the PRUNING section below for more details.
 
@@ -125,13 +144,15 @@ endif::git-pull[]
 	behavior for a remote may be specified with the remote.<name>.tagOpt
 	setting. See linkgit:git-config[1].
 
-ifndef::git-pull[]
 --refmap=<refspec>::
 	When fetching refs listed on the command line, use the
 	specified refspec (can be given more than once) to map the
 	refs to remote-tracking branches, instead of the values of
 	`remote.*.fetch` configuration variables for the remote
-	repository.  See section on "Configured Remote-tracking
+	repository.  Providing an empty `<refspec>` to the
+	`--refmap` option causes Git to ignore the configured
+	refspecs and rely entirely on the refspecs supplied as
+	command-line arguments. See section on "Configured Remote-tracking
 	Branches" for details.
 
 -t::
@@ -143,6 +164,7 @@ ifndef::git-pull[]
 	is used (though tags may be pruned anyway if they are also the
 	destination of an explicit refspec; see `--prune`).
 
+ifndef::git-pull[]
 --recurse-submodules[=yes|on-demand|no]::
 	This option controls if and under what conditions new commits of
 	populated submodules should be fetched too. It can be used as a
@@ -152,19 +174,36 @@ ifndef::git-pull[]
 	value. Use 'on-demand' to only recurse into a populated submodule
 	when the superproject retrieves a commit that updates the submodule's
 	reference to a commit that isn't already in the local submodule
-	clone.
+	clone. By default, 'on-demand' is used, unless
+	`fetch.recurseSubmodules` is set (see linkgit:git-config[1]).
+endif::git-pull[]
 
 -j::
 --jobs=<n>::
-	Number of parallel children to be used for fetching submodules.
-	Each will fetch from different submodules, such that fetching many
-	submodules will be faster. By default submodules will be fetched
-	one at a time.
+	Number of parallel children to be used for all forms of fetching.
++
+If the `--multiple` option was specified, the different remotes will be fetched
+in parallel. If multiple submodules are fetched, they will be fetched in
+parallel. To control them independently, use the config settings
+`fetch.parallel` and `submodule.fetchJobs` (see linkgit:git-config[1]).
++
+Typically, parallel recursive and multi-remote fetches will be faster. By
+default fetches are performed sequentially, not in parallel.
 
+ifndef::git-pull[]
 --no-recurse-submodules::
 	Disable recursive fetching of submodules (this has the same effect as
 	using the `--recurse-submodules=no` option).
+endif::git-pull[]
 
+--set-upstream::
+	If the remote is fetched successfully, add upstream
+	(tracking) reference, used by argument-less
+	linkgit:git-pull[1] and other commands. For more information,
+	see `branch.<name>.merge` and `branch.<name>.remote` in
+	linkgit:git-config[1].
+
+ifndef::git-pull[]
 --submodule-prefix=<path>::
 	Prepend <path> to paths printed in informative messages
 	such as "Fetching submodule foo".  This option is used
@@ -177,7 +216,6 @@ ifndef::git-pull[]
 	recursion (such as settings in linkgit:gitmodules[5] and
 	linkgit:git-config[1]) override this option, as does
 	specifying --[no-]recurse-submodules directly.
-endif::git-pull[]
 
 -u::
 --update-head-ok::
@@ -187,6 +225,7 @@ endif::git-pull[]
 	to communicate with 'git fetch', and unless you are
 	implementing your own Porcelain you are not supposed to
 	use it.
+endif::git-pull[]
 
 --upload-pack <upload-pack>::
 	When given, and the repository to fetch from is handled
@@ -220,6 +259,19 @@ endif::git-pull[]
 	unknown ones, is server-specific.
 	When multiple `--server-option=<option>` are given, they are all
 	sent to the other side in the order listed on the command line.
+
+--show-forced-updates::
+	By default, git checks if a branch is force-updated during
+	fetch. This can be disabled through fetch.showForcedUpdates, but
+	the --show-forced-updates option guarantees this check occurs.
+	See linkgit:git-config[1].
+
+--no-show-forced-updates::
+	By default, git checks if a branch is force-updated during
+	fetch. Pass --no-show-forced-updates or set fetch.showForcedUpdates
+	to false to skip this check for performance reasons. If used during
+	'git-pull' the --ff-only option will still check for forced updates
+	before attempting a fast-forward update. See linkgit:git-config[1].
 
 -4::
 --ipv4::

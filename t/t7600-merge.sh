@@ -29,15 +29,19 @@ Testing basic merge operations/option parsing.
 . ./test-lib.sh
 . "$TEST_DIRECTORY"/lib-gpg.sh
 
-printf '%s\n' 1 2 3 4 5 6 7 8 9 >file
-printf '%s\n' '1 X' 2 3 4 5 6 7 8 9 >file.1
-printf '%s\n' 1 2 3 4 '5 X' 6 7 8 9 >file.5
-printf '%s\n' 1 2 3 4 5 6 7 8 '9 X' >file.9
-printf '%s\n' 1 2 3 4 5 6 7 8 '9 Y' >file.9y
-printf '%s\n' '1 X' 2 3 4 5 6 7 8 9 >result.1
-printf '%s\n' '1 X' 2 3 4 '5 X' 6 7 8 9 >result.1-5
-printf '%s\n' '1 X' 2 3 4 '5 X' 6 7 8 '9 X' >result.1-5-9
-printf '%s\n' 1 2 3 4 5 6 7 8 '9 Z' >result.9z
+test_write_lines 1 2 3 4 5 6 7 8 9 >file
+cp file file.orig
+test_write_lines '1 X' 2 3 4 5 6 7 8 9 >file.1
+test_write_lines 1 2 '3 X' 4 5 6 7 8 9 >file.3
+test_write_lines 1 2 3 4 '5 X' 6 7 8 9 >file.5
+test_write_lines 1 2 3 4 5 6 7 8 '9 X' >file.9
+test_write_lines 1 2 3 4 5 6 7 8 '9 Y' >file.9y
+test_write_lines '1 X' 2 3 4 5 6 7 8 9 >result.1
+test_write_lines '1 X' 2 3 4 '5 X' 6 7 8 9 >result.1-5
+test_write_lines '1 X' 2 3 4 5 6 7 8 '9 X' >result.1-9
+test_write_lines '1 X' 2 3 4 '5 X' 6 7 8 '9 X' >result.1-5-9
+test_write_lines '1 X' 2 '3 X' 4 '5 X' 6 7 8 '9 X' >result.1-3-5-9
+test_write_lines 1 2 3 4 5 6 7 8 '9 Z' >result.9z
 
 create_merge_msgs () {
 	echo "Merge tag 'c2'" >msg.1-5 &&
@@ -81,7 +85,7 @@ verify_head () {
 }
 
 verify_parents () {
-	printf '%s\n' "$@" >parents.expected &&
+	test_write_lines "$@" >parents.expected &&
 	>parents.actual &&
 	i=1 &&
 	while test $i -le $#
@@ -95,7 +99,7 @@ verify_parents () {
 }
 
 verify_mergeheads () {
-	printf '%s\n' "$@" >mergehead.expected &&
+	test_write_lines "$@" >mergehead.expected &&
 	while read sha1 rest
 	do
 		git rev-parse $sha1
@@ -242,7 +246,7 @@ test_expect_success 'merge --squash c3 with c7' '
 	#	file
 	EOF
 	git cat-file commit HEAD >raw &&
-	sed -e '1,/^$/d' raw >actual &&
+	sed -e "1,/^$/d" raw >actual &&
 	test_cmp expect actual
 '
 
@@ -264,7 +268,7 @@ test_expect_success 'merge c3 with c7 with commit.cleanup = scissors' '
 	#	file
 	EOF
 	git cat-file commit HEAD >raw &&
-	sed -e '1,/^$/d' raw >actual &&
+	sed -e "1,/^$/d" raw >actual &&
 	test_i18ncmp expect actual
 '
 
@@ -288,7 +292,7 @@ test_expect_success 'merge c3 with c7 with --squash commit.cleanup = scissors' '
 	#	file
 	EOF
 	git cat-file commit HEAD >raw &&
-	sed -e '1,/^$/d' raw >actual &&
+	sed -e "1,/^$/d" raw >actual &&
 	test_i18ncmp expect actual
 '
 
@@ -570,6 +574,12 @@ test_expect_success 'combining --squash and --no-ff is refused' '
 	test_must_fail git merge --no-ff --squash c1
 '
 
+test_expect_success 'combining --squash and --commit is refused' '
+	git reset --hard c0 &&
+	test_must_fail git merge --squash --commit c1 &&
+	test_must_fail git merge --commit --squash c1
+'
+
 test_expect_success 'option --ff-only overwrites --no-ff' '
 	git merge --no-ff --ff-only c1 &&
 	test_must_fail git merge --no-ff --ff-only c2
@@ -667,6 +677,134 @@ test_expect_success 'refresh the index before merging' '
 	git reset --hard c1 &&
 	cp file file.n && mv -f file.n file &&
 	git merge c3
+'
+
+test_expect_success 'merge with --autostash' '
+	git reset --hard c1 &&
+	git merge-file file file.orig file.9 &&
+	git merge --autostash c2 2>err &&
+	test_i18ngrep "Applied autostash." err &&
+	git show HEAD:file >merge-result &&
+	test_cmp result.1-5 merge-result &&
+	test_cmp result.1-5-9 file
+'
+
+test_expect_success 'merge with merge.autoStash' '
+	test_config merge.autoStash true &&
+	git reset --hard c1 &&
+	git merge-file file file.orig file.9 &&
+	git merge c2 2>err &&
+	test_i18ngrep "Applied autostash." err &&
+	git show HEAD:file >merge-result &&
+	test_cmp result.1-5 merge-result &&
+	test_cmp result.1-5-9 file
+'
+
+test_expect_success 'fast-forward merge with --autostash' '
+	git reset --hard c0 &&
+	git merge-file file file.orig file.5 &&
+	git merge --autostash c1 2>err &&
+	test_i18ngrep "Applied autostash." err &&
+	test_cmp result.1-5 file
+'
+
+test_expect_success 'octopus merge with --autostash' '
+	git reset --hard c1 &&
+	git merge-file file file.orig file.3 &&
+	git merge --autostash c2 c3 2>err &&
+	test_i18ngrep "Applied autostash." err &&
+	git show HEAD:file >merge-result &&
+	test_cmp result.1-5-9 merge-result &&
+	test_cmp result.1-3-5-9 file
+'
+
+test_expect_success 'conflicted merge with --autostash, --abort restores stash' '
+	git reset --hard c3 &&
+	cp file.1 file &&
+	test_must_fail git merge --autostash c7 &&
+	git merge --abort 2>err &&
+	test_i18ngrep "Applied autostash." err &&
+	test_cmp file.1 file
+'
+
+test_expect_success 'completed merge (git commit) with --no-commit and --autostash' '
+	git reset --hard c1 &&
+	git merge-file file file.orig file.9 &&
+	git diff >expect &&
+	git merge --no-commit --autostash c2 &&
+	git stash show -p MERGE_AUTOSTASH >actual &&
+	test_cmp expect actual &&
+	git commit 2>err &&
+	test_i18ngrep "Applied autostash." err &&
+	git show HEAD:file >merge-result &&
+	test_cmp result.1-5 merge-result &&
+	test_cmp result.1-5-9 file
+'
+
+test_expect_success 'completed merge (git merge --continue) with --no-commit and --autostash' '
+	git reset --hard c1 &&
+	git merge-file file file.orig file.9 &&
+	git diff >expect &&
+	git merge --no-commit --autostash c2 &&
+	git stash show -p MERGE_AUTOSTASH >actual &&
+	test_cmp expect actual &&
+	git merge --continue 2>err &&
+	test_i18ngrep "Applied autostash." err &&
+	git show HEAD:file >merge-result &&
+	test_cmp result.1-5 merge-result &&
+	test_cmp result.1-5-9 file
+'
+
+test_expect_success 'aborted merge (merge --abort) with --no-commit and --autostash' '
+	git reset --hard c1 &&
+	git merge-file file file.orig file.9 &&
+	git diff >expect &&
+	git merge --no-commit --autostash c2 &&
+	git stash show -p MERGE_AUTOSTASH >actual &&
+	test_cmp expect actual &&
+	git merge --abort 2>err &&
+	test_i18ngrep "Applied autostash." err &&
+	git diff >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'aborted merge (reset --hard) with --no-commit and --autostash' '
+	git reset --hard c1 &&
+	git merge-file file file.orig file.9 &&
+	git diff >expect &&
+	git merge --no-commit --autostash c2 &&
+	git stash show -p MERGE_AUTOSTASH >actual &&
+	test_cmp expect actual &&
+	git reset --hard 2>err &&
+	test_i18ngrep "Autostash exists; creating a new stash entry." err &&
+	git diff --exit-code
+'
+
+test_expect_success 'quit merge with --no-commit and --autostash' '
+	git reset --hard c1 &&
+	git merge-file file file.orig file.9 &&
+	git diff >expect &&
+	git merge --no-commit --autostash c2 &&
+	git stash show -p MERGE_AUTOSTASH >actual &&
+	test_cmp expect actual &&
+	git diff HEAD >expect &&
+	git merge --quit 2>err &&
+	test_i18ngrep "Autostash exists; creating a new stash entry." err &&
+	git diff HEAD >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'merge with conflicted --autostash changes' '
+	git reset --hard c1 &&
+	git merge-file file file.orig file.9y &&
+	git diff >expect &&
+	test_when_finished "test_might_fail git stash drop" &&
+	git merge --autostash c3 2>err &&
+	test_i18ngrep "Applying autostash resulted in conflicts." err &&
+	git show HEAD:file >merge-result &&
+	test_cmp result.1-9 merge-result &&
+	git stash show -p >actual &&
+	test_cmp expect actual
 '
 
 cat >expected.branch <<\EOF
@@ -865,6 +1003,52 @@ test_expect_success EXECKEEPSPID 'killed merge can be completed with --continue'
 	  exec git merge --no-ff --edit c1'\'' &&
 	git merge --continue &&
 	verify_parents $c0 $c1
+'
+
+test_expect_success 'merge --quit' '
+	git init merge-quit &&
+	(
+		cd merge-quit &&
+		test_commit base &&
+		echo one >>base.t &&
+		git commit -am one &&
+		git branch one &&
+		git checkout base &&
+		echo two >>base.t &&
+		git commit -am two &&
+		test_must_fail git -c rerere.enabled=true merge one &&
+		test_path_is_file .git/MERGE_HEAD &&
+		test_path_is_file .git/MERGE_MODE &&
+		test_path_is_file .git/MERGE_MSG &&
+		git rerere status >rerere.before &&
+		git merge --quit &&
+		test_path_is_missing .git/MERGE_HEAD &&
+		test_path_is_missing .git/MERGE_MODE &&
+		test_path_is_missing .git/MERGE_MSG &&
+		git rerere status >rerere.after &&
+		test_must_be_empty rerere.after &&
+		! test_cmp rerere.after rerere.before
+	)
+'
+
+test_expect_success 'merge suggests matching remote refname' '
+	git commit --allow-empty -m not-local &&
+	git update-ref refs/remotes/origin/not-local HEAD &&
+	git reset --hard HEAD^ &&
+
+	# This is white-box testing hackery; we happen to know
+	# that reading packed refs is more picky about the memory
+	# ownership of strings we pass to for_each_ref() callbacks.
+	git pack-refs --all --prune &&
+
+	test_must_fail git merge not-local 2>stderr &&
+	grep origin/not-local stderr
+'
+
+test_expect_success 'suggested names are not ambiguous' '
+	git update-ref refs/heads/origin/not-local HEAD &&
+	test_must_fail git merge not-local 2>stderr &&
+	grep remotes/origin/not-local stderr
 '
 
 test_done

@@ -5,7 +5,7 @@ int is_urlschemechar(int first_flag, int ch)
 {
 	/*
 	 * The set of valid URL schemes, as per STD66 (RFC3986) is
-	 * '[A-Za-z][A-Za-z0-9+.-]*'. But use sightly looser check
+	 * '[A-Za-z][A-Za-z0-9+.-]*'. But use slightly looser check
 	 * of '[A-Za-z0-9][A-Za-z0-9+.-]*' because earlier version
 	 * of check used '[A-Za-z0-9]+' so not to break any remote
 	 * helpers.
@@ -46,9 +46,9 @@ static char *url_decode_internal(const char **query, int len,
 			break;
 		}
 
-		if (c == '%') {
+		if (c == '%' && (len < 0 || len >= 3)) {
 			int val = hex2chr(q + 1);
-			if (0 <= val) {
+			if (0 < val) {
 				strbuf_addch(out, val);
 				q += 3;
 				len -= 3;
@@ -84,6 +84,12 @@ char *url_decode_mem(const char *url, int len)
 		url = colon;
 	}
 	return url_decode_internal(&url, len, NULL, &out, 0);
+}
+
+char *url_percent_decode(const char *encoded)
+{
+	struct strbuf out = STRBUF_INIT;
+	return url_decode_internal(&encoded, strlen(encoded), NULL, &out, 0);
 }
 
 char *url_decode_parameter_name(const char **query)

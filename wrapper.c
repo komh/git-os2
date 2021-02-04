@@ -4,12 +4,6 @@
 #include "cache.h"
 #include "config.h"
 
-static void do_nothing(size_t size)
-{
-}
-
-static void (*try_to_free_routine)(size_t size) = do_nothing;
-
 static int memory_limit_check(size_t size, int gentle)
 {
 	static size_t limit = 0;
@@ -30,24 +24,11 @@ static int memory_limit_check(size_t size, int gentle)
 	return 0;
 }
 
-try_to_free_t set_try_to_free_routine(try_to_free_t routine)
-{
-	try_to_free_t old = try_to_free_routine;
-	if (!routine)
-		routine = do_nothing;
-	try_to_free_routine = routine;
-	return old;
-}
-
 char *xstrdup(const char *str)
 {
 	char *ret = strdup(str);
-	if (!ret) {
-		try_to_free_routine(strlen(str) + 1);
-		ret = strdup(str);
-		if (!ret)
-			die("Out of memory, strdup failed");
-	}
+	if (!ret)
+		die("Out of memory, strdup failed");
 	return ret;
 }
 
@@ -61,19 +42,13 @@ static void *do_xmalloc(size_t size, int gentle)
 	if (!ret && !size)
 		ret = malloc(1);
 	if (!ret) {
-		try_to_free_routine(size);
-		ret = malloc(size);
-		if (!ret && !size)
-			ret = malloc(1);
-		if (!ret) {
-			if (!gentle)
-				die("Out of memory, malloc failed (tried to allocate %lu bytes)",
-				    (unsigned long)size);
-			else {
-				error("Out of memory, malloc failed (tried to allocate %lu bytes)",
-				      (unsigned long)size);
-				return NULL;
-			}
+		if (!gentle)
+			die("Out of memory, malloc failed (tried to allocate %lu bytes)",
+			    (unsigned long)size);
+		else {
+			error("Out of memory, malloc failed (tried to allocate %lu bytes)",
+			      (unsigned long)size);
+			return NULL;
 		}
 	}
 #ifdef XMALLOC_POISON
@@ -130,22 +105,27 @@ char *xstrndup(const char *str, size_t len)
 	return xmemdupz(str, p ? p - str : len);
 }
 
+int xstrncmpz(const char *s, const char *t, size_t len)
+{
+	int res = strncmp(s, t, len);
+	if (res)
+		return res;
+	return s[len] == '\0' ? 0 : 1;
+}
+
 void *xrealloc(void *ptr, size_t size)
 {
 	void *ret;
 
+	if (!size) {
+		free(ptr);
+		return xmalloc(0);
+	}
+
 	memory_limit_check(size, 0);
 	ret = realloc(ptr, size);
-	if (!ret && !size)
-		ret = realloc(ptr, 1);
-	if (!ret) {
-		try_to_free_routine(size);
-		ret = realloc(ptr, size);
-		if (!ret && !size)
-			ret = realloc(ptr, 1);
-		if (!ret)
-			die("Out of memory, realloc failed");
-	}
+	if (!ret)
+		die("Out of memory, realloc failed");
 	return ret;
 }
 
@@ -160,14 +140,8 @@ void *xcalloc(size_t nmemb, size_t size)
 	ret = calloc(nmemb, size);
 	if (!ret && (!nmemb || !size))
 		ret = calloc(1, 1);
-	if (!ret) {
-		try_to_free_routine(nmemb * size);
-		ret = calloc(nmemb, size);
-		if (!ret && (!nmemb || !size))
-			ret = calloc(1, 1);
-		if (!ret)
-			die("Out of memory, calloc failed");
-	}
+	if (!ret)
+		die("Out of memory, calloc failed");
 	return ret;
 }
 
@@ -255,7 +229,7 @@ ssize_t xread(int fd, void *buf, size_t len)
 {
 	ssize_t nr;
 	if (len > MAX_IO_SIZE)
-	    len = MAX_IO_SIZE;
+		len = MAX_IO_SIZE;
 	while (1) {
 		nr = read(fd, buf, len);
 		if (nr < 0) {
@@ -277,7 +251,7 @@ ssize_t xwrite(int fd, const void *buf, size_t len)
 {
 	ssize_t nr;
 	if (len > MAX_IO_SIZE)
-	    len = MAX_IO_SIZE;
+		len = MAX_IO_SIZE;
 	while (1) {
 		nr = write(fd, buf, len);
 		if (nr < 0) {
@@ -478,7 +452,9 @@ int git_mkstemps_mode(char *pattern, int suffix_len, int mode)
 		"abcdefghijklmnopqrstuvwxyz"
 		"ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 		"0123456789";
-	static const int num_letters = 62;
+	static const int num_letters = ARRAY_SIZE(letters) - 1;
+	static const char x_pattern[] = "XXXXXX";
+	static const int num_x = ARRAY_SIZE(x_pattern) - 1;
 	uint64_t value;
 	struct timeval tv;
 	char *filename_template;
@@ -487,12 +463,12 @@ int git_mkstemps_mode(char *pattern, int suffix_len, int mode)
 
 	len = strlen(pattern);
 
-	if (len < 6 + suffix_len) {
+	if (len < num_x + suffix_len) {
 		errno = EINVAL;
 		return -1;
 	}
 
-	if (strncmp(&pattern[len - 6 - suffix_len], "XXXXXX", 6)) {
+	if (strncmp(&pattern[len - num_x - suffix_len], x_pattern, num_x)) {
 		errno = EINVAL;
 		return -1;
 	}
@@ -502,17 +478,16 @@ int git_mkstemps_mode(char *pattern, int suffix_len, int mode)
 	 * Try TMP_MAX different filenames.
 	 */
 	gettimeofday(&tv, NULL);
-	value = ((size_t)(tv.tv_usec << 16)) ^ tv.tv_sec ^ getpid();
-	filename_template = &pattern[len - 6 - suffix_len];
+	value = ((uint64_t)tv.tv_usec << 16) ^ tv.tv_sec ^ getpid();
+	filename_template = &pattern[len - num_x - suffix_len];
 	for (count = 0; count < TMP_MAX; ++count) {
 		uint64_t v = value;
+		int i;
 		/* Fill in the random bits. */
-		filename_template[0] = letters[v % num_letters]; v /= num_letters;
-		filename_template[1] = letters[v % num_letters]; v /= num_letters;
-		filename_template[2] = letters[v % num_letters]; v /= num_letters;
-		filename_template[3] = letters[v % num_letters]; v /= num_letters;
-		filename_template[4] = letters[v % num_letters]; v /= num_letters;
-		filename_template[5] = letters[v % num_letters]; v /= num_letters;
+		for (i = 0; i < num_x; i++) {
+			filename_template[i] = letters[v % num_letters];
+			v /= num_letters;
+		}
 
 		fd = open(pattern, O_CREAT | O_EXCL | O_RDWR, mode);
 		if (fd >= 0)

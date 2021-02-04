@@ -112,7 +112,7 @@ static void write_trailer(void)
  * queues up writes, so that all our write(2) calls write exactly one
  * full block; pads writes to RECORDSIZE
  */
-static int stream_blocked(const struct object_id *oid)
+static int stream_blocked(struct repository *r, const struct object_id *oid)
 {
 	struct git_istream *st;
 	enum object_type type;
@@ -120,7 +120,7 @@ static int stream_blocked(const struct object_id *oid)
 	char buf[BLOCKSIZE];
 	ssize_t readlen;
 
-	st = open_istream(oid, &type, &sz, NULL);
+	st = open_istream(r, oid, &type, &sz, NULL);
 	if (!st)
 		return error(_("cannot stream blob %s"), oid_to_hex(oid));
 	for (;;) {
@@ -142,19 +142,25 @@ static int stream_blocked(const struct object_id *oid)
  * string and appends it to a struct strbuf.
  */
 static void strbuf_append_ext_header(struct strbuf *sb, const char *keyword,
-				     const char *value, unsigned int valuelen)
+				     const char *value, size_t valuelen)
 {
-	int len, tmp;
+	size_t orig_len = sb->len;
+	size_t len, tmp;
 
 	/* "%u %s=%s\n" */
 	len = 1 + 1 + strlen(keyword) + 1 + valuelen + 1;
-	for (tmp = len; tmp > 9; tmp /= 10)
+	for (tmp = 1; len / 10 >= tmp; tmp *= 10)
 		len++;
 
 	strbuf_grow(sb, len);
-	strbuf_addf(sb, "%u %s=", len, keyword);
+	strbuf_addf(sb, "%"PRIuMAX" %s=", (uintmax_t)len, keyword);
 	strbuf_add(sb, value, valuelen);
 	strbuf_addch(sb, '\n');
+
+	if (len != sb->len - orig_len)
+		BUG("pax extended header length miscalculated as %"PRIuMAX
+		    ", should be %"PRIuMAX,
+		    (uintmax_t)len, (uintmax_t)(sb->len - orig_len));
 }
 
 /*
@@ -236,13 +242,12 @@ static void write_extended_header(struct archiver_args *args,
 static int write_tar_entry(struct archiver_args *args,
 			   const struct object_id *oid,
 			   const char *path, size_t pathlen,
-			   unsigned int mode)
+			   unsigned int mode,
+			   void *buffer, unsigned long size)
 {
 	struct ustar_header header;
 	struct strbuf ext_header = STRBUF_INIT;
-	unsigned int old_mode = mode;
-	unsigned long size, size_in_header;
-	void *buffer;
+	unsigned long size_in_header;
 	int err = 0;
 
 	memset(&header, 0, sizeof(header));
@@ -276,20 +281,6 @@ static int write_tar_entry(struct archiver_args *args,
 	} else
 		memcpy(header.name, path, pathlen);
 
-	if (S_ISREG(mode) && !args->convert &&
-	    oid_object_info(args->repo, oid, &size) == OBJ_BLOB &&
-	    size > big_file_threshold)
-		buffer = NULL;
-	else if (S_ISLNK(mode) || S_ISREG(mode)) {
-		enum object_type type;
-		buffer = object_file_to_archive(args, path, oid, old_mode, &type, &size);
-		if (!buffer)
-			return error(_("cannot read %s"), oid_to_hex(oid));
-	} else {
-		buffer = NULL;
-		size = 0;
-	}
-
 	if (S_ISLNK(mode)) {
 		if (size > sizeof(header.linkname)) {
 			xsnprintf(header.linkname, sizeof(header.linkname),
@@ -318,9 +309,8 @@ static int write_tar_entry(struct archiver_args *args,
 		if (buffer)
 			write_blocked(buffer, size);
 		else
-			err = stream_blocked(oid);
+			err = stream_blocked(args->repo, oid);
 	}
-	free(buffer);
 	return err;
 }
 
@@ -358,7 +348,7 @@ static struct archiver **tar_filters;
 static int nr_tar_filters;
 static int alloc_tar_filters;
 
-static struct archiver *find_tar_filter(const char *name, int len)
+static struct archiver *find_tar_filter(const char *name, size_t len)
 {
 	int i;
 	for (i = 0; i < nr_tar_filters; i++) {
@@ -374,7 +364,7 @@ static int tar_filter_config(const char *var, const char *value, void *data)
 	struct archiver *ar;
 	const char *name;
 	const char *type;
-	int namelen;
+	size_t namelen;
 
 	if (parse_config_key(var, "tar", &name, &namelen, &type) < 0 || !name)
 		return 0;
@@ -384,7 +374,8 @@ static int tar_filter_config(const char *var, const char *value, void *data)
 		ar = xcalloc(1, sizeof(*ar));
 		ar->name = xmemdupz(name, namelen);
 		ar->write_archive = write_tar_filter_archive;
-		ar->flags = ARCHIVER_WANT_COMPRESSION_LEVELS;
+		ar->flags = ARCHIVER_WANT_COMPRESSION_LEVELS |
+			    ARCHIVER_HIGH_COMPRESSION_LEVELS;
 		ALLOC_GROW(tar_filters, nr_tar_filters + 1, alloc_tar_filters);
 		tar_filters[nr_tar_filters++] = ar;
 	}

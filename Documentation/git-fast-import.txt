@@ -51,6 +51,21 @@ OPTIONS
 	memory used by fast-import during this run.  Showing this output
 	is currently the default, but can be disabled with --quiet.
 
+--allow-unsafe-features::
+	Many command-line options can be provided as part of the
+	fast-import stream itself by using the `feature` or `option`
+	commands. However, some of these options are unsafe (e.g.,
+	allowing fast-import to access the filesystem outside of the
+	repository). These options are disabled by default, but can be
+	allowed by providing this option on the command line.  This
+	currently impacts only the `export-marks`, `import-marks`, and
+	`import-marks-if-exists` feature commands.
++
+	Only enable this option if you trust the program generating the
+	fast-import stream! This option is enabled automatically for
+	remote-helpers that use the `import` capability, as they are
+	already trusted to run their own code.
+
 Options for Frontends
 ~~~~~~~~~~~~~~~~~~~~~
 
@@ -106,6 +121,26 @@ Locations of Marks Files
 +
 Relative and non-relative marks may be combined by interweaving
 --(no-)-relative-marks with the --(import|export)-marks= options.
+
+Submodule Rewriting
+~~~~~~~~~~~~~~~~~~~
+
+--rewrite-submodules-from=<name>:<file>::
+--rewrite-submodules-to=<name>:<file>::
+  Rewrite the object IDs for the submodule specified by <name> from the values
+	used in the from <file> to those used in the to <file>. The from marks should
+	have been created by `git fast-export`, and the to marks should have been
+	created by `git fast-import` when importing that same submodule.
++
+<name> may be any arbitrary string not containing a colon character, but the
+same value must be used with both options when specifying corresponding marks.
+Multiple submodules may be specified with different values for <name>. It is an
+error not to use these options in corresponding pairs.
++
+These options are primarily useful when converting a repository from one hash
+algorithm to another; without them, fast-import will fail if it encounters a
+submodule because it has no way of writing the object ID into the new hash
+algorithm.
 
 Performance and Compression Tuning
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -258,7 +293,14 @@ by users who are located in the same location and time zone.  In this
 case a reasonable offset from UTC could be assumed.
 +
 Unlike the `rfc2822` format, this format is very strict.  Any
-variation in formatting will cause fast-import to reject the value.
+variation in formatting will cause fast-import to reject the value,
+and some sanity checks on the numeric values may also be performed.
+
+`raw-permissive`::
+	This is the same as `raw` except that no sanity checks on
+	the numeric epoch and local offset are performed.  This can
+	be useful when trying to filter or import an existing history
+	with e.g. bogus timezone values.
 
 `rfc2822`::
 	This is the standard email format as described by RFC 2822.
@@ -337,6 +379,13 @@ and control the current import process.  More detailed discussion
 	`commit` command.  This command is optional and is not
 	needed to perform an import.
 
+`alias`::
+	Record that a mark refers to a given object without first
+	creating any new object.  Using --import-marks and referring
+	to missing marks will cause fast-import to fail, so aliases
+	can provide a way to set otherwise pruned commits to a valid
+	value (e.g. the nearest non-pruned ancestor).
+
 `checkpoint`::
 	Forces fast-import to close the current packfile, generate its
 	unique SHA-1 checksum and index, and start a new packfile.
@@ -388,9 +437,10 @@ change to the project.
 	original-oid?
 	('author' (SP <name>)? SP LT <email> GT SP <when> LF)?
 	'committer' (SP <name>)? SP LT <email> GT SP <when> LF
+	('encoding' SP <encoding>)?
 	data
 	('from' SP <commit-ish> LF)?
-	('merge' SP <commit-ish> LF)?
+	('merge' SP <commit-ish> LF)*
 	(filemodify | filedelete | filecopy | filerename | filedeleteall | notemodify)*
 	LF?
 ....
@@ -424,7 +474,7 @@ the same commit, as `filedeleteall` wipes the branch clean (see below).
 
 The `LF` after the command is optional (it used to be required).  Note
 that for reasons of backward compatibility, if the commit ends with a
-`data` command (i.e. it has has no `from`, `merge`, `filemodify`,
+`data` command (i.e. it has no `from`, `merge`, `filemodify`,
 `filedelete`, `filecopy`, `filerename`, `filedeleteall` or
 `notemodify` commands) then two `LF` commands may appear at the end of
 the command instead of just one.
@@ -454,6 +504,12 @@ The time of the change is specified by `<when>` using the date format
 that was selected by the --date-format=<fmt> command-line option.
 See ``Date Formats'' above for the set of supported formats, and
 their syntax.
+
+`encoding`
+^^^^^^^^^^
+The optional `encoding` command indicates the encoding of the commit
+message.  Most commits are UTF-8 and the encoding is omitted, but this
+allows importing commit messages into git without first reencoding them.
 
 `from`
 ^^^^^^
@@ -758,7 +814,7 @@ may have uses for this information
 	'original-oid' SP <object-identifier> LF
 ....
 
-where `<object-identifer>` is any string not containing LF.
+where `<object-identifier>` is any string not containing LF.
 
 `tag`
 ~~~~~
@@ -767,6 +823,7 @@ lightweight (non-annotated) tags see the `reset` command below.
 
 ....
 	'tag' SP <name> LF
+	mark?
 	'from' SP <commit-ish> LF
 	original-oid?
 	'tagger' (SP <name>)? SP LT <email> GT SP <when> LF
@@ -905,6 +962,21 @@ the limitations of the delimited format, it is impossible to supply
 a data chunk which does not have an LF as its last byte.
 +
 The `LF` after `<delim> LF` is optional (it used to be required).
+
+`alias`
+~~~~~~~
+Record that a mark refers to a given object without first creating any
+new object.
+
+....
+	'alias' LF
+	mark
+	'to' SP <commit-ish> LF
+	LF?
+....
+
+For a detailed description of `<commit-ish>` see above under `from`.
+
 
 `checkpoint`
 ~~~~~~~~~~~~

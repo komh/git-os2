@@ -3,21 +3,23 @@
 
 #include "ewah/ewok.h"
 #include "khash.h"
+#include "pack.h"
 #include "pack-objects.h"
 
 struct commit;
 struct repository;
 struct rev_info;
+struct list_objects_filter_options;
+
+static const char BITMAP_IDX_SIGNATURE[] = {'B', 'I', 'T', 'M'};
 
 struct bitmap_disk_header {
-	char magic[4];
+	char magic[ARRAY_SIZE(BITMAP_IDX_SIGNATURE)];
 	uint16_t version;
 	uint16_t options;
 	uint32_t entry_count;
 	unsigned char checksum[GIT_MAX_RAWSZ];
 };
-
-static const char BITMAP_IDX_SIGNATURE[] = {'B', 'I', 'T', 'M'};
 
 #define NEEDS_BITMAP (1u<<22)
 
@@ -44,15 +46,20 @@ struct bitmap_index *prepare_bitmap_git(struct repository *r);
 void count_bitmap_commit_list(struct bitmap_index *, uint32_t *commits,
 			      uint32_t *trees, uint32_t *blobs, uint32_t *tags);
 void traverse_bitmap_commit_list(struct bitmap_index *,
+				 struct rev_info *revs,
 				 show_reachable_fn show_reachable);
 void test_bitmap_walk(struct rev_info *revs);
-struct bitmap_index *prepare_bitmap_walk(struct rev_info *revs);
+struct bitmap_index *prepare_bitmap_walk(struct rev_info *revs,
+					 struct list_objects_filter_options *filter);
 int reuse_partial_packfile_from_bitmap(struct bitmap_index *,
 				       struct packed_git **packfile,
-				       uint32_t *entries, off_t *up_to);
+				       uint32_t *entries,
+				       struct bitmap **reuse_out);
 int rebuild_existing_bitmaps(struct bitmap_index *, struct packing_data *mapping,
-			     khash_sha1 *reused_bitmaps, int show_progress);
+			     kh_oid_map_t *reused_bitmaps, int show_progress);
 void free_bitmap_index(struct bitmap_index *);
+int bitmap_walk_contains(struct bitmap_index *,
+			 struct bitmap *bitmap, const struct object_id *oid);
 
 /*
  * After a traversal has been performed by prepare_bitmap_walk(), this can be

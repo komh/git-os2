@@ -11,7 +11,7 @@
 #include "remote.h"
 #include "list-objects.h"
 #include "sigchain.h"
-#include "argv-array.h"
+#include "strvec.h"
 #include "packfile.h"
 #include "object-store.h"
 #include "commit-reach.h"
@@ -70,10 +70,10 @@ enum XML_Status {
 #define LOCK_REFRESH 30
 
 /* Remember to update object flag allocation in object.h */
-#define LOCAL    (1u<<16)
-#define REMOTE   (1u<<17)
-#define FETCHING (1u<<18)
-#define PUSHING  (1u<<19)
+#define LOCAL    (1u<<11)
+#define REMOTE   (1u<<12)
+#define FETCHING (1u<<13)
+#define PUSHING  (1u<<14)
 
 /* We allow "recursive" symbolic refs. Only within reason, though */
 #define MAXDEPTH 5
@@ -117,6 +117,7 @@ enum transfer_state {
 
 struct transfer_request {
 	struct object *obj;
+	struct packed_git *target;
 	char *url;
 	char *dest;
 	struct remote_lock *lock;
@@ -314,17 +315,18 @@ static void start_fetch_packed(struct transfer_request *request)
 		release_request(request);
 		return;
 	}
+	close_pack_index(target);
+	request->target = target;
 
 	fprintf(stderr,	"Fetching pack %s\n",
 		hash_to_hex(target->hash));
 	fprintf(stderr, " which contains %s\n", oid_to_hex(&request->obj->oid));
 
-	preq = new_http_pack_request(target, repo->url);
+	preq = new_http_pack_request(target->hash, repo->url);
 	if (preq == NULL) {
 		repo->can_update_info_refs = 0;
 		return;
 	}
-	preq->lst = &repo->packs;
 
 	/* Make sure there isn't another open request for this pack */
 	while (check_request) {
@@ -501,10 +503,10 @@ static void release_request(struct transfer_request *request)
 	if (request == request_queue_head) {
 		request_queue_head = request->next;
 	} else {
-		while (entry->next != NULL && entry->next != request)
+		while (entry && entry->next != request)
 			entry = entry->next;
-		if (entry->next == request)
-			entry->next = entry->next->next;
+		if (entry)
+			entry->next = request->next;
 	}
 
 	free(request->url);
@@ -597,6 +599,8 @@ static void finish_request(struct transfer_request *request)
 		}
 		if (fail)
 			repo->can_update_info_refs = 0;
+		else
+			http_install_packfile(request->target, &repo->packs);
 		release_request(request);
 	}
 }
@@ -723,7 +727,7 @@ static void one_remote_object(const struct object_id *oid)
 {
 	struct object *obj;
 
-	obj = lookup_object(the_repository, oid->hash);
+	obj = lookup_object(the_repository, oid);
 	if (!obj)
 		obj = parse_object(the_repository, oid);
 
@@ -981,7 +985,7 @@ static int unlock_remote(struct remote_lock *lock)
 		while (prev && prev->next != lock)
 			prev = prev->next;
 		if (prev)
-			prev->next = prev->next->next;
+			prev->next = lock->next;
 	}
 
 	free(lock->owner);
@@ -1432,7 +1436,7 @@ static void one_remote_ref(const char *refname)
 	 * may be required for updating server info later.
 	 */
 	if (repo->can_update_info_refs && !has_object_file(&ref->old_oid)) {
-		obj = lookup_unknown_object(ref->old_oid.hash);
+		obj = lookup_unknown_object(&ref->old_oid);
 		fprintf(stderr,	"  fetch %s for %s\n",
 			oid_to_hex(&ref->old_oid), refname);
 		add_fetch_request(obj);
@@ -1842,7 +1846,7 @@ int cmd_main(int argc, const char **argv)
 
 	new_refs = 0;
 	for (ref = remote_refs; ref; ref = ref->next) {
-		struct argv_array commit_argv = ARGV_ARRAY_INIT;
+		struct strvec commit_argv = STRVEC_INIT;
 
 		if (!ref->peer_ref)
 			continue;
@@ -1920,14 +1924,14 @@ int cmd_main(int argc, const char **argv)
 		}
 
 		/* Set up revision info for this refspec */
-		argv_array_push(&commit_argv, ""); /* ignored */
-		argv_array_push(&commit_argv, "--objects");
-		argv_array_push(&commit_argv, oid_to_hex(&ref->new_oid));
+		strvec_push(&commit_argv, ""); /* ignored */
+		strvec_push(&commit_argv, "--objects");
+		strvec_push(&commit_argv, oid_to_hex(&ref->new_oid));
 		if (!push_all && !is_null_oid(&ref->old_oid))
-			argv_array_pushf(&commit_argv, "^%s",
-					 oid_to_hex(&ref->old_oid));
+			strvec_pushf(&commit_argv, "^%s",
+				     oid_to_hex(&ref->old_oid));
 		repo_init_revisions(the_repository, &revs, setup_git_directory());
-		setup_revisions(commit_argv.argc, commit_argv.argv, &revs, NULL);
+		setup_revisions(commit_argv.nr, commit_argv.v, &revs, NULL);
 		revs.edge_hint = 0; /* just in case */
 
 		/* Generate a list of objects that need to be pushed */
@@ -1957,7 +1961,7 @@ int cmd_main(int argc, const char **argv)
 			printf("%s %s\n", !rc ? "ok" : "error", ref->name);
 		unlock_remote(ref_lock);
 		check_locks();
-		argv_array_clear(&commit_argv);
+		strvec_clear(&commit_argv);
 	}
 
 	/* Update remote server info if appropriate */

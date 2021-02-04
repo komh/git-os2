@@ -30,14 +30,13 @@ check_fsck () {
 }
 
 corrupt () {
-	aa=${1%??????????????????????????????????????} zz=${1#??}
-	mv .git/objects/$aa/$zz .git/$aa$zz
+	mv .git/objects/$(test_oid_to_path $1) .git/$1
 }
 
 recover () {
-	aa=${1%??????????????????????????????????????} zz=${1#??}
+	aa=$(echo $1 | cut -c 1-2)
 	mkdir -p .git/objects/$aa
-	mv .git/$aa$zz .git/objects/$aa/$zz
+	mv .git/$1 .git/objects/$(test_oid_to_path $1)
 }
 
 check_dont_have () {
@@ -195,7 +194,7 @@ test_expect_success 'delete' '
 
 	git reflog delete master@{1} &&
 	git reflog show master > output &&
-	test $(($master_entry_count - 1)) = $(wc -l < output) &&
+	test_line_count = $(($master_entry_count - 1)) output &&
 	test $HEAD_entry_count = $(git reflog | wc -l) &&
 	! grep ox < output &&
 
@@ -209,7 +208,7 @@ test_expect_success 'delete' '
 
 	git reflog delete master@{07.04.2005.15:15:00.-0700} &&
 	git reflog show master > output &&
-	test $(($master_entry_count - 1)) = $(wc -l < output) &&
+	test_line_count = $(($master_entry_count - 1)) output &&
 	! grep dragon < output
 
 '
@@ -313,12 +312,12 @@ test_expect_success 'stale dirs do not cause d/f conflicts (reflogs off)' '
 # Each line is 114 characters, so we need 75 to still have a few before the
 # last 8K. The 89-character padding on the final entry lines up our
 # newline exactly.
-test_expect_success 'parsing reverse reflogs at BUFSIZ boundaries' '
+test_expect_success SHA1 'parsing reverse reflogs at BUFSIZ boundaries' '
 	git checkout -b reflogskip &&
-	z38=00000000000000000000000000000000000000 &&
+	zf=$(test_oid zero_2) &&
 	ident="abc <xyz> 0000000001 +0000" &&
 	for i in $(test_seq 1 75); do
-		printf "$z38%02d $z38%02d %s\t" $i $(($i+1)) "$ident" &&
+		printf "$zf%02d $zf%02d %s\t" $i $(($i+1)) "$ident" &&
 		if test $i = 75; then
 			for j in $(test_seq 1 89); do
 				printf X
@@ -329,7 +328,7 @@ test_expect_success 'parsing reverse reflogs at BUFSIZ boundaries' '
 		printf "\n"
 	done >.git/logs/refs/heads/reflogskip &&
 	git rev-parse reflogskip@{73} >actual &&
-	echo ${z38}03 >expect &&
+	echo ${zf}03 >expect &&
 	test_cmp expect actual
 '
 

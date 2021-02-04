@@ -1,7 +1,6 @@
 #ifndef STATUS_H
 #define STATUS_H
 
-#include <stdio.h>
 #include "string-list.h"
 #include "color.h"
 #include "pathspec.h"
@@ -39,8 +38,21 @@ enum show_ignored_type {
 enum commit_whence {
 	FROM_COMMIT,     /* normal */
 	FROM_MERGE,      /* commit came from merge */
-	FROM_CHERRY_PICK /* commit came from cherry-pick */
+	FROM_CHERRY_PICK_SINGLE, /* commit came from cherry-pick */
+	FROM_CHERRY_PICK_MULTI, /* commit came from a sequence of cherry-picks */
+	FROM_REBASE_PICK /* commit came from a pick/reword/edit */
 };
+
+static inline int is_from_cherry_pick(enum commit_whence whence)
+{
+	return whence == FROM_CHERRY_PICK_SINGLE ||
+		whence == FROM_CHERRY_PICK_MULTI;
+}
+
+static inline int is_from_rebase(enum commit_whence whence)
+{
+	return whence == FROM_REBASE_PICK;
+}
 
 struct wt_status_change_data {
 	int worktree_status;
@@ -65,6 +77,10 @@ enum wt_status_format {
 	STATUS_FORMAT_UNSPECIFIED
 };
 
+#define HEAD_DETACHED_AT _("HEAD detached at ")
+#define HEAD_DETACHED_FROM _("HEAD detached from ")
+#define SPARSE_CHECKOUT_DISABLED -1
+
 struct wt_status_state {
 	int merge_in_progress;
 	int am_in_progress;
@@ -75,6 +91,7 @@ struct wt_status_state {
 	int bisect_in_progress;
 	int revert_in_progress;
 	int detached_at;
+	int sparse_checkout_percentage; /* SPARSE_CHECKOUT_DISABLED if not sparse */
 	char *branch;
 	char *onto;
 	char *detached_from;
@@ -114,7 +131,7 @@ struct wt_status {
 	int rename_limit;
 	enum wt_status_format status_format;
 	struct wt_status_state state;
-	unsigned char sha1_commit[GIT_MAX_RAWSZ]; /* when not Initial */
+	struct object_id oid_commit; /* when not Initial */
 
 	/* These are computed during processing of the individual sections */
 	int committable;
@@ -134,7 +151,14 @@ void wt_status_add_cut_line(FILE *fp);
 void wt_status_prepare(struct repository *r, struct wt_status *s);
 void wt_status_print(struct wt_status *s);
 void wt_status_collect(struct wt_status *s);
+/*
+ * Frees the buffers allocated by wt_status_collect.
+ */
 void wt_status_collect_free_buffers(struct wt_status *s);
+/*
+ * Frees the buffers of the wt_status_state.
+ */
+void wt_status_state_free_buffers(struct wt_status_state *s);
 void wt_status_get_state(struct repository *repo,
 			 struct wt_status_state *state,
 			 int get_detached_from);

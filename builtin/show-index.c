@@ -1,9 +1,12 @@
 #include "builtin.h"
 #include "cache.h"
 #include "pack.h"
+#include "parse-options.h"
 
-static const char show_index_usage[] =
-"git show-index";
+static const char *const show_index_usage[] = {
+	"git show-index [--object-format=<hash-algorithm>]",
+	NULL
+};
 
 int cmd_show_index(int argc, const char **argv, const char *prefix)
 {
@@ -11,9 +14,26 @@ int cmd_show_index(int argc, const char **argv, const char *prefix)
 	unsigned nr;
 	unsigned int version;
 	static unsigned int top_index[256];
+	unsigned hashsz;
+	const char *hash_name = NULL;
+	int hash_algo;
+	const struct option show_index_options[] = {
+		OPT_STRING(0, "object-format", &hash_name, N_("hash-algorithm"),
+			   N_("specify the hash algorithm to use")),
+		OPT_END()
+	};
 
-	if (argc != 1)
-		usage(show_index_usage);
+	argc = parse_options(argc, argv, prefix, show_index_options, show_index_usage, 0);
+
+	if (hash_name) {
+		hash_algo = hash_algo_by_name(hash_name);
+		if (hash_algo == GIT_HASH_UNKNOWN)
+			die(_("Unknown hash algorithm"));
+		repo_set_hash_algo(the_repository, hash_algo);
+	}
+
+	hashsz = the_hash_algo->rawsz;
+
 	if (fread(top_index, 2 * 4, 1, stdin) != 1)
 		die("unable to read header");
 	if (top_index[0] == htonl(PACK_IDX_SIGNATURE)) {
@@ -36,23 +56,23 @@ int cmd_show_index(int argc, const char **argv, const char *prefix)
 	}
 	if (version == 1) {
 		for (i = 0; i < nr; i++) {
-			unsigned int offset, entry[6];
+			unsigned int offset, entry[(GIT_MAX_RAWSZ + 4) / sizeof(unsigned int)];
 
-			if (fread(entry, 4 + 20, 1, stdin) != 1)
+			if (fread(entry, 4 + hashsz, 1, stdin) != 1)
 				die("unable to read entry %u/%u", i, nr);
 			offset = ntohl(entry[0]);
-			printf("%u %s\n", offset, sha1_to_hex((void *)(entry+1)));
+			printf("%u %s\n", offset, hash_to_hex((void *)(entry+1)));
 		}
 	} else {
 		unsigned off64_nr = 0;
 		struct {
-			unsigned char sha1[20];
+			struct object_id oid;
 			uint32_t crc;
 			uint32_t off;
 		} *entries;
 		ALLOC_ARRAY(entries, nr);
 		for (i = 0; i < nr; i++)
-			if (fread(entries[i].sha1, 20, 1, stdin) != 1)
+			if (fread(entries[i].oid.hash, hashsz, 1, stdin) != 1)
 				die("unable to read sha1 %u/%u", i, nr);
 		for (i = 0; i < nr; i++)
 			if (fread(&entries[i].crc, 4, 1, stdin) != 1)
@@ -77,7 +97,7 @@ int cmd_show_index(int argc, const char **argv, const char *prefix)
 			}
 			printf("%" PRIuMAX " %s (%08"PRIx32")\n",
 			       (uintmax_t) offset,
-			       sha1_to_hex(entries[i].sha1),
+			       oid_to_hex(&entries[i].oid),
 			       ntohl(entries[i].crc));
 		}
 		free(entries);

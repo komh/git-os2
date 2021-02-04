@@ -17,7 +17,7 @@
 #include "diff.h"
 #include "revision.h"
 #include "gpg-interface.h"
-#include "sha1-array.h"
+#include "oid-array.h"
 #include "column.h"
 #include "ref-filter.h"
 
@@ -26,13 +26,14 @@ static const char * const git_tag_usage[] = {
 		"\t\t<tagname> [<head>]"),
 	N_("git tag -d <tagname>..."),
 	N_("git tag -l [-n[<num>]] [--contains <commit>] [--no-contains <commit>] [--points-at <object>]\n"
-		"\t\t[--format=<format>] [--[no-]merged [<commit>]] [<pattern>...]"),
+		"\t\t[--format=<format>] [--merged <commit>] [--no-merged <commit>] [<pattern>...]"),
 	N_("git tag -v [--format=<format>] <tagname>..."),
 	NULL
 };
 
 static unsigned int colopts;
 static int force_sign_annotate;
+static int config_sign_tag = -1; /* unspecified */
 
 static int list_tags(struct ref_filter *filter, struct ref_sorting *sorting,
 		     struct ref_format *format)
@@ -144,6 +145,11 @@ static int git_tag_config(const char *var, const char *value, void *cb)
 	int status;
 	struct ref_sorting **sorting_tail = (struct ref_sorting **)cb;
 
+	if (!strcmp(var, "tag.gpgsign")) {
+		config_sign_tag = git_config_bool(var, value);
+		return 0;
+	}
+
 	if (!strcmp(var, "tag.sort")) {
 		if (!value)
 			return config_error_nonbool(var);
@@ -225,8 +231,9 @@ static void create_tag(const struct object_id *object, const char *object_ref,
 	if (type <= OBJ_NONE)
 		die(_("bad object type."));
 
-	if (type == OBJ_TAG && advice_nested_tag)
-		advise(_(message_advice_nested_tag), tag, object_ref);
+	if (type == OBJ_TAG)
+		advise_if_enabled(ADVICE_NESTED_TAG, _(message_advice_nested_tag),
+				  tag, object_ref);
 
 	strbuf_addf(&header,
 		    "object %s\n"
@@ -403,8 +410,8 @@ int cmd_tag(int argc, const char **argv, const char *prefix)
 		OPT_GROUP(N_("Tag creation options")),
 		OPT_BOOL('a', "annotate", &annotate,
 					N_("annotated tag, needs a message")),
-		{ OPTION_CALLBACK, 'm', "message", &msg, N_("message"),
-		  N_("tag message"), PARSE_OPT_NONEG, parse_msg_arg },
+		OPT_CALLBACK_F('m', "message", &msg, N_("message"),
+			       N_("tag message"), PARSE_OPT_NONEG, parse_msg_arg),
 		OPT_FILENAME('F', "file", &msgfile, N_("read message from file")),
 		OPT_BOOL('e', "edit", &edit_flag, N_("force edit of tag message")),
 		OPT_BOOL('s', "sign", &opt.sign, N_("annotated and GPG-signed tag")),
@@ -442,26 +449,30 @@ int cmd_tag(int argc, const char **argv, const char *prefix)
 	memset(&opt, 0, sizeof(opt));
 	memset(&filter, 0, sizeof(filter));
 	filter.lines = -1;
+	opt.sign = -1;
 
 	argc = parse_options(argc, argv, prefix, options, git_tag_usage, 0);
+
+	if (!cmdmode) {
+		if (argc == 0)
+			cmdmode = 'l';
+		else if (filter.with_commit || filter.no_commit ||
+			 filter.reachable_from || filter.unreachable_from ||
+			 filter.points_at.nr || filter.lines != -1)
+			cmdmode = 'l';
+	}
+
+	if (cmdmode == 'l')
+		setup_auto_pager("tag", 1);
+
+	if (opt.sign == -1)
+		opt.sign = cmdmode ? 0 : config_sign_tag > 0;
 
 	if (keyid) {
 		opt.sign = 1;
 		set_signing_key(keyid);
 	}
 	create_tag_object = (opt.sign || annotate || msg.given || msgfile);
-
-	if (!cmdmode) {
-		if (argc == 0)
-			cmdmode = 'l';
-		else if (filter.with_commit || filter.no_commit ||
-			 filter.points_at.nr || filter.merge_commit ||
-			 filter.lines != -1)
-			cmdmode = 'l';
-	}
-
-	if (cmdmode == 'l')
-		setup_auto_pager("tag", 1);
 
 	if ((create_tag_object || force) && (cmdmode != 0))
 		usage_with_options(git_tag_usage, options);
@@ -474,7 +485,7 @@ int cmd_tag(int argc, const char **argv, const char *prefix)
 	}
 	if (!sorting)
 		sorting = ref_default_sorting();
-	sorting->ignore_case = icase;
+	ref_sorting_icase_all(sorting, icase);
 	filter.ignore_case = icase;
 	if (cmdmode == 'l') {
 		int ret;
@@ -498,7 +509,7 @@ int cmd_tag(int argc, const char **argv, const char *prefix)
 		die(_("--no-contains option is only allowed in list mode"));
 	if (filter.points_at.nr)
 		die(_("--points-at option is only allowed in list mode"));
-	if (filter.merge_commit)
+	if (filter.reachable_from || filter.unreachable_from)
 		die(_("--merged and --no-merged options are only allowed in list mode"));
 	if (cmdmode == 'd')
 		return for_each_tag_name(argv, delete_tag, NULL);

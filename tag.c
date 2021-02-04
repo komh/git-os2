@@ -100,11 +100,10 @@ struct object *deref_tag_noverify(struct object *o)
 
 struct tag *lookup_tag(struct repository *r, const struct object_id *oid)
 {
-	struct object *obj = lookup_object(r, oid->hash);
+	struct object *obj = lookup_object(r, oid);
 	if (!obj)
-		return create_object(r, oid->hash,
-				     alloc_tag_node(r));
-	return object_as_type(r, obj, OBJ_TAG, 0);
+		return create_object(r, oid, alloc_tag_node(r));
+	return object_as_type(obj, OBJ_TAG, 0);
 }
 
 static timestamp_t parse_tag_date(const char *buf, const char *tail)
@@ -142,7 +141,16 @@ int parse_tag_buffer(struct repository *r, struct tag *item, const void *data, u
 
 	if (item->object.parsed)
 		return 0;
-	item->object.parsed = 1;
+
+	if (item->tag) {
+		/*
+		 * Presumably left over from a previous failed parse;
+		 * clear it out in preparation for re-parsing (we'll probably
+		 * hit the same error, which lets us tell our current caller
+		 * about the problem).
+		 */
+		FREE_AND_NULL(item->tag);
+	}
 
 	if (size < the_hash_algo->hexsz + 24)
 		return -1;
@@ -168,9 +176,14 @@ int parse_tag_buffer(struct repository *r, struct tag *item, const void *data, u
 	} else if (!strcmp(type, tag_type)) {
 		item->tagged = (struct object *)lookup_tag(r, &oid);
 	} else {
-		error("Unknown type %s", type);
-		item->tagged = NULL;
+		return error("unknown tag type '%s' in %s",
+			     type, oid_to_hex(&item->object.oid));
 	}
+
+	if (!item->tagged)
+		return error("bad tag pointer to %s in %s",
+			     oid_to_hex(&oid),
+			     oid_to_hex(&item->object.oid));
 
 	if (bufptr + 4 < tail && starts_with(bufptr, "tag "))
 		; 		/* good */
@@ -188,6 +201,7 @@ int parse_tag_buffer(struct repository *r, struct tag *item, const void *data, u
 	else
 		item->date = 0;
 
+	item->object.parsed = 1;
 	return 0;
 }
 
@@ -212,4 +226,11 @@ int parse_tag(struct tag *item)
 	ret = parse_tag_buffer(the_repository, item, data, size);
 	free(data);
 	return ret;
+}
+
+struct object_id *get_tagged_oid(struct tag *tag)
+{
+	if (!tag->tagged)
+		die("bad tag");
+	return &tag->tagged->oid;
 }

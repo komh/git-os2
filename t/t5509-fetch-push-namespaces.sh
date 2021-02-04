@@ -20,7 +20,7 @@ test_expect_success setup '
 	) &&
 	commit0=$(cd original && git rev-parse HEAD^) &&
 	commit1=$(cd original && git rev-parse HEAD) &&
-	git init pushee &&
+	git init --bare pushee &&
 	git init puller
 '
 
@@ -122,6 +122,45 @@ test_expect_success 'try to update a ref that is not hidden' '
 test_expect_success 'try to update a hidden full ref' '
 	test_config -C pushee transfer.hideRefs "^refs/namespaces/namespace/refs/heads/master" &&
 	test_must_fail git -C original push pushee-namespaced master
+'
+
+test_expect_success 'set up ambiguous HEAD' '
+	git init ambiguous &&
+	(
+		cd ambiguous &&
+		git commit --allow-empty -m foo &&
+		git update-ref refs/namespaces/ns/refs/heads/one HEAD &&
+		git update-ref refs/namespaces/ns/refs/heads/two HEAD &&
+		git symbolic-ref refs/namespaces/ns/HEAD \
+			refs/namespaces/ns/refs/heads/two
+	)
+'
+
+test_expect_success 'clone chooses correct HEAD (v0)' '
+	GIT_NAMESPACE=ns git -c protocol.version=0 \
+		clone ambiguous ambiguous-v0 &&
+	echo refs/heads/two >expect &&
+	git -C ambiguous-v0 symbolic-ref HEAD >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'clone chooses correct HEAD (v2)' '
+	GIT_NAMESPACE=ns git -c protocol.version=2 \
+		clone ambiguous ambiguous-v2 &&
+	echo refs/heads/two >expect &&
+	git -C ambiguous-v2 symbolic-ref HEAD >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'denyCurrentBranch and unborn branch with ref namespace' '
+	(
+		cd original &&
+		git init unborn &&
+		git remote add unborn-namespaced "ext::git --namespace=namespace %s unborn" &&
+		test_must_fail git push unborn-namespaced HEAD:master &&
+		git -C unborn config receive.denyCurrentBranch updateInstead &&
+		git push unborn-namespaced HEAD:master
+	)
 '
 
 test_done

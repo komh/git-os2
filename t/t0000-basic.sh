@@ -20,28 +20,27 @@ modification *should* take notice and update the test vectors here.
 
 . ./test-lib.sh
 
-try_local_x () {
-	local x="local" &&
-	echo "$x"
+try_local_xy () {
+	local x="local" y="alsolocal" &&
+	echo "$x $y"
 }
 
-# This test is an experiment to check whether any Git users are using
-# Shells that don't support the "local" keyword. "local" is not
+# Check whether the shell supports the "local" keyword. "local" is not
 # POSIX-standard, but it is very widely supported by POSIX-compliant
-# shells, and if it doesn't cause problems for people, we would like
-# to be able to use it in Git code.
+# shells, and we rely on it within Git's test framework.
 #
-# For now, this is the only test that requires "local". If your shell
-# fails this test, you can ignore the failure, but please report the
-# problem to the Git mailing list <git@vger.kernel.org>, as it might
-# convince us to continue avoiding the use of "local".
+# If your shell fails this test, the results of other tests may be
+# unreliable. You may wish to report the problem to the Git mailing
+# list <git@vger.kernel.org>, as it could cause us to reconsider
+# relying on "local".
 test_expect_success 'verify that the running shell supports "local"' '
 	x="notlocal" &&
-	echo "local" >expected1 &&
-	try_local_x >actual1 &&
+	y="alsonotlocal" &&
+	echo "local alsolocal" >expected1 &&
+	try_local_xy >actual1 &&
 	test_cmp expected1 actual1 &&
-	echo "notlocal" >expected2 &&
-	echo "$x" >actual2 &&
+	echo "notlocal alsonotlocal" >expected2 &&
+	echo "$x $y" >actual2 &&
 	test_cmp expected2 actual2
 '
 
@@ -78,9 +77,7 @@ _run_sub_test_lib_test_common () {
 		# the sub-test.
 		sane_unset HARNESS_ACTIVE &&
 		cd "$name" &&
-		cat >"$name.sh" <<-EOF &&
-		#!$SHELL_PATH
-
+		write_script "$name.sh" "$TEST_SHELL_PATH" <<-EOF &&
 		test_description='$descr (run in sub test-lib)
 
 		This is run in a sub test-lib so that we do not get incorrect
@@ -95,15 +92,15 @@ _run_sub_test_lib_test_common () {
 		. "\$TEST_DIRECTORY"/test-lib.sh
 		EOF
 		cat >>"$name.sh" &&
-		chmod +x "$name.sh" &&
 		export TEST_DIRECTORY &&
 		TEST_OUTPUT_DIRECTORY=$(pwd) &&
 		export TEST_OUTPUT_DIRECTORY &&
+		sane_unset GIT_TEST_FAIL_PREREQS &&
 		if test -z "$neg"
 		then
 			./"$name.sh" "$@" >out 2>err
 		else
-			!  ./"$name.sh" "$@" >out 2>err
+			! ./"$name.sh" "$@" >out 2>err
 		fi
 	)
 }
@@ -128,7 +125,7 @@ check_sub_test_lib_test () {
 
 check_sub_test_lib_test_err () {
 	name="$1" # stdin is the expected output from the test
-	# expected error output is in descriptior 3
+	# expected error output is in descriptor 3
 	(
 		cd "$name" &&
 		sed -e 's/^> //' -e 's/Z$//' >expect.out &&
@@ -156,7 +153,7 @@ test_expect_success 'pretend we have a fully passing test suite' "
 "
 
 test_expect_success 'pretend we have a partially passing test suite' "
-	test_must_fail run_sub_test_lib_test \
+	run_sub_test_lib_test_err \
 		partial-pass '2/3 tests passing' <<-\\EOF &&
 	test_expect_success 'passing test #1' 'true'
 	test_expect_success 'failing test #2' 'false'
@@ -220,7 +217,7 @@ test_expect_success 'pretend we have fixed one of two known breakages (run in su
 "
 
 test_expect_success 'pretend we have a pass, fail, and known breakage' "
-	test_must_fail run_sub_test_lib_test \
+	run_sub_test_lib_test_err \
 		mixed-results1 'mixed results #1' <<-\\EOF &&
 	test_expect_success 'passing test' 'true'
 	test_expect_success 'failing test' 'false'
@@ -239,7 +236,7 @@ test_expect_success 'pretend we have a pass, fail, and known breakage' "
 "
 
 test_expect_success 'pretend we have a mix of all possible results' "
-	test_must_fail run_sub_test_lib_test \
+	run_sub_test_lib_test_err \
 		mixed-results2 'mixed results #2' <<-\\EOF &&
 	test_expect_success 'passing test' 'true'
 	test_expect_success 'passing test' 'true'
@@ -275,24 +272,24 @@ test_expect_success 'pretend we have a mix of all possible results' "
 "
 
 test_expect_success C_LOCALE_OUTPUT 'test --verbose' '
-	test_must_fail run_sub_test_lib_test \
-		test-verbose "test verbose" --verbose <<-\EOF &&
+	run_sub_test_lib_test_err \
+		t1234-verbose "test verbose" --verbose <<-\EOF &&
 	test_expect_success "passing test" true
 	test_expect_success "test with output" "echo foo"
 	test_expect_success "failing test" false
 	test_done
 	EOF
-	mv test-verbose/out test-verbose/out+ &&
-	grep -v "^Initialized empty" test-verbose/out+ >test-verbose/out &&
-	check_sub_test_lib_test test-verbose <<-\EOF
-	> expecting success: true
+	mv t1234-verbose/out t1234-verbose/out+ &&
+	grep -v "^Initialized empty" t1234-verbose/out+ >t1234-verbose/out &&
+	check_sub_test_lib_test t1234-verbose <<-\EOF
+	> expecting success of 1234.1 '\''passing test'\'': true
 	> ok 1 - passing test
 	> Z
-	> expecting success: echo foo
+	> expecting success of 1234.2 '\''test with output'\'': echo foo
 	> foo
 	> ok 2 - test with output
 	> Z
-	> expecting success: false
+	> expecting success of 1234.3 '\''failing test'\'': false
 	> not ok 3 - failing test
 	> #	false
 	> Z
@@ -302,18 +299,18 @@ test_expect_success C_LOCALE_OUTPUT 'test --verbose' '
 '
 
 test_expect_success 'test --verbose-only' '
-	test_must_fail run_sub_test_lib_test \
-		test-verbose-only-2 "test verbose-only=2" \
+	run_sub_test_lib_test_err \
+		t2345-verbose-only-2 "test verbose-only=2" \
 		--verbose-only=2 <<-\EOF &&
 	test_expect_success "passing test" true
 	test_expect_success "test with output" "echo foo"
 	test_expect_success "failing test" false
 	test_done
 	EOF
-	check_sub_test_lib_test test-verbose-only-2 <<-\EOF
+	check_sub_test_lib_test t2345-verbose-only-2 <<-\EOF
 	> ok 1 - passing test
 	> Z
-	> expecting success: echo foo
+	> expecting success of 2345.2 '\''test with output'\'': echo foo
 	> foo
 	> ok 2 - test with output
 	> Z
@@ -393,9 +390,47 @@ test_expect_success 'GIT_SKIP_TESTS sh pattern' "
 	)
 "
 
+test_expect_success 'GIT_SKIP_TESTS entire suite' "
+	(
+		GIT_SKIP_TESTS='git' && export GIT_SKIP_TESTS &&
+		run_sub_test_lib_test git-skip-tests-entire-suite \
+			'GIT_SKIP_TESTS entire suite' <<-\\EOF &&
+		for i in 1 2 3
+		do
+			test_expect_success \"passing test #\$i\" 'true'
+		done
+		test_done
+		EOF
+		check_sub_test_lib_test git-skip-tests-entire-suite <<-\\EOF
+		> 1..0 # SKIP skip all tests in git
+		EOF
+	)
+"
+
+test_expect_success 'GIT_SKIP_TESTS does not skip unmatched suite' "
+	(
+		GIT_SKIP_TESTS='notgit' && export GIT_SKIP_TESTS &&
+		run_sub_test_lib_test git-skip-tests-unmatched-suite \
+			'GIT_SKIP_TESTS does not skip unmatched suite' <<-\\EOF &&
+		for i in 1 2 3
+		do
+			test_expect_success \"passing test #\$i\" 'true'
+		done
+		test_done
+		EOF
+		check_sub_test_lib_test git-skip-tests-unmatched-suite <<-\\EOF
+		> ok 1 - passing test #1
+		> ok 2 - passing test #2
+		> ok 3 - passing test #3
+		> # passed all 3 test(s)
+		> 1..3
+		EOF
+	)
+"
+
 test_expect_success '--run basic' "
 	run_sub_test_lib_test run-basic \
-		'--run basic' --run='1 3 5' <<-\\EOF &&
+		'--run basic' --run='1,3,5' <<-\\EOF &&
 	for i in 1 2 3 4 5 6
 	do
 		test_expect_success \"passing test #\$i\" 'true'
@@ -437,7 +472,7 @@ test_expect_success '--run with a range' "
 
 test_expect_success '--run with two ranges' "
 	run_sub_test_lib_test run-two-ranges \
-		'--run with two ranges' --run='1-2 5-6' <<-\\EOF &&
+		'--run with two ranges' --run='1-2,5-6' <<-\\EOF &&
 	for i in 1 2 3 4 5 6
 	do
 		test_expect_success \"passing test #\$i\" 'true'
@@ -521,7 +556,7 @@ test_expect_success '--run with basic negation' "
 
 test_expect_success '--run with two negations' "
 	run_sub_test_lib_test run-two-neg \
-		'--run with two negations' --run='"'!3 !6'"' <<-\\EOF &&
+		'--run with two negations' --run='"'!3,!6'"' <<-\\EOF &&
 	for i in 1 2 3 4 5 6
 	do
 		test_expect_success \"passing test #\$i\" 'true'
@@ -542,7 +577,7 @@ test_expect_success '--run with two negations' "
 
 test_expect_success '--run a range and negation' "
 	run_sub_test_lib_test run-range-and-neg \
-		'--run a range and negation' --run='"'-4 !2'"' <<-\\EOF &&
+		'--run a range and negation' --run='"'-4,!2'"' <<-\\EOF &&
 	for i in 1 2 3 4 5 6
 	do
 		test_expect_success \"passing test #\$i\" 'true'
@@ -585,7 +620,7 @@ test_expect_success '--run range negation' "
 test_expect_success '--run include, exclude and include' "
 	run_sub_test_lib_test run-inc-neg-inc \
 		'--run include, exclude and include' \
-		--run='"'1-5 !1-3 2'"' <<-\\EOF &&
+		--run='"'1-5,!1-3,2'"' <<-\\EOF &&
 	for i in 1 2 3 4 5 6
 	do
 		test_expect_success \"passing test #\$i\" 'true'
@@ -629,7 +664,7 @@ test_expect_success '--run include, exclude and include, comma separated' "
 test_expect_success '--run exclude and include' "
 	run_sub_test_lib_test run-neg-inc \
 		'--run exclude and include' \
-		--run='"'!3- 5'"' <<-\\EOF &&
+		--run='"'!3-,5'"' <<-\\EOF &&
 	for i in 1 2 3 4 5 6
 	do
 		test_expect_success \"passing test #\$i\" 'true'
@@ -670,7 +705,31 @@ test_expect_success '--run empty selectors' "
 	EOF
 "
 
-test_expect_success '--run invalid range start' "
+test_expect_success '--run substring selector' "
+	run_sub_test_lib_test run-substring-selector \
+		'--run empty selectors' \
+		--run='relevant' <<-\\EOF &&
+	test_expect_success \"relevant test\" 'true'
+	for i in 1 2 3 4 5 6
+	do
+		test_expect_success \"other test #\$i\" 'true'
+	done
+	test_done
+	EOF
+	check_sub_test_lib_test run-substring-selector <<-\\EOF
+	> ok 1 - relevant test
+	> ok 2 # skip other test #1 (--run)
+	> ok 3 # skip other test #2 (--run)
+	> ok 4 # skip other test #3 (--run)
+	> ok 5 # skip other test #4 (--run)
+	> ok 6 # skip other test #5 (--run)
+	> ok 7 # skip other test #6 (--run)
+	> # passed all 7 test(s)
+	> 1..7
+	EOF
+"
+
+test_expect_success '--run keyword selection' "
 	run_sub_test_lib_test_err run-inv-range-start \
 		'--run invalid range start' \
 		--run='a-5' <<-\\EOF &&
@@ -700,21 +759,6 @@ test_expect_success '--run invalid range end' "
 	EOF_ERR
 "
 
-test_expect_success '--run invalid selector' "
-	run_sub_test_lib_test_err run-inv-selector \
-		'--run invalid selector' \
-		--run='1?' <<-\\EOF &&
-	test_expect_success \"passing test #1\" 'true'
-	test_done
-	EOF
-	check_sub_test_lib_test_err run-inv-selector \
-		<<-\\EOF_OUT 3<<-\\EOF_ERR
-	> FATAL: Unexpected exit with code 1
-	EOF_OUT
-	> error: --run: invalid non-numeric in test selector: '1?'
-	EOF_ERR
-"
-
 
 test_set_prereq HAVEIT
 haveit=no
@@ -726,7 +770,7 @@ donthaveit=yes
 test_expect_success DONTHAVEIT 'unmet prerequisite causes test to be skipped' '
 	donthaveit=no
 '
-if test $haveit$donthaveit != yesyes
+if test -z "$GIT_TEST_FAIL_PREREQS_INTERNAL" -a $haveit$donthaveit != yesyes
 then
 	say "bug in test framework: prerequisite tags do not work reliably"
 	exit 1
@@ -747,7 +791,7 @@ donthaveiteither=yes
 test_expect_success DONTHAVEIT,HAVEIT 'unmet prerequisites causes test to be skipped' '
 	donthaveiteither=no
 '
-if test $haveit$donthaveit$donthaveiteither != yesyesyes
+if test -z "$GIT_TEST_FAIL_PREREQS_INTERNAL" -a $haveit$donthaveit$donthaveiteither != yesyesyes
 then
 	say "bug in test framework: multiple prerequisite tags do not work reliably"
 	exit 1
@@ -763,7 +807,7 @@ test_expect_success !LAZY_TRUE 'missing lazy prereqs skip tests' '
 	donthavetrue=no
 '
 
-if test "$havetrue$donthavetrue" != yesyes
+if test -z "$GIT_TEST_FAIL_PREREQS_INTERNAL" -a "$havetrue$donthavetrue" != yesyes
 then
 	say 'bug in test framework: lazy prerequisites do not work'
 	exit 1
@@ -779,7 +823,7 @@ test_expect_success LAZY_FALSE 'missing negative lazy prereqs will skip' '
 	havefalse=no
 '
 
-if test "$nothavefalse$havefalse" != yesyes
+if test -z "$GIT_TEST_FAIL_PREREQS_INTERNAL" -a "$nothavefalse$havefalse" != yesyes
 then
 	say 'bug in test framework: negative lazy prerequisites do not work'
 	exit 1
@@ -790,14 +834,48 @@ test_expect_success 'tests clean up after themselves' '
 	test_when_finished clean=yes
 '
 
-if test $clean != yes
+if test -z "$GIT_TEST_FAIL_PREREQS_INTERNAL" -a $clean != yes
 then
 	say "bug in test framework: basic cleanup command does not work reliably"
 	exit 1
 fi
 
+test_lazy_prereq NESTED_INNER '
+	>inner &&
+	rm -f outer
+'
+test_lazy_prereq NESTED_PREREQ '
+	>outer &&
+	test_have_prereq NESTED_INNER &&
+	echo "can create new file in cwd" >file &&
+	test -f outer &&
+	test ! -f inner
+'
+test_expect_success NESTED_PREREQ 'evaluating nested lazy prereqs dont interfere with each other' '
+	nestedworks=yes
+'
+
+if test -z "$GIT_TEST_FAIL_PREREQS_INTERNAL" && test "$nestedworks" != yes
+then
+	say 'bug in test framework: nested lazy prerequisites do not work'
+	exit 1
+fi
+
+test_expect_success 'lazy prereqs do not turn off tracing' "
+	run_sub_test_lib_test lazy-prereq-and-tracing \
+		'lazy prereqs and -x' -v -x <<-\\EOF &&
+	test_lazy_prereq LAZY true
+
+	test_expect_success lazy 'test_have_prereq LAZY && echo trace'
+
+	test_done
+	EOF
+
+	grep 'echo trace' lazy-prereq-and-tracing/err
+"
+
 test_expect_success 'tests clean up even on failures' "
-	test_must_fail run_sub_test_lib_test \
+	run_sub_test_lib_test_err \
 		failing-cleanup 'Failing tests with cleanup commands' <<-\\EOF &&
 	test_expect_success 'tests clean up even after a failure' '
 		touch clean-after-failure &&
@@ -826,7 +904,7 @@ test_expect_success 'tests clean up even on failures' "
 "
 
 test_expect_success 'test_atexit is run' "
-	test_must_fail run_sub_test_lib_test \
+	run_sub_test_lib_test_err \
 		atexit-cleanup 'Run atexit commands' -i <<-\\EOF &&
 	test_expect_success 'tests clean up even after a failure' '
 		> ../../clean-atexit &&
@@ -842,10 +920,6 @@ test_expect_success 'test_atexit is run' "
 	test_path_is_missing clean-atexit &&
 	test_path_is_missing also-clean-atexit
 "
-
-test_expect_success 'test_oid setup' '
-	test_oid_init
-'
 
 test_expect_success 'test_oid provides sane info by default' '
 	test_oid zero >actual &&
@@ -878,6 +952,51 @@ test_expect_success 'test_oid can look up data for SHA-256' '
 	test $(wc -c <actual) -eq 64 &&
 	test "$rawsz" -eq 32 &&
 	test "$hexsz" -eq 64
+'
+
+test_expect_success 'test_oid can look up data for a specified algorithm' '
+	rawsz="$(test_oid --hash=sha1 rawsz)" &&
+	hexsz="$(test_oid --hash=sha1 hexsz)" &&
+	test "$rawsz" -eq 20 &&
+	test "$hexsz" -eq 40 &&
+	rawsz="$(test_oid --hash=sha256 rawsz)" &&
+	hexsz="$(test_oid --hash=sha256 hexsz)" &&
+	test "$rawsz" -eq 32 &&
+	test "$hexsz" -eq 64
+'
+
+test_expect_success 'test_bool_env' '
+	(
+		sane_unset envvar &&
+
+		test_bool_env envvar true &&
+		! test_bool_env envvar false &&
+
+		envvar= &&
+		export envvar &&
+		! test_bool_env envvar true &&
+		! test_bool_env envvar false &&
+
+		envvar=true &&
+		test_bool_env envvar true &&
+		test_bool_env envvar false &&
+
+		envvar=false &&
+		! test_bool_env envvar true &&
+		! test_bool_env envvar false &&
+
+		envvar=invalid &&
+		# When encountering an invalid bool value, test_bool_env
+		# prints its error message to the original stderr of the
+		# test script, hence the redirection of fd 7, and aborts
+		# with "exit 1", hence the subshell.
+		! ( test_bool_env envvar true ) 7>err &&
+		grep "error: test_bool_env requires bool values" err &&
+
+		envvar=true &&
+		! ( test_bool_env envvar invalid ) 7>err &&
+		grep "error: test_bool_env requires bool values" err
+	)
 '
 
 ################################################################
@@ -1102,7 +1221,7 @@ test_expect_success 'writing this tree with --missing-ok' '
 test_expect_success 'git read-tree followed by write-tree should be idempotent' '
 	rm -f .git/index &&
 	git read-tree $tree &&
-	test -f .git/index &&
+	test_path_is_file .git/index &&
 	newtree=$(git write-tree) &&
 	test "$newtree" = "$tree"
 '
@@ -1187,6 +1306,24 @@ test_expect_success 'very long name in the index handled sanely' '
 	) | git update-index --index-info &&
 	len=$(git ls-files "a*" | wc -c) &&
 	test $len = 4098
+'
+
+test_expect_success 'test_must_fail on a failing git command' '
+	test_must_fail git notacommand
+'
+
+test_expect_success 'test_must_fail on a failing git command with env' '
+	test_must_fail env var1=a var2=b git notacommand
+'
+
+test_expect_success 'test_must_fail rejects a non-git command' '
+	! test_must_fail grep ^$ notafile 2>err &&
+	grep -F "test_must_fail: only '"'"'git'"'"' is allowed" err
+'
+
+test_expect_success 'test_must_fail rejects a non-git command with env' '
+	! test_must_fail env var1=a var2=b grep ^$ notafile 2>err &&
+	grep -F "test_must_fail: only '"'"'git'"'"' is allowed" err
 '
 
 test_done

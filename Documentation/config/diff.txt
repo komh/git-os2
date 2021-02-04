@@ -78,7 +78,8 @@ diff.external::
 diff.ignoreSubmodules::
 	Sets the default value of --ignore-submodules. Note that this
 	affects only 'git diff' Porcelain, and not lower level 'diff'
-	commands such as 'git diff-files'. 'git checkout' also honors
+	commands such as 'git diff-files'. 'git checkout'
+	and 'git switch' also honor
 	this setting when reporting uncommitted changes. Setting it to
 	'all' disables the submodule summary normally shown by 'git commit'
 	and 'git status' when `status.submoduleSummary` is set unless it is
@@ -103,6 +104,10 @@ diff.mnemonicPrefix::
 
 diff.noprefix::
 	If set, 'git diff' does not show any source or destination prefix.
+
+diff.relative::
+	If set to 'true', 'git diff' does not show changes outside of the directory
+	and show pathnames relative to the current directory.
 
 diff.orderFile::
 	File indicating how to order files within a diff.
@@ -188,7 +193,7 @@ diff.guitool::
 include::../mergetools-diff.txt[]
 
 diff.indentHeuristic::
-	Set this option to `true` to enable experimental heuristics
+	Set this option to `false` to disable the default heuristics
 	that shift diff hunk boundaries to make patches easier to read.
 
 diff.algorithm::

@@ -23,18 +23,7 @@ struct column_data {
 /* return length of 's' in letters, ANSI escapes stripped */
 static int item_length(const char *s)
 {
-	int len, i = 0;
-	struct strbuf str = STRBUF_INIT;
-
-	strbuf_addstr(&str, s);
-	while ((s = strstr(str.buf + i, "\033[")) != NULL) {
-		int len = strspn(s + 2, "0123456789;");
-		i = s - str.buf;
-		strbuf_remove(&str, i, len + 3); /* \033[<len><func char> */
-	}
-	len = utf8_strwidth(str.buf);
-	strbuf_release(&str);
-	return len;
+	return utf8_strnwidth(s, -1, 1);
 }
 
 /*
@@ -118,7 +107,7 @@ static void display_plain(const struct string_list *list,
 		printf("%s%s%s", indent, list->items[i].string, nl);
 }
 
-/* Print a cell to stdout with all necessary leading/traling space */
+/* Print a cell to stdout with all necessary leading/trailing space */
 static int display_cell(struct column_data *data, int initial_width,
 			const char *empty_cell, int x, int y)
 {
@@ -369,7 +358,7 @@ static struct child_process column_process = CHILD_PROCESS_INIT;
 
 int run_column_filter(int colopts, const struct column_options *opts)
 {
-	struct argv_array *argv;
+	struct strvec *argv;
 
 	if (fd_out != -1)
 		return -1;
@@ -377,14 +366,14 @@ int run_column_filter(int colopts, const struct column_options *opts)
 	child_process_init(&column_process);
 	argv = &column_process.args;
 
-	argv_array_push(argv, "column");
-	argv_array_pushf(argv, "--raw-mode=%d", colopts);
+	strvec_push(argv, "column");
+	strvec_pushf(argv, "--raw-mode=%d", colopts);
 	if (opts && opts->width)
-		argv_array_pushf(argv, "--width=%d", opts->width);
+		strvec_pushf(argv, "--width=%d", opts->width);
 	if (opts && opts->indent)
-		argv_array_pushf(argv, "--indent=%s", opts->indent);
+		strvec_pushf(argv, "--indent=%s", opts->indent);
 	if (opts && opts->padding)
-		argv_array_pushf(argv, "--padding=%d", opts->padding);
+		strvec_pushf(argv, "--padding=%d", opts->padding);
 
 	fflush(stdout);
 	column_process.in = -1;

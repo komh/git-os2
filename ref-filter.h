@@ -1,7 +1,7 @@
 #ifndef REF_FILTER_H
 #define REF_FILTER_H
 
-#include "sha1-array.h"
+#include "oid-array.h"
 #include "refs.h"
 #include "commit.h"
 #include "parse-options.h"
@@ -54,13 +54,8 @@ struct ref_filter {
 	struct oid_array points_at;
 	struct commit_list *with_commit;
 	struct commit_list *no_commit;
-
-	enum {
-		REF_FILTER_MERGED_NONE = 0,
-		REF_FILTER_MERGED_INCLUDE,
-		REF_FILTER_MERGED_OMIT
-	} merge;
-	struct commit *merge_commit;
+	struct commit_list *reachable_from;
+	struct commit_list *unreachable_from;
 
 	unsigned int with_commit_tag_algo : 1,
 		match_as_path : 1,
@@ -114,6 +109,8 @@ void ref_array_clear(struct ref_array *array);
 int verify_ref_format(struct ref_format *format);
 /*  Sort the given ref_array as per the ref_sorting provided */
 void ref_array_sort(struct ref_sorting *sort, struct ref_array *array);
+/*  Set the ignore_case flag for all elements of a sorting list */
+void ref_sorting_icase_all(struct ref_sorting *sorting, int flag);
 /*  Based on the given format and quote_style, fill the strbuf */
 int format_ref_array_item(struct ref_array_item *info,
 			  const struct ref_format *format,
