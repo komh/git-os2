@@ -2195,16 +2195,40 @@ int chdir(const char *upath)
 	return _std_chdir(path);
 }
 
+#include <InnoTekLIBC/backend.h>
+
 int _std_chmod(const char *, int);
 
 int chmod(const char *upath, int pmode)
 {
 	char path[PATH_MAX];
+	int ret;
 
 	if (fromutf8(path, sizeof(path), upath) == -1)
 		return -1;
 
-	return _std_chmod(path, pmode);
+	ret = _std_chmod(path, pmode);
+	if (ret < 0 && errno == EACCES) {
+		/* try fchmod() if path is opened by us */
+		char fullpath[PATH_MAX];
+		int fd;
+		char fdpath[PATH_MAX];
+
+		if (_fullpath(fullpath, path, sizeof(fullpath)) == 0) {
+			_fnslashify(fullpath);
+
+			for (fd = 0; fd < FD_SETSIZE; fd++) {
+				if (__libc_Back_ioFHToPath(fd, fdpath, sizeof(fdpath)) == 0 &&
+				    !stricmp(fdpath, fullpath))
+					return fchmod(fd, pmode);
+			}
+		}
+
+		errno = EACCES;
+		return -1;
+	}
+
+	return ret;
 }
 
 int _std_lstat(const char *, struct stat *);
