@@ -260,13 +260,16 @@ klibc06_npipe(int fd[2])
 int wrapped_pipe_for_os2 (int *fd)
 {
   static int checked_using_npipe = 0;
-  static int use_npipe = 1;  /* use npipe by default */
+  static int use_npipe = 2;  /* use socket by default */
   int rc;
 
   if (!checked_using_npipe) {
     char *env = getenv("GIT_USE_NPIPE");
     if (env && *env) {
       switch(*env) {
+	case 'S': case 's':
+	  use_npipe = 2;
+	  break;
 	case 'T': case 't': case 'Y': case 'y': case 'O': case 'o':
 	  use_npipe = 1;
 	  break;
@@ -277,7 +280,9 @@ int wrapped_pipe_for_os2 (int *fd)
     }
     checked_using_npipe = 1;
   }
-  if (use_npipe)
+  if (use_npipe == 2)
+    rc = socketpair(AF_LOCAL, SOCK_STREAM, 0, fd);
+  else if (use_npipe == 1)
     rc = klibc06_npipe(fd);
   else
     rc = pipe(fd);
