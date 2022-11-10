@@ -860,6 +860,7 @@ EOT3
 
 	open $c, "<", $compose_filename
 		or die sprintf(__("Failed to open %s: %s"), $compose_filename, $!);
+	binmode $c, ":crlf" if $^O eq 'os2';
 
 	if (!defined $compose_encoding) {
 		$compose_encoding = "UTF-8";
