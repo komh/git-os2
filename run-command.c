@@ -1006,7 +1006,7 @@ end_of_spawn:
 
 		pollfd.fd = cmd->out;
 		pollfd.events = POLLIN;
-		poll(&pollfd, 1, -1);
+		poll(&pollfd, 1, 1500); /* up to 1.5s at most */
 	}
 #endif
 
