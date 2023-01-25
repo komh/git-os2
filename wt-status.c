@@ -456,7 +456,7 @@ static void wt_status_collect_changed_cb(struct diff_queue_struct *q,
 		it = string_list_insert(&s->change, p->two->path);
 		d = it->util;
 		if (!d) {
-			d = xcalloc(1, sizeof(*d));
+			CALLOC_ARRAY(d, 1);
 			it->util = d;
 		}
 		if (!d->worktree_status)
@@ -540,7 +540,7 @@ static void wt_status_collect_updated_cb(struct diff_queue_struct *q,
 		it = string_list_insert(&s->change, p->two->path);
 		d = it->util;
 		if (!d) {
-			d = xcalloc(1, sizeof(*d));
+			CALLOC_ARRAY(d, 1);
 			it->util = d;
 		}
 		if (!d->index_status)
@@ -606,7 +606,9 @@ static void wt_status_collect_changes_worktree(struct wt_status *s)
 	if (s->ignore_submodule_arg) {
 		rev.diffopt.flags.override_submodule_config = 1;
 		handle_ignore_submodules_arg(&rev.diffopt, s->ignore_submodule_arg);
-	}
+	} else if (!rev.diffopt.flags.ignore_submodule_set &&
+			s->show_untracked_files != SHOW_NO_UNTRACKED_FILES)
+		handle_ignore_submodules_arg(&rev.diffopt, "none");
 	rev.diffopt.format_callback = wt_status_collect_changed_cb;
 	rev.diffopt.format_callback_data = s;
 	rev.diffopt.detect_rename = s->detect_rename >= 0 ? s->detect_rename : rev.diffopt.detect_rename;
@@ -614,6 +616,7 @@ static void wt_status_collect_changes_worktree(struct wt_status *s)
 	rev.diffopt.rename_score = s->rename_score >= 0 ? s->rename_score : rev.diffopt.rename_score;
 	copy_pathspec(&rev.prune_data, &s->pathspec);
 	run_diff_files(&rev, 0);
+	release_revisions(&rev);
 }
 
 static void wt_status_collect_changes_index(struct wt_status *s)
@@ -636,7 +639,7 @@ static void wt_status_collect_changes_index(struct wt_status *s)
 		 * mode by passing a command line option we do not ignore any
 		 * changed submodule SHA-1s when comparing index and HEAD, no
 		 * matter what is configured. Otherwise the user won't be
-		 * shown any submodules she manually added (and which are
+		 * shown any submodules manually added (and which are
 		 * staged to be committed), which would be really confusing.
 		 */
 		handle_ignore_submodules_arg(&rev.diffopt, "dirty");
@@ -648,8 +651,48 @@ static void wt_status_collect_changes_index(struct wt_status *s)
 	rev.diffopt.detect_rename = s->detect_rename >= 0 ? s->detect_rename : rev.diffopt.detect_rename;
 	rev.diffopt.rename_limit = s->rename_limit >= 0 ? s->rename_limit : rev.diffopt.rename_limit;
 	rev.diffopt.rename_score = s->rename_score >= 0 ? s->rename_score : rev.diffopt.rename_score;
+
+	/*
+	 * The `recursive` option must be enabled to allow the diff to recurse
+	 * into subdirectories of sparse directory index entries. If it is not
+	 * enabled, a subdirectory containing file(s) with changes is reported
+	 * as "modified", rather than the modified files themselves.
+	 */
+	rev.diffopt.flags.recursive = 1;
+
 	copy_pathspec(&rev.prune_data, &s->pathspec);
 	run_diff_index(&rev, 1);
+	release_revisions(&rev);
+}
+
+static int add_file_to_list(const struct object_id *oid,
+			    struct strbuf *base, const char *path,
+			    unsigned int mode, void *context)
+{
+	struct string_list_item *it;
+	struct wt_status_change_data *d;
+	struct wt_status *s = context;
+	struct strbuf full_name = STRBUF_INIT;
+
+	if (S_ISDIR(mode))
+		return READ_TREE_RECURSIVE;
+
+	strbuf_add(&full_name, base->buf, base->len);
+	strbuf_addstr(&full_name, path);
+	it = string_list_insert(&s->change, full_name.buf);
+	d = it->util;
+	if (!d) {
+		CALLOC_ARRAY(d, 1);
+		it->util = d;
+	}
+
+	d->index_status = DIFF_STATUS_ADDED;
+	/* Leave {mode,oid}_head zero for adds. */
+	d->mode_index = mode;
+	oidcpy(&d->oid_index, oid);
+	s->committable = 1;
+	strbuf_release(&full_name);
+	return 0;
 }
 
 static void wt_status_collect_changes_initial(struct wt_status *s)
@@ -666,10 +709,31 @@ static void wt_status_collect_changes_initial(struct wt_status *s)
 			continue;
 		if (ce_intent_to_add(ce))
 			continue;
+		if (S_ISSPARSEDIR(ce->ce_mode)) {
+			/*
+			 * This is a sparse directory entry, so we want to collect all
+			 * of the added files within the tree. This requires recursively
+			 * expanding the trees to find the elements that are new in this
+			 * tree and marking them with DIFF_STATUS_ADDED.
+			 */
+			struct strbuf base = STRBUF_INIT;
+			struct pathspec ps = { 0 };
+			struct tree *tree = lookup_tree(istate->repo, &ce->oid);
+
+			ps.recursive = 1;
+			ps.has_wildcard = 1;
+			ps.max_depth = -1;
+
+			strbuf_add(&base, ce->name, ce->ce_namelen);
+			read_tree_at(istate->repo, tree, &base, &ps,
+				     add_file_to_list, s);
+			continue;
+		}
+
 		it = string_list_insert(&s->change, ce->name);
 		d = it->util;
 		if (!d) {
-			d = xcalloc(1, sizeof(*d));
+			CALLOC_ARRAY(d, 1);
 			it->util = d;
 		}
 		if (ce_stage(ce)) {
@@ -694,14 +758,13 @@ static void wt_status_collect_changes_initial(struct wt_status *s)
 static void wt_status_collect_untracked(struct wt_status *s)
 {
 	int i;
-	struct dir_struct dir;
+	struct dir_struct dir = DIR_INIT;
 	uint64_t t_begin = getnanotime();
 	struct index_state *istate = s->repo->index;
 
 	if (!s->show_untracked_files)
 		return;
 
-	dir_init(&dir);
 	if (s->show_untracked_files != SHOW_ALL_UNTRACKED_FILES)
 		dir.flags |=
 			DIR_SHOW_OTHER_DIRECTORIES | DIR_HIDE_EMPTY_DIRECTORIES;
@@ -732,7 +795,7 @@ static void wt_status_collect_untracked(struct wt_status *s)
 
 	dir_clear(&dir);
 
-	if (advice_status_u_option)
+	if (advice_enabled(ADVICE_STATUS_U_OPTION))
 		s->untracked_in_ms = (getnanotime() - t_begin) / 1000000;
 }
 
@@ -884,20 +947,28 @@ static void wt_longstatus_print_changed(struct wt_status *s)
 	wt_longstatus_print_trailer(s);
 }
 
-static int stash_count_refs(struct object_id *ooid, struct object_id *noid,
-			    const char *email, timestamp_t timestamp, int tz,
-			    const char *message, void *cb_data)
+static int stash_count_refs(struct object_id *ooid UNUSED,
+			    struct object_id *noid UNUSED,
+			    const char *email UNUSED,
+			    timestamp_t timestamp UNUSED, int tz UNUSED,
+			    const char *message UNUSED, void *cb_data)
 {
 	int *c = cb_data;
 	(*c)++;
 	return 0;
 }
 
+static int count_stash_entries(void)
+{
+	int n = 0;
+	for_each_reflog_ent("refs/stash", stash_count_refs, &n);
+	return n;
+}
+
 static void wt_longstatus_print_stash_summary(struct wt_status *s)
 {
-	int stash_count = 0;
+	int stash_count = count_stash_entries();
 
-	for_each_reflog_ent("refs/stash", stash_count_refs, &stash_count);
 	if (stash_count > 0)
 		status_printf_ln(s, GIT_COLOR_NORMAL,
 				 Q_("Your stash currently has %d entry",
@@ -912,7 +983,7 @@ static void wt_longstatus_print_submodule_summary(struct wt_status *s, int uncom
 	struct strbuf summary = STRBUF_INIT;
 	char *summary_content;
 
-	strvec_pushf(&sm_summary.env_array, "GIT_INDEX_FILE=%s", s->index_file);
+	strvec_pushf(&sm_summary.env, "GIT_INDEX_FILE=%s", s->index_file);
 
 	strvec_push(&sm_summary.args, "submodule");
 	strvec_push(&sm_summary.args, "summary");
@@ -1082,6 +1153,7 @@ static void wt_longstatus_print_verbose(struct wt_status *s)
 		rev.diffopt.b_prefix = "w/";
 		run_diff_files(&rev, 0);
 	}
+	release_revisions(&rev);
 }
 
 static void wt_longstatus_print_tracking(struct wt_status *s)
@@ -1103,7 +1175,7 @@ static void wt_longstatus_print_tracking(struct wt_status *s)
 	if (!format_tracking_info(branch, &sb, s->ahead_behind_flags))
 		return;
 
-	if (advice_status_ahead_behind_warning &&
+	if (advice_enabled(ADVICE_STATUS_AHEAD_BEHIND_WARNING) &&
 	    s->ahead_behind_flags == AHEAD_BEHIND_FULL) {
 		uint64_t t_delta_in_ms = (getnanotime() - t_begin) / 1000000;
 		if (t_delta_in_ms > AB_DELAY_WARNING_IN_MS) {
@@ -1157,17 +1229,23 @@ static void show_merge_in_progress(struct wt_status *s,
 static void show_am_in_progress(struct wt_status *s,
 				const char *color)
 {
+	int am_empty_patch;
+
 	status_printf_ln(s, color,
 		_("You are in the middle of an am session."));
 	if (s->state.am_empty_patch)
 		status_printf_ln(s, color,
 			_("The current patch is empty."));
 	if (s->hints) {
-		if (!s->state.am_empty_patch)
+		am_empty_patch = s->state.am_empty_patch;
+		if (!am_empty_patch)
 			status_printf_ln(s, color,
 				_("  (fix conflicts and then run \"git am --continue\")"));
 		status_printf_ln(s, color,
 			_("  (use \"git am --skip\" to skip this patch)"));
+		if (am_empty_patch)
+			status_printf_ln(s, color,
+				_("  (use \"git am --allow-empty\" to record this patch as an empty commit)"));
 		status_printf_ln(s, color,
 			_("  (use \"git am --abort\" to restore the original branch)"));
 	}
@@ -1307,10 +1385,10 @@ static void show_rebase_information(struct wt_status *s,
 			status_printf_ln(s, color, _("No commands done."));
 		else {
 			status_printf_ln(s, color,
-				Q_("Last command done (%d command done):",
-					"Last commands done (%d commands done):",
+				Q_("Last command done (%"PRIuMAX" command done):",
+					"Last commands done (%"PRIuMAX" commands done):",
 					have_done.nr),
-				have_done.nr);
+				(uintmax_t)have_done.nr);
 			for (i = (have_done.nr > nr_lines_to_show)
 				? have_done.nr - nr_lines_to_show : 0;
 				i < have_done.nr;
@@ -1326,10 +1404,10 @@ static void show_rebase_information(struct wt_status *s,
 					 _("No commands remaining."));
 		else {
 			status_printf_ln(s, color,
-				Q_("Next command to do (%d remaining command):",
-					"Next commands to do (%d remaining commands):",
+				Q_("Next command to do (%"PRIuMAX" remaining command):",
+					"Next commands to do (%"PRIuMAX" remaining commands):",
 					yet_to_do.nr),
-				yet_to_do.nr);
+				(uintmax_t)yet_to_do.nr);
 			for (i = 0; i < nr_lines_to_show && i < yet_to_do.nr; i++)
 				status_printf_ln(s, color, "   %s", yet_to_do.items[i].string);
 			if (s->hints)
@@ -1488,9 +1566,12 @@ static void show_sparse_checkout_in_use(struct wt_status *s,
 	if (s->state.sparse_checkout_percentage == SPARSE_CHECKOUT_DISABLED)
 		return;
 
-	status_printf_ln(s, color,
-			 _("You are in a sparse checkout with %d%% of tracked files present."),
-			 s->state.sparse_checkout_percentage);
+	if (s->state.sparse_checkout_percentage == SPARSE_CHECKOUT_SPARSE_INDEX)
+		status_printf_ln(s, color, _("You are in a sparse checkout."));
+	else
+		status_printf_ln(s, color,
+				_("You are in a sparse checkout with %d%% of tracked files present."),
+				s->state.sparse_checkout_percentage);
 	wt_longstatus_print_trailer(s);
 }
 
@@ -1533,8 +1614,10 @@ struct grab_1st_switch_cbdata {
 	struct object_id noid;
 };
 
-static int grab_1st_switch(struct object_id *ooid, struct object_id *noid,
-			   const char *email, timestamp_t timestamp, int tz,
+static int grab_1st_switch(struct object_id *ooid UNUSED,
+			   struct object_id *noid,
+			   const char *email UNUSED,
+			   timestamp_t timestamp UNUSED, int tz UNUSED,
 			   const char *message, void *cb_data)
 {
 	struct grab_1st_switch_cbdata *cb = cb_data;
@@ -1648,6 +1731,11 @@ static void wt_status_check_sparse_checkout(struct repository *r,
 		return;
 	}
 
+	if (r->index->sparse_index) {
+		state->sparse_checkout_percentage = SPARSE_CHECKOUT_SPARSE_INDEX;
+		return;
+	}
+
 	for (i = 0; i < r->index->cache_nr; i++) {
 		struct cache_entry *ce = r->index->cache[i];
 		if (ce_skip_worktree(ce))
@@ -1685,10 +1773,10 @@ void wt_status_get_state(struct repository *r,
 	if (!sequencer_get_last_command(r, &action)) {
 		if (action == REPLAY_PICK) {
 			state->cherry_pick_in_progress = 1;
-			oidcpy(&state->cherry_pick_head_oid, &null_oid);
+			oidcpy(&state->cherry_pick_head_oid, null_oid());
 		} else {
 			state->revert_in_progress = 1;
-			oidcpy(&state->revert_head_oid, &null_oid);
+			oidcpy(&state->revert_head_oid, null_oid());
 		}
 	}
 	if (get_detached_from)
@@ -1742,9 +1830,9 @@ static void wt_longstatus_print(struct wt_status *s)
 			} else if (s->state.detached_from) {
 				branch_name = s->state.detached_from;
 				if (s->state.detached_at)
-					on_what = HEAD_DETACHED_AT;
+					on_what = _("HEAD detached at ");
 				else
-					on_what = HEAD_DETACHED_FROM;
+					on_what = _("HEAD detached from ");
 			} else {
 				branch_name = "";
 				on_what = _("Not currently on any branch.");
@@ -1782,7 +1870,7 @@ static void wt_longstatus_print(struct wt_status *s)
 		wt_longstatus_print_other(s, &s->untracked, _("Untracked files"), "add");
 		if (s->show_ignored_mode)
 			wt_longstatus_print_other(s, &s->ignored, _("Ignored files"), "add -f");
-		if (advice_status_u_option && 2000 < s->untracked_in_ms) {
+		if (advice_enabled(ADVICE_STATUS_U_OPTION) && 2000 < s->untracked_in_ms) {
 			status_printf_ln(s, GIT_COLOR_NORMAL, "%s", "");
 			status_printf_ln(s, GIT_COLOR_NORMAL,
 					 _("It took %.2f seconds to enumerate untracked files. 'status -uno'\n"
@@ -2114,6 +2202,18 @@ static void wt_porcelain_v2_print_tracking(struct wt_status *s)
 }
 
 /*
+ * Print the stash count in a porcelain-friendly format
+ */
+static void wt_porcelain_v2_print_stash(struct wt_status *s)
+{
+	int stash_count = count_stash_entries();
+	char eol = s->null_termination ? '\0' : '\n';
+
+	if (stash_count > 0)
+		fprintf(s->fp, "# stash %d%c", stash_count, eol);
+}
+
+/*
  * Convert various submodule status values into a
  * fixed-length string of characters in the buffer provided.
  */
@@ -2374,6 +2474,9 @@ static void wt_porcelain_v2_print(struct wt_status *s)
 	if (s->show_branch)
 		wt_porcelain_v2_print_tracking(s);
 
+	if (s->show_stash)
+		wt_porcelain_v2_print_stash(s);
+
 	for (i = 0; i < s->change.nr; i++) {
 		it = &(s->change.items[i]);
 		d = it->util;
@@ -2446,7 +2549,9 @@ int has_unstaged_changes(struct repository *r, int ignore_submodules)
 	rev_info.diffopt.flags.quick = 1;
 	diff_setup_done(&rev_info.diffopt);
 	result = run_diff_files(&rev_info, 0);
-	return diff_result_code(&rev_info.diffopt, result);
+	result = diff_result_code(&rev_info.diffopt, result);
+	release_revisions(&rev_info);
+	return result;
 }
 
 /**
@@ -2478,7 +2583,9 @@ int has_uncommitted_changes(struct repository *r,
 
 	diff_setup_done(&rev_info.diffopt);
 	result = run_diff_index(&rev_info, 1);
-	return diff_result_code(&rev_info.diffopt, result);
+	result = diff_result_code(&rev_info.diffopt, result);
+	release_revisions(&rev_info);
+	return result;
 }
 
 /**

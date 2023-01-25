@@ -6,6 +6,9 @@
 test_description='git shortlog
 '
 
+GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
+export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
+
 . ./test-lib.sh
 
 test_expect_success 'setup' '
@@ -76,6 +79,13 @@ test_expect_success 'default output format' '
 test_expect_success 'pretty format' '
 	sed s/SUBJECT/OBJECT_NAME/ expect.template >expect &&
 	git shortlog --format="%H" HEAD >log &&
+	fuzz log >log.predictable &&
+	test_cmp expect log.predictable
+'
+
+test_expect_success 'pretty format (with --date)' '
+	sed "s/SUBJECT/2005-04-07 OBJECT_NAME/" expect.template >expect &&
+	git shortlog --format="%ad %H" --date=short HEAD >log &&
 	fuzz log >log.predictable &&
 	test_cmp expect log.predictable
 '
@@ -191,7 +201,7 @@ test_expect_success 'shortlog with revision pseudo options' '
 '
 
 test_expect_success 'shortlog with --output=<file>' '
-	git shortlog --output=shortlog -1 master >output &&
+	git shortlog --output=shortlog -1 main >output &&
 	test_must_be_empty output &&
 	test_line_count = 3 shortlog
 '
@@ -232,6 +242,26 @@ test_expect_success 'shortlog --group=trailer:signed-off-by' '
 	EOF
 	git shortlog -nse --group=trailer:signed-off-by HEAD >actual &&
 	test_cmp expect actual
+'
+
+test_expect_success 'shortlog --group=format' '
+	git shortlog -s --date="format:%Y" --group="format:%cN (%cd)" \
+		HEAD >actual &&
+	cat >expect <<-\EOF &&
+	     4	C O Mitter (2005)
+	     1	Sin Nombre (2005)
+	EOF
+	test_cmp expect actual
+'
+
+test_expect_success 'shortlog --group=<format> DWIM' '
+	git shortlog -s --date="format:%Y" --group="%cN (%cd)" HEAD >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'shortlog bogus --group' '
+	test_must_fail git shortlog --group=bogus HEAD 2>err &&
+	grep "unknown group type" err
 '
 
 test_expect_success 'trailer idents are split' '
@@ -313,6 +343,18 @@ test_expect_success 'shortlog can match multiple groups' '
 		--group=trailer:some-trailer \
 		--group=trailer:another-trailer \
 		-2 HEAD >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'shortlog can match multiple format groups' '
+	GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME" \
+		git commit --allow-empty -m "identical names" &&
+	test_tick &&
+	cat >expect <<-\EOF &&
+	     2	A U Thor
+	     1	C O Mitter
+	EOF
+	git shortlog -ns --group="%cn" --group="%an" -2 HEAD >actual &&
 	test_cmp expect actual
 '
 

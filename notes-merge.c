@@ -113,6 +113,7 @@ static struct notes_merge_pair *find_notes_merge_pair_pos(
 }
 
 static struct object_id uninitialized = {
+	.hash =
 	"\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff" \
 	"\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff"
 };
@@ -136,7 +137,7 @@ static struct notes_merge_pair *diff_tree_remote(struct notes_merge_options *o,
 	diff_tree_oid(base, remote, "", &opt);
 	diffcore_std(&opt);
 
-	changes = xcalloc(diff_queued_diff.nr, sizeof(struct notes_merge_pair));
+	CALLOC_ARRAY(changes, diff_queued_diff.nr);
 
 	for (i = 0; i < diff_queued_diff.nr; i++) {
 		struct diff_filepair *p = diff_queued_diff.queue[i];
@@ -175,7 +176,6 @@ static struct notes_merge_pair *diff_tree_remote(struct notes_merge_options *o,
 		       oid_to_hex(&mp->remote));
 	}
 	diff_flush(&opt);
-	clear_pathspec(&opt.pathspec);
 
 	*num_changes = len;
 	return changes;
@@ -261,7 +261,6 @@ static void diff_tree_local(struct notes_merge_options *o,
 		       oid_to_hex(&mp->local));
 	}
 	diff_flush(&opt);
-	clear_pathspec(&opt.pathspec);
 }
 
 static void check_notes_merge_worktree(struct notes_merge_options *o)
@@ -273,7 +272,7 @@ static void check_notes_merge_worktree(struct notes_merge_options *o)
 		 */
 		if (file_exists(git_path(NOTES_MERGE_WORKTREE)) &&
 		    !is_empty_dir(git_path(NOTES_MERGE_WORKTREE))) {
-			if (advice_resolve_conflict)
+			if (advice_enabled(ADVICE_RESOLVE_CONFLICT))
 				die(_("You have not concluded your previous "
 				    "notes merge (%s exists).\nPlease, use "
 				    "'git notes merge --commit' or 'git notes "
@@ -344,7 +343,7 @@ static int ll_merge_in_worktree(struct notes_merge_options *o,
 {
 	mmbuffer_t result_buf;
 	mmfile_t base, local, remote;
-	int status;
+	enum ll_merge_result status;
 
 	read_mmblob(&base, &p->base);
 	read_mmblob(&local, &p->local);
@@ -358,6 +357,9 @@ static int ll_merge_in_worktree(struct notes_merge_options *o,
 	free(local.ptr);
 	free(remote.ptr);
 
+	if (status == LL_MERGE_BINARY_CONFLICT)
+		warning("Cannot merge binary files: %s (%s vs. %s)",
+			oid_to_hex(&p->obj), o->local_ref, o->remote_ref);
 	if ((status < 0) || !result_buf.ptr)
 		die("Failed to execute internal merge");
 
@@ -600,7 +602,7 @@ int notes_merge(struct notes_merge_options *o,
 	/* Find merge bases */
 	bases = get_merge_bases(local, remote);
 	if (!bases) {
-		base_oid = &null_oid;
+		base_oid = null_oid();
 		base_tree_oid = the_hash_algo->empty_tree;
 		if (o->verbosity >= 4)
 			printf("No merge base found; doing history-less merge\n");
@@ -628,7 +630,7 @@ int notes_merge(struct notes_merge_options *o,
 	if (oideq(&remote->object.oid, base_oid)) {
 		/* Already merged; result == local commit */
 		if (o->verbosity >= 2)
-			printf("Already up to date!\n");
+			printf_ln("Already up to date.");
 		oidcpy(result_oid, &local->object.oid);
 		goto found_result;
 	}
@@ -695,12 +697,9 @@ int notes_merge_commit(struct notes_merge_options *o,
 
 	strbuf_addch(&path, '/');
 	baselen = path.len;
-	while ((e = readdir(dir)) != NULL) {
+	while ((e = readdir_skip_dot_and_dotdot(dir)) != NULL) {
 		struct stat st;
 		struct object_id obj_oid, blob_oid;
-
-		if (is_dot_or_dotdot(e->d_name))
-			continue;
 
 		if (get_oid_hex(e->d_name, &obj_oid)) {
 			if (o->verbosity >= 3)

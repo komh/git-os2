@@ -56,7 +56,9 @@ static void feed_object(const struct object_id *oid, FILE *fh, int negative)
 /*
  * Make a pack stream and spit it out into file descriptor fd
  */
-static int pack_objects(int fd, struct ref *refs, struct oid_array *extra, struct send_pack_args *args)
+static int pack_objects(int fd, struct ref *refs, struct oid_array *advertised,
+			struct oid_array *negotiated,
+			struct send_pack_args *args)
 {
 	/*
 	 * The child becomes pack-objects --revs; we feed
@@ -82,6 +84,8 @@ static int pack_objects(int fd, struct ref *refs, struct oid_array *extra, struc
 		strvec_push(&po.args, "--progress");
 	if (is_repository_shallow(the_repository))
 		strvec_push(&po.args, "--shallow");
+	if (args->disable_bitmaps)
+		strvec_push(&po.args, "--no-use-bitmap-index");
 	po.in = -1;
 	po.out = args->stateless_rpc ? -1 : fd;
 	po.git_cmd = 1;
@@ -94,8 +98,10 @@ static int pack_objects(int fd, struct ref *refs, struct oid_array *extra, struc
 	 * parameters by writing to the pipe.
 	 */
 	po_in = xfdopen(po.in, "w");
-	for (i = 0; i < extra->nr; i++)
-		feed_object(&extra->oid[i], po_in, 1);
+	for (i = 0; i < advertised->nr; i++)
+		feed_object(&advertised->oid[i], po_in, 1);
+	for (i = 0; i < negotiated->nr; i++)
+		feed_object(&negotiated->oid[i], po_in, 1);
 
 	while (refs) {
 		if (!is_null_oid(&refs->old_oid))
@@ -188,13 +194,13 @@ static int receive_status(struct packet_reader *reader, struct ref *refs)
 			}
 			if (new_report) {
 				if (!hint->report) {
-					hint->report = xcalloc(1, sizeof(struct ref_push_report));
+					CALLOC_ARRAY(hint->report, 1);
 					report = hint->report;
 				} else {
 					report = hint->report;
 					while (report->next)
 						report = report->next;
-					report->next = xcalloc(1, sizeof(struct ref_push_report));
+					CALLOC_ARRAY(report->next, 1);
 					report = report->next;
 				}
 				new_report = 0;
@@ -260,7 +266,7 @@ static int receive_status(struct packet_reader *reader, struct ref *refs)
 	return ret;
 }
 
-static int sideband_demux(int in, int out, void *data)
+static int sideband_demux(int in UNUSED, int out, void *data)
 {
 	int *fd = data, ret;
 	if (async_with_fork())
@@ -337,13 +343,13 @@ static int generate_push_cert(struct strbuf *req_buf,
 {
 	const struct ref *ref;
 	struct string_list_item *item;
-	char *signing_key = xstrdup(get_signing_key());
+	char *signing_key_id = xstrdup(get_signing_key_id());
 	const char *cp, *np;
 	struct strbuf cert = STRBUF_INIT;
 	int update_seen = 0;
 
 	strbuf_addstr(&cert, "certificate version 0.1\n");
-	strbuf_addf(&cert, "pusher %s ", signing_key);
+	strbuf_addf(&cert, "pusher %s ", signing_key_id);
 	datestamp(&cert);
 	strbuf_addch(&cert, '\n');
 	if (args->url && *args->url) {
@@ -370,7 +376,7 @@ static int generate_push_cert(struct strbuf *req_buf,
 	if (!update_seen)
 		goto free_return;
 
-	if (sign_buffer(&cert, &cert, signing_key))
+	if (sign_buffer(&cert, &cert, get_signing_key()))
 		die(_("failed to sign the push certificate"));
 
 	packet_buf_write(req_buf, "push-cert%c%s", 0, cap_string);
@@ -382,7 +388,7 @@ static int generate_push_cert(struct strbuf *req_buf,
 	packet_buf_write(req_buf, "push-cert-end\n");
 
 free_return:
-	free(signing_key);
+	free(signing_key_id);
 	strbuf_release(&cert);
 	return update_seen;
 }
@@ -409,11 +415,57 @@ static void reject_invalid_nonce(const char *nonce, int len)
 	}
 }
 
+static void get_commons_through_negotiation(const char *url,
+					    const struct ref *remote_refs,
+					    struct oid_array *commons)
+{
+	struct child_process child = CHILD_PROCESS_INIT;
+	const struct ref *ref;
+	int len = the_hash_algo->hexsz + 1; /* hash + NL */
+
+	child.git_cmd = 1;
+	child.no_stdin = 1;
+	child.out = -1;
+	strvec_pushl(&child.args, "fetch", "--negotiate-only", NULL);
+	for (ref = remote_refs; ref; ref = ref->next) {
+		if (!is_null_oid(&ref->new_oid))
+			strvec_pushf(&child.args, "--negotiation-tip=%s", oid_to_hex(&ref->new_oid));
+	}
+	strvec_push(&child.args, url);
+
+	if (start_command(&child))
+		die(_("send-pack: unable to fork off fetch subprocess"));
+
+	do {
+		char hex_hash[GIT_MAX_HEXSZ + 1];
+		int read_len = read_in_full(child.out, hex_hash, len);
+		struct object_id oid;
+		const char *end;
+
+		if (!read_len)
+			break;
+		if (read_len != len)
+			die("invalid length read %d", read_len);
+		if (parse_oid_hex(hex_hash, &oid, &end) || *end != '\n')
+			die("invalid hash");
+		oid_array_append(commons, &oid);
+	} while (1);
+
+	if (finish_command(&child)) {
+		/*
+		 * The information that push negotiation provides is useful but
+		 * not mandatory.
+		 */
+		warning(_("push negotiation failed; proceeding anyway with push"));
+	}
+}
+
 int send_pack(struct send_pack_args *args,
 	      int fd[], struct child_process *conn,
 	      struct ref *remote_refs,
 	      struct oid_array *extra_have)
 {
+	struct oid_array commons = OID_ARRAY_INIT;
 	int in = fd[0];
 	int out = fd[1];
 	struct strbuf req_buf = STRBUF_INIT;
@@ -426,6 +478,7 @@ int send_pack(struct send_pack_args *args,
 	int quiet_supported = 0;
 	int agent_supported = 0;
 	int advertise_sid = 0;
+	int push_negotiate = 0;
 	int use_atomic = 0;
 	int atomic_supported = 0;
 	int use_push_options = 0;
@@ -436,6 +489,20 @@ int send_pack(struct send_pack_args *args,
 	struct async demux;
 	const char *push_cert_nonce = NULL;
 	struct packet_reader reader;
+	int use_bitmaps;
+
+	if (!remote_refs) {
+		fprintf(stderr, "No refs in common and none specified; doing nothing.\n"
+			"Perhaps you should specify a branch.\n");
+		return 0;
+	}
+
+	git_config_get_bool("push.negotiate", &push_negotiate);
+	if (push_negotiate)
+		get_commons_through_negotiation(args->url, remote_refs, &commons);
+
+	if (!git_config_get_bool("push.usebitmaps", &use_bitmaps))
+		args->disable_bitmaps = !use_bitmaps;
 
 	git_config_get_bool("transfer.advertisesid", &advertise_sid);
 
@@ -481,11 +548,6 @@ int send_pack(struct send_pack_args *args,
 		}
 	}
 
-	if (!remote_refs) {
-		fprintf(stderr, "No refs in common and none specified; doing nothing.\n"
-			"Perhaps you should specify a branch.\n");
-		return 0;
-	}
 	if (args->atomic && !atomic_supported)
 		die(_("the receiving end does not support --atomic push"));
 
@@ -625,7 +687,7 @@ int send_pack(struct send_pack_args *args,
 			   PACKET_READ_DIE_ON_ERR_PACKET);
 
 	if (need_pack_data && cmds_sent) {
-		if (pack_objects(out, remote_refs, extra_have, args) < 0) {
+		if (pack_objects(out, remote_refs, extra_have, &commons, args) < 0) {
 			if (args->stateless_rpc)
 				close(out);
 			if (git_connection_is_socket(conn))

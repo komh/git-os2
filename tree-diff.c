@@ -21,7 +21,9 @@
 		ALLOC_ARRAY((x), nr); \
 } while(0)
 #define FAST_ARRAY_FREE(x, nr) do { \
-	if ((nr) > 2) \
+	if ((nr) <= 2) \
+		xalloca_free((x)); \
+	else \
 		free((x)); \
 } while(0)
 
@@ -161,7 +163,7 @@ static struct combine_diff_path *path_appendnew(struct combine_diff_path *last,
 	memcpy(p->path + base->len, path, pathlen);
 	p->path[len] = 0;
 	p->mode = mode;
-	oidcpy(&p->oid, oid ? oid : &null_oid);
+	oidcpy(&p->oid, oid ? oid : null_oid());
 
 	return p;
 }
@@ -243,7 +245,7 @@ static struct combine_diff_path *emit_path(struct combine_diff_path *p,
 				mode_i = tp[i].entry.mode;
 			}
 			else {
-				oid_i = &null_oid;
+				oid_i = null_oid();
 				mode_i = 0;
 			}
 
@@ -601,8 +603,7 @@ static void try_to_follow_renames(const struct object_id *old_oid,
 	 * about dry-run mode and returns wildcard info.
 	 */
 	if (opt->pathspec.has_wildcard)
-		die("BUG:%s:%d: wildcards are not supported",
-		    __FILE__, __LINE__);
+		BUG("wildcards are not supported");
 #endif
 
 	/* Remove the file creation entry from the diff queue, and remember it */

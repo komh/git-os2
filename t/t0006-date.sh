@@ -1,6 +1,8 @@
 #!/bin/sh
 
 test_description='test date parsing and printing'
+
+TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 # arbitrary reference time: 2009-08-30 19:20:00
@@ -11,7 +13,7 @@ check_relative() {
 	echo "$t -> $2" >expect
 	test_expect_${3:-success} "relative date ($2)" "
 	test-tool date relative $t >actual &&
-	test_i18ncmp expect actual
+	test_cmp expect actual
 	"
 }
 
@@ -62,6 +64,10 @@ check_show 'format-local:%%z' "$TIME" '%z'
 
 check_show 'format:%Y-%m-%d %H:%M:%S' "$TIME" '2016-06-15 16:13:20'
 check_show 'format-local:%Y-%m-%d %H:%M:%S' "$TIME" '2016-06-15 09:13:20' '' EST5
+
+check_show 'format:%s' '123456789 +1234' 123456789
+check_show 'format:%s' '123456789 -1234' 123456789
+check_show 'format-local:%s' '123456789 -1234' 123456789
 
 # arbitrary time absurdly far in the future
 FUTURE="5758122296 -0400"
@@ -139,7 +145,7 @@ check_date_format_human() {
 	echo "$t -> $2" >expect
 	test_expect_success "human date $t" '
 		test-tool date human $t >actual &&
-		test_i18ncmp expect actual
+		test_cmp expect actual
 '
 }
 

@@ -9,7 +9,7 @@ git-var - Show a Git logical variable
 SYNOPSIS
 --------
 [verse]
-'git var' ( -l | <variable> )
+'git var' (-l | <variable>)
 
 DESCRIPTION
 -----------
@@ -58,6 +58,9 @@ GIT_PAGER::
 ifdef::git-default-pager[]
     The build you are using chose '{git-default-pager}' as the default.
 endif::git-default-pager[]
+
+GIT_DEFAULT_BRANCH::
+    The name of the first branch created in newly initialized repositories.
 
 SEE ALSO
 --------

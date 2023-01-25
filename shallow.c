@@ -41,7 +41,7 @@ int register_shallow(struct repository *r, const struct object_id *oid)
 
 int unregister_shallow(const struct object_id *oid)
 {
-	int pos = commit_graft_pos(the_repository, oid->hash);
+	int pos = commit_graft_pos(the_repository, oid);
 	if (pos < 0)
 		return -1;
 	if (pos + 1 < the_repository->parsed_objects->grafts_nr)
@@ -90,12 +90,20 @@ static void reset_repository_shallow(struct repository *r)
 {
 	r->parsed_objects->is_shallow = -1;
 	stat_validity_clear(r->parsed_objects->shallow_stat);
+	reset_commit_grafts(r);
 }
 
 int commit_shallow_file(struct repository *r, struct shallow_lock *lk)
 {
 	int res = commit_lock_file(&lk->lock);
 	reset_repository_shallow(r);
+
+	/*
+	 * Update in-memory data structures with the new shallow information,
+	 * including unparsing all commits that now have grafts.
+	 */
+	is_repository_shallow(r);
+
 	return res;
 }
 
@@ -261,6 +269,7 @@ struct commit_list *get_shallow_commits_by_rev_list(int ac, const char **av,
 		if ((o->flags & both_flags) == both_flags)
 			o->flags &= ~not_shallow_flag;
 	}
+	release_revisions(&revs);
 	return result;
 }
 
@@ -559,7 +568,7 @@ static void paint_down(struct paint_info *info, const struct object_id *oid,
 		else
 			c->object.flags |= SEEN;
 
-		if (*refs == NULL)
+		if (!*refs)
 			*refs = bitmap;
 		else {
 			memcpy(tmp, *refs, bitmap_size);
@@ -595,15 +604,17 @@ static void paint_down(struct paint_info *info, const struct object_id *oid,
 	free(tmp);
 }
 
-static int mark_uninteresting(const char *refname, const struct object_id *oid,
-			      int flags, void *cb_data)
+static int mark_uninteresting(const char *refname UNUSED,
+			      const struct object_id *oid,
+			      int flags UNUSED,
+			      void *cb_data UNUSED)
 {
 	struct commit *commit = lookup_commit_reference_gently(the_repository,
 							       oid, 1);
 	if (!commit)
 		return 0;
 	commit->object.flags |= UNINTERESTING;
-	mark_parents_uninteresting(commit);
+	mark_parents_uninteresting(NULL, commit);
 	return 0;
 }
 
@@ -706,8 +717,10 @@ struct commit_array {
 	int nr, alloc;
 };
 
-static int add_ref(const char *refname, const struct object_id *oid,
-		   int flags, void *cb_data)
+static int add_ref(const char *refname UNUSED,
+		   const struct object_id *oid,
+		   int flags UNUSED,
+		   void *cb_data)
 {
 	struct commit_array *ca = cb_data;
 	ALLOC_GROW(ca->commits, ca->nr + 1, ca->alloc);

@@ -36,7 +36,8 @@ static void rev_list_push(struct negotiation_state *ns,
 }
 
 static int clear_marks(const char *refname, const struct object_id *oid,
-		       int flag, void *cb_data)
+		       int flag UNUSED,
+		       void *cb_data UNUSED)
 {
 	struct object *o = deref_tag(the_repository, parse_object(the_repository, oid), refname, 0);
 
@@ -167,7 +168,7 @@ void default_negotiator_init(struct fetch_negotiator *negotiator)
 	negotiator->next = next;
 	negotiator->ack = ack;
 	negotiator->release = release;
-	negotiator->data = ns = xcalloc(1, sizeof(*ns));
+	negotiator->data = CALLOC_ARRAY(ns, 1);
 	ns->rev_list.compare = compare_commits_by_commit_date;
 
 	if (marked)

@@ -55,12 +55,12 @@ struct object_array {
 	} *objects;
 };
 
-#define OBJECT_ARRAY_INIT { 0, 0, NULL }
+#define OBJECT_ARRAY_INIT { 0 }
 
 /*
  * object flag allocation:
- * revision.h:               0---------10         15             23------26
- * fetch-pack.c:             01
+ * revision.h:               0---------10         15             23------27
+ * fetch-pack.c:             01    67
  * negotiator/default.c:       2--5
  * walker.c:                 0-2
  * upload-pack.c:                4       11-----14  16-----19
@@ -75,8 +75,7 @@ struct object_array {
  * builtin/fsck.c:           0--3
  * builtin/gc.c:             0
  * builtin/index-pack.c:                                     2021
- * builtin/pack-objects.c:                                   20
- * builtin/reflog.c:                   10--12
+ * reflog.c:                           10--12
  * builtin/show-branch.c:    0-------------------------------------------26
  * builtin/unpack-objects.c:                                 2021
  */
@@ -129,7 +128,13 @@ void *object_as_type(struct object *obj, enum object_type type, int quiet);
  *
  * Returns NULL if the object is missing or corrupt.
  */
+enum parse_object_flags {
+	PARSE_OBJECT_SKIP_HASH_CHECK = 1 << 0,
+};
 struct object *parse_object(struct repository *r, const struct object_id *oid);
+struct object *parse_object_with_flags(struct repository *r,
+				       const struct object_id *oid,
+				       enum parse_object_flags flags);
 
 /*
  * Like parse_object, but will die() instead of returning NULL. If the
@@ -144,8 +149,26 @@ struct object *parse_object_or_die(const struct object_id *oid, const char *name
  */
 struct object *parse_object_buffer(struct repository *r, const struct object_id *oid, enum object_type type, unsigned long size, void *buffer, int *eaten_p);
 
-/** Returns the object, with potentially excess memory allocated. **/
-struct object *lookup_unknown_object(const struct object_id *oid);
+/*
+ * Allocate and return an object struct, even if you do not know the type of
+ * the object. The returned object may have its "type" field set to a real type
+ * (if somebody previously called lookup_blob(), etc), or it may be set to
+ * OBJ_NONE. In the latter case, subsequent calls to lookup_blob(), etc, will
+ * set the type field as appropriate.
+ *
+ * Use this when you do not know the expected type of an object and want to
+ * avoid parsing it for efficiency reasons. Try to avoid it otherwise; it
+ * may allocate excess memory, since the returned object must be as large as
+ * the maximum struct of any type.
+ */
+struct object *lookup_unknown_object(struct repository *r, const struct object_id *oid);
+
+/*
+ * Dispatch to the appropriate lookup_blob(), lookup_commit(), etc, based on
+ * "type".
+ */
+struct object *lookup_object_by_type(struct repository *r, const struct object_id *oid,
+				     enum object_type type);
 
 struct object_list *object_list_insert(struct object *item,
 				       struct object_list **list_p);

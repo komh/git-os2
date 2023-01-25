@@ -77,9 +77,8 @@ enum wt_status_format {
 	STATUS_FORMAT_UNSPECIFIED
 };
 
-#define HEAD_DETACHED_AT _("HEAD detached at ")
-#define HEAD_DETACHED_FROM _("HEAD detached from ")
 #define SPARSE_CHECKOUT_DISABLED -1
+#define SPARSE_CHECKOUT_SPARSE_INDEX -2
 
 struct wt_status_state {
 	int merge_in_progress;

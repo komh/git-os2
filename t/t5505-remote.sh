@@ -56,7 +56,7 @@ test_expect_success 'add remote whose URL agrees with url.<...>.insteadOf' '
 	git remote add myremote git@host.com:team/repo.git
 '
 
-test_expect_success C_LOCALE_OUTPUT 'remote information for the origin' '
+test_expect_success 'remote information for the origin' '
 	(
 		cd test &&
 		tokens_match origin "$(git remote)" &&
@@ -78,7 +78,41 @@ test_expect_success 'add another remote' '
 	)
 '
 
-test_expect_success C_LOCALE_OUTPUT 'check remote-tracking' '
+test_expect_success 'setup bare clone for server' '
+	git clone --bare "file://$(pwd)/one" srv.bare &&
+	git -C srv.bare config --local uploadpack.allowfilter 1 &&
+	git -C srv.bare config --local uploadpack.allowanysha1inwant 1
+'
+
+test_expect_success 'filters for promisor remotes are listed by git remote -v' '
+	test_when_finished "rm -rf pc" &&
+	git clone --filter=blob:none "file://$(pwd)/srv.bare" pc &&
+	git -C pc remote -v >out &&
+	grep "srv.bare (fetch) \[blob:none\]" out &&
+
+	git -C pc config remote.origin.partialCloneFilter object:type=commit &&
+	git -C pc remote -v >out &&
+	grep "srv.bare (fetch) \[object:type=commit\]" out
+'
+
+test_expect_success 'filters should not be listed for non promisor remotes (remote -v)' '
+	test_when_finished "rm -rf pc" &&
+	git clone one pc &&
+	git -C pc remote -v >out &&
+	! grep "(fetch) \[.*\]" out
+'
+
+test_expect_success 'filters are listed by git remote -v only' '
+	test_when_finished "rm -rf pc" &&
+	git clone --filter=blob:none "file://$(pwd)/srv.bare" pc &&
+	git -C pc remote >out &&
+	! grep "\[blob:none\]" out &&
+
+	git -C pc remote show >out &&
+	! grep "\[blob:none\]" out
+'
+
+test_expect_success 'check remote-tracking' '
 	(
 		cd test &&
 		check_remote_track origin main side &&
@@ -104,7 +138,7 @@ test_expect_success 'remove remote' '
 	)
 '
 
-test_expect_success C_LOCALE_OUTPUT 'remove remote' '
+test_expect_success 'remove remote' '
 	(
 		cd test &&
 		tokens_match origin "$(git remote)" &&
@@ -137,8 +171,8 @@ test_expect_success 'remove remote protects local branches' '
 		git remote rm oops 2>actual2 &&
 		git branch -d foobranch &&
 		git tag -d footag &&
-		test_i18ncmp expect1 actual1 &&
-		test_i18ncmp expect2 actual2
+		test_cmp expect1 actual1 &&
+		test_cmp expect2 actual2
 	)
 '
 
@@ -147,7 +181,7 @@ test_expect_success 'remove errors out early when deleting non-existent branch' 
 		cd test &&
 		echo "error: No such remote: '\''foo'\''" >expect &&
 		test_expect_code 2 git remote rm foo 2>actual &&
-		test_i18ncmp expect actual
+		test_cmp expect actual
 	)
 '
 
@@ -175,22 +209,22 @@ test_expect_success 'rename errors out early when deleting non-existent branch' 
 		cd test &&
 		echo "error: No such remote: '\''foo'\''" >expect &&
 		test_expect_code 2 git remote rename foo bar 2>actual &&
-		test_i18ncmp expect actual
+		test_cmp expect actual
 	)
 '
 
-test_expect_success 'rename errors out early when when new name is invalid' '
+test_expect_success 'rename errors out early when new name is invalid' '
 	test_config remote.foo.vcs bar &&
 	echo "fatal: '\''invalid...name'\'' is not a valid remote name" >expect &&
 	test_must_fail git remote rename foo invalid...name 2>actual &&
-	test_i18ncmp expect actual
+	test_cmp expect actual
 '
 
 test_expect_success 'add existing foreign_vcs remote' '
 	test_config remote.foo.vcs bar &&
 	echo "error: remote foo already exists." >expect &&
 	test_expect_code 3 git remote add foo bar 2>actual &&
-	test_i18ncmp expect actual
+	test_cmp expect actual
 '
 
 test_expect_success 'add existing foreign_vcs remote' '
@@ -198,13 +232,33 @@ test_expect_success 'add existing foreign_vcs remote' '
 	test_config remote.bar.vcs bar &&
 	echo "error: remote bar already exists." >expect &&
 	test_expect_code 3 git remote rename foo bar 2>actual &&
-	test_i18ncmp expect actual
+	test_cmp expect actual
 '
 
 test_expect_success 'add invalid foreign_vcs remote' '
 	echo "fatal: '\''invalid...name'\'' is not a valid remote name" >expect &&
 	test_must_fail git remote add invalid...name bar 2>actual &&
-	test_i18ncmp expect actual
+	test_cmp expect actual
+'
+
+test_expect_success 'without subcommand' '
+	echo origin >expect &&
+	git -C test remote >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'without subcommand accepts -v' '
+	cat >expect <<-EOF &&
+	origin	$(pwd)/one (fetch)
+	origin	$(pwd)/one (push)
+	EOF
+	git -C test remote -v >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'without subcommand does not take arguments' '
+	test_expect_code 129 git -C test remote origin 2>err &&
+	grep "^error: unknown subcommand:" err
 '
 
 cat >test/expect <<EOF
@@ -264,8 +318,54 @@ test_expect_success 'show' '
 		git config --add remote.two.push refs/heads/main:refs/heads/another &&
 		git remote show origin two >output &&
 		git branch -d rebase octopus &&
-		test_i18ncmp expect output
+		test_cmp expect output
 	)
+'
+
+cat >expect <<EOF
+* remote origin
+  Fetch URL: $(pwd)/one
+  Push  URL: $(pwd)/one
+  HEAD branch: main
+  Remote branches:
+    main skipped
+    side tracked
+  Local branches configured for 'git pull':
+    ahead merges with remote main
+    main  merges with remote main
+  Local refs configured for 'git push':
+    main pushes to main     (local out of date)
+    main pushes to upstream (create)
+EOF
+
+test_expect_success 'show with negative refspecs' '
+	test_when_finished "git -C test config --unset-all --fixed-value remote.origin.fetch ^refs/heads/main" &&
+	git -C test config --add remote.origin.fetch ^refs/heads/main &&
+	git -C test remote show origin >output &&
+	test_cmp expect output
+'
+
+cat >expect <<EOF
+* remote origin
+  Fetch URL: $(pwd)/one
+  Push  URL: $(pwd)/one
+  HEAD branch: main
+  Remote branches:
+    main new (next fetch will store in remotes/origin)
+    side stale (use 'git remote prune' to remove)
+  Local branches configured for 'git pull':
+    ahead merges with remote main
+    main  merges with remote main
+  Local refs configured for 'git push':
+    main pushes to main     (local out of date)
+    main pushes to upstream (create)
+EOF
+
+test_expect_failure 'show stale with negative refspecs' '
+	test_when_finished "git -C test config --unset-all --fixed-value remote.origin.fetch ^refs/heads/side" &&
+	git -C test config --add remote.origin.fetch ^refs/heads/side &&
+	git -C test remote show origin >output &&
+	test_cmp expect output
 '
 
 cat >test/expect <<EOF
@@ -291,7 +391,7 @@ test_expect_success 'show -n' '
 		cd test &&
 		git remote show -n origin >output &&
 		mv ../one.unreachable ../one &&
-		test_i18ncmp expect output
+		test_cmp expect output
 	)
 '
 
@@ -334,7 +434,7 @@ test_expect_success 'set-head --auto has no problem w/multiple HEADs' '
 		git fetch two "refs/heads/*:refs/remotes/two/*" &&
 		git remote set-head --auto two >output 2>&1 &&
 		echo "two/HEAD set to main" >expect &&
-		test_i18ncmp expect output
+		test_cmp expect output
 	)
 '
 
@@ -366,7 +466,7 @@ test_expect_success 'prune --dry-run' '
 		git remote prune --dry-run origin >output &&
 		git rev-parse refs/remotes/origin/side2 &&
 		test_must_fail git rev-parse refs/remotes/origin/side &&
-		test_i18ncmp expect output
+		test_cmp expect output
 	)
 '
 
@@ -591,6 +691,7 @@ test_expect_success 'add --no-tags' '
 		cd add-no-tags &&
 		git init &&
 		git remote add -f --no-tags origin ../one &&
+		grep tagOpt .git/config &&
 		git tag -l some-tag >../test/output &&
 		git tag -l foobar-tag >../test/output &&
 		git config remote.origin.tagopt >>../test/output
@@ -752,7 +853,10 @@ test_expect_success 'rename a remote' '
 	(
 		cd four &&
 		git config branch.main.pushRemote origin &&
-		git remote rename origin upstream &&
+		GIT_TRACE2_EVENT=$(pwd)/trace \
+			git remote rename --progress origin upstream &&
+		test_region progress "Renaming remote references" trace &&
+		grep "pushRemote" .git/config &&
 		test -z "$(git for-each-ref refs/remotes/origin)" &&
 		test "$(git symbolic-ref refs/remotes/upstream/HEAD)" = "refs/remotes/upstream/main" &&
 		test "$(git rev-parse upstream/main)" = "$(git rev-parse main)" &&
@@ -769,6 +873,7 @@ test_expect_success 'rename a remote renames repo remote.pushDefault' '
 		cd four.1 &&
 		git config remote.pushDefault origin &&
 		git remote rename origin upstream &&
+		grep pushDefault .git/config &&
 		test "$(git config --local remote.pushDefault)" = "upstream"
 	)
 '
@@ -795,6 +900,17 @@ test_expect_success 'rename a remote renames repo remote.pushDefault but keeps g
 		test "$(git config --global remote.pushDefault)" = "origin" &&
 		test "$(git config --local remote.pushDefault)" = "upstream"
 	)
+'
+
+test_expect_success 'rename handles remote without fetch refspec' '
+	git clone --bare one no-refspec.git &&
+	# confirm assumption that bare clone does not create refspec
+	test_expect_code 5 \
+		git -C no-refspec.git config --unset-all remote.origin.fetch &&
+	git -C no-refspec.git config remote.origin.url >expect &&
+	git -C no-refspec.git remote rename origin foo &&
+	git -C no-refspec.git config remote.foo.url >actual &&
+	test_cmp expect actual
 '
 
 test_expect_success 'rename does not update a non-default fetch refspec' '
@@ -918,11 +1034,12 @@ test_expect_success 'migrate a remote from named file in $GIT_DIR/remotes' '
 '
 
 test_expect_success 'migrate a remote from named file in $GIT_DIR/branches' '
-	git clone one six &&
+	git clone --template= one six &&
 	origin_url=$(pwd)/one &&
 	(
 		cd six &&
 		git remote rm origin &&
+		mkdir .git/branches &&
 		echo "$origin_url#main" >.git/branches/origin &&
 		git remote rename origin origin &&
 		test_path_is_missing .git/branches/origin &&
@@ -933,10 +1050,11 @@ test_expect_success 'migrate a remote from named file in $GIT_DIR/branches' '
 '
 
 test_expect_success 'migrate a remote from named file in $GIT_DIR/branches (2)' '
-	git clone one seven &&
+	git clone --template= one seven &&
 	(
 		cd seven &&
 		git remote rm origin &&
+		mkdir .git/branches &&
 		echo "quux#foom" > .git/branches/origin &&
 		git remote rename origin origin &&
 		test_path_is_missing .git/branches/origin &&
@@ -1326,7 +1444,6 @@ test_expect_success 'unqualified <dst> refspec DWIM and advice' '
 	(
 		cd test &&
 		git tag -a -m "Some tag" some-tag main &&
-		exit_with=true &&
 		for type in commit tag tree blob
 		do
 			if test "$type" = "blob"
@@ -1342,9 +1459,8 @@ test_expect_success 'unqualified <dst> refspec DWIM and advice' '
 				push origin $oid:dst 2>err &&
 			test_i18ngrep "error: The destination you" err &&
 			test_i18ngrep ! "hint: Did you mean" err ||
-			exit_with=false
-		done &&
-		$exit_with
+			exit 1
+		done
 	)
 '
 

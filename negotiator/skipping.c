@@ -62,7 +62,7 @@ static struct entry *rev_list_push(struct data *data, struct commit *commit, int
 	struct entry *entry;
 	commit->object.flags |= mark | SEEN;
 
-	entry = xcalloc(1, sizeof(*entry));
+	CALLOC_ARRAY(entry, 1);
 	entry->commit = commit;
 	prio_queue_put(&data->rev_list, entry);
 
@@ -72,7 +72,8 @@ static struct entry *rev_list_push(struct data *data, struct commit *commit, int
 }
 
 static int clear_marks(const char *refname, const struct object_id *oid,
-		       int flag, void *cb_data)
+		       int flag UNUSED,
+		       void *cb_data UNUSED)
 {
 	struct object *o = deref_tag(the_repository, parse_object(the_repository, oid), refname, 0);
 
@@ -85,21 +86,26 @@ static int clear_marks(const char *refname, const struct object_id *oid,
 /*
  * Mark this SEEN commit and all its SEEN ancestors as COMMON.
  */
-static void mark_common(struct data *data, struct commit *c)
+static void mark_common(struct data *data, struct commit *seen_commit)
 {
-	struct commit_list *p;
+	struct prio_queue queue = { NULL };
+	struct commit *c;
 
-	if (c->object.flags & COMMON)
-		return;
-	c->object.flags |= COMMON;
-	if (!(c->object.flags & POPPED))
-		data->non_common_revs--;
+	prio_queue_put(&queue, seen_commit);
+	while ((c = prio_queue_get(&queue))) {
+		struct commit_list *p;
+		if (c->object.flags & COMMON)
+			return;
+		c->object.flags |= COMMON;
+		if (!(c->object.flags & POPPED))
+			data->non_common_revs--;
 
-	if (!c->object.parsed)
-		return;
-	for (p = c->parents; p; p = p->next) {
-		if (p->item->object.flags & SEEN)
-			mark_common(data, p->item);
+		if (!c->object.parsed)
+			return;
+		for (p = c->parents; p; p = p->next) {
+			if (p->item->object.flags & SEEN)
+				prio_queue_put(&queue, p->item);
+		}
 	}
 }
 
@@ -241,7 +247,7 @@ void skipping_negotiator_init(struct fetch_negotiator *negotiator)
 	negotiator->next = next;
 	negotiator->ack = ack;
 	negotiator->release = release;
-	negotiator->data = data = xcalloc(1, sizeof(*data));
+	negotiator->data = CALLOC_ARRAY(data, 1);
 	data->rev_list.compare = compare;
 
 	if (marked)

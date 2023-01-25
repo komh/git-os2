@@ -9,7 +9,9 @@
 #include "parse-options.h"
 
 static const char * const show_ref_usage[] = {
-	N_("git show-ref [-q | --quiet] [--verify] [--head] [-d | --dereference] [-s | --hash[=<n>]] [--abbrev[=<n>]] [--tags] [--heads] [--] [<pattern>...]"),
+	N_("git show-ref [-q | --quiet] [--verify] [--head] [-d | --dereference]\n"
+	   "             [-s | --hash[=<n>]] [--abbrev[=<n>]] [--tags]\n"
+	   "             [--heads] [--] [<pattern>...]"),
 	N_("git show-ref --exclude-existing[=<pattern>]"),
 	NULL
 };
@@ -40,26 +42,18 @@ static void show_one(const char *refname, const struct object_id *oid)
 	if (!deref_tags)
 		return;
 
-	if (!peel_ref(refname, &peeled)) {
+	if (!peel_iterated_oid(oid, &peeled)) {
 		hex = find_unique_abbrev(&peeled, abbrev);
 		printf("%s %s^{}\n", hex, refname);
 	}
 }
 
 static int show_ref(const char *refname, const struct object_id *oid,
-		    int flag, void *cbdata)
+		    int flag UNUSED, void *cbdata UNUSED)
 {
 	if (show_head && !strcmp(refname, "HEAD"))
 		goto match;
 
-	if (tags_only || heads_only) {
-		int match;
-
-		match = heads_only && starts_with(refname, "refs/heads/");
-		match |= tags_only && starts_with(refname, "refs/tags/");
-		if (!match)
-			return 0;
-	}
 	if (pattern) {
 		int reflen = strlen(refname);
 		const char **p = pattern, *m;
@@ -85,8 +79,9 @@ match:
 	return 0;
 }
 
-static int add_existing(const char *refname, const struct object_id *oid,
-			int flag, void *cbdata)
+static int add_existing(const char *refname,
+			const struct object_id *oid UNUSED,
+			int flag UNUSED, void *cbdata)
 {
 	struct string_list *list = (struct string_list *)cbdata;
 	string_list_insert(list, refname);
@@ -216,7 +211,14 @@ int cmd_show_ref(int argc, const char **argv, const char *prefix)
 
 	if (show_head)
 		head_ref(show_ref, NULL);
-	for_each_ref(show_ref, NULL);
+	if (heads_only || tags_only) {
+		if (heads_only)
+			for_each_fullref_in("refs/heads/", show_ref, NULL);
+		if (tags_only)
+			for_each_fullref_in("refs/tags/", show_ref, NULL);
+	} else {
+		for_each_ref(show_ref, NULL);
+	}
 	if (!found_match) {
 		if (verify && !quiet)
 			die("No match");

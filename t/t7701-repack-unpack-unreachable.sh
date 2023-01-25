@@ -2,6 +2,9 @@
 
 test_description='git repack works correctly'
 
+GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
+export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
+
 . ./test-lib.sh
 
 fsha1=
@@ -22,7 +25,7 @@ test_expect_success '-A with -d option leaves unreachable objects unpacked' '
 	git commit -a -m more_content &&
 	csha1=$(git rev-parse HEAD^{commit}) &&
 	tsha1=$(git rev-parse HEAD^{tree}) &&
-	git checkout master &&
+	git checkout main &&
 	echo even more content >> file1 &&
 	test_tick &&
 	git commit -a -m even_more_content &&
@@ -32,7 +35,7 @@ test_expect_success '-A with -d option leaves unreachable objects unpacked' '
 	git repack -A -d -l &&
 	# verify objects are packed in repository
 	test 3 = $(git verify-pack -v -- .git/objects/pack/*.idx |
-		   egrep "^($fsha1|$csha1|$tsha1) " |
+		   grep -E "^($fsha1|$csha1|$tsha1) " |
 		   sort | uniq | wc -l) &&
 	git show $fsha1 &&
 	git show $csha1 &&
@@ -46,7 +49,7 @@ test_expect_success '-A with -d option leaves unreachable objects unpacked' '
 	git repack -A -d -l &&
 	# verify objects are retained unpacked
 	test 0 = $(git verify-pack -v -- .git/objects/pack/*.idx |
-		   egrep "^($fsha1|$csha1|$tsha1) " |
+		   grep -E "^($fsha1|$csha1|$tsha1) " |
 		   sort | uniq | wc -l) &&
 	git show $fsha1 &&
 	git show $csha1 &&

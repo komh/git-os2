@@ -2,6 +2,7 @@
 
 test_description='Test git config-set API in different settings'
 
+TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 # 'check_config get_* section.key value' verifies that the entry for
@@ -208,14 +209,14 @@ test_expect_success 'proper error on error in default config files' '
 	echo "[" >>.git/config &&
 	echo "fatal: bad config line 34 in file .git/config" >expect &&
 	test_expect_code 128 test-tool config get_value foo.bar 2>actual &&
-	test_i18ncmp expect actual
+	test_cmp expect actual
 '
 
 test_expect_success 'proper error on error in custom config files' '
 	echo "[" >>syntax-error &&
 	echo "fatal: bad config line 1 in file syntax-error" >expect &&
 	test_expect_code 128 test-tool config configset_get_value foo.bar syntax-error 2>actual &&
-	test_i18ncmp expect actual
+	test_cmp expect actual
 '
 
 test_expect_success 'check line errors for malformed values' '

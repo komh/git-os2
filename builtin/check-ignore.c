@@ -1,4 +1,4 @@
-#define USE_THE_INDEX_COMPATIBILITY_MACROS
+#define USE_THE_INDEX_VARIABLE
 #include "builtin.h"
 #include "cache.h"
 #include "config.h"
@@ -100,7 +100,8 @@ static int check_ignore(struct dir_struct *dir,
 	 * should not be ignored, in order to be consistent with
 	 * 'git status', 'git add' etc.
 	 */
-	seen = find_pathspecs_matching_against_index(&pathspec, &the_index);
+	seen = find_pathspecs_matching_against_index(&pathspec, &the_index,
+						     PS_HEED_SKIP_WORKTREE);
 	for (i = 0; i < pathspec.nr; i++) {
 		full_path = pathspec.items[i].match;
 		pattern = NULL;
@@ -118,6 +119,7 @@ static int check_ignore(struct dir_struct *dir,
 			num_ignored++;
 	}
 	free(seen);
+	clear_pathspec(&pathspec);
 
 	return num_ignored;
 }
@@ -151,7 +153,7 @@ static int check_ignore_stdin_paths(struct dir_struct *dir, const char *prefix)
 int cmd_check_ignore(int argc, const char **argv, const char *prefix)
 {
 	int num_ignored;
-	struct dir_struct dir;
+	struct dir_struct dir = DIR_INIT;
 
 	git_config(git_default_config, NULL);
 
@@ -177,10 +179,9 @@ int cmd_check_ignore(int argc, const char **argv, const char *prefix)
 		die(_("--non-matching is only valid with --verbose"));
 
 	/* read_cache() is only necessary so we can watch out for submodules. */
-	if (!no_index && read_cache() < 0)
+	if (!no_index && repo_read_index(the_repository) < 0)
 		die(_("index file corrupt"));
 
-	dir_init(&dir);
 	setup_standard_excludes(&dir);
 
 	if (stdin_paths) {

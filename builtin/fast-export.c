@@ -26,7 +26,7 @@
 #include "commit-slab.h"
 
 static const char *fast_export_usage[] = {
-	N_("git fast-export [rev-list-opts]"),
+	N_("git fast-export [<rev-list-opts>]"),
 	NULL
 };
 
@@ -107,18 +107,6 @@ static int parse_opt_reencode_mode(const struct option *opt,
 
 static struct decoration idnums;
 static uint32_t last_idnum;
-
-static int has_unshown_parent(struct commit *commit)
-{
-	struct commit_list *parent;
-
-	for (parent = commit->parents; parent; parent = parent->next)
-		if (!(parent->item->object.flags & SHOWN) &&
-		    !(parent->item->object.flags & UNINTERESTING))
-			return 1;
-	return 0;
-}
-
 struct anonymized_entry {
 	struct hashmap_entry hash;
 	const char *anon;
@@ -131,7 +119,7 @@ struct anonymized_entry_key {
 	size_t orig_len;
 };
 
-static int anonymized_entry_cmp(const void *unused_cmp_data,
+static int anonymized_entry_cmp(const void *cmp_data UNUSED,
 				const struct hashmap_entry *eptr,
 				const struct hashmap_entry *entry_or_key,
 				const void *keydata)
@@ -312,7 +300,7 @@ static void export_blob(const struct object_id *oid)
 		if (!buf)
 			die("could not read blob %s", oid_to_hex(oid));
 		if (check_object_signature(the_repository, oid, buf, size,
-					   type_name(type)) < 0)
+					   type) < 0)
 			die("oid mismatch in blob %s", oid_to_hex(oid));
 		object = parse_object_buffer(the_repository, oid, type,
 					     size, buf, &eaten);
@@ -752,20 +740,6 @@ static char *anonymize_tag(void *data)
 	return strbuf_detach(&out, NULL);
 }
 
-static void handle_tail(struct object_array *commits, struct rev_info *revs,
-			struct string_list *paths_of_changed_objects)
-{
-	struct commit *commit;
-	while (commits->nr) {
-		commit = (struct commit *)object_array_pop(commits);
-		if (has_unshown_parent(commit)) {
-			/* Queue again, to be handled later */
-			add_object_array(&commit->object, NULL, commits);
-			return;
-		}
-		handle_commit(commit, revs, paths_of_changed_objects);
-	}
-}
 
 static void handle_tag(const char *name, struct tag *tag)
 {
@@ -821,6 +795,7 @@ static void handle_tag(const char *name, struct tag *tag)
 			static struct hashmap tags;
 			message = anonymize_str(&tags, anonymize_tag,
 						message, message_size, NULL);
+			message_size = strlen(message);
 		}
 	}
 
@@ -870,7 +845,7 @@ static void handle_tag(const char *name, struct tag *tag)
 				p = rewrite_commit((struct commit *)tagged);
 				if (!p) {
 					printf("reset %s\nfrom %s\n\n",
-					       name, oid_to_hex(&null_oid));
+					       name, oid_to_hex(null_oid()));
 					free(buf);
 					return;
 				}
@@ -884,7 +859,7 @@ static void handle_tag(const char *name, struct tag *tag)
 
 	if (tagged->type == OBJ_TAG) {
 		printf("reset %s\nfrom %s\n\n",
-		       name, oid_to_hex(&null_oid));
+		       name, oid_to_hex(null_oid()));
 	}
 	skip_prefix(name, "refs/tags/", &name);
 	printf("tag %s\n", name);
@@ -1016,7 +991,7 @@ static void handle_tags_and_duplicates(struct string_list *extras)
 				 * it.
 				 */
 				printf("reset %s\nfrom %s\n\n",
-				       name, oid_to_hex(&null_oid));
+				       name, oid_to_hex(null_oid()));
 				continue;
 			}
 
@@ -1035,7 +1010,7 @@ static void handle_tags_and_duplicates(struct string_list *extras)
 				if (!reference_excluded_commits) {
 					/* delete the ref */
 					printf("reset %s\nfrom %s\n\n",
-					       name, oid_to_hex(&null_oid));
+					       name, oid_to_hex(null_oid()));
 					continue;
 				}
 				/* set ref to commit using oid, not mark */
@@ -1146,7 +1121,7 @@ static void handle_deletes(void)
 			continue;
 
 		printf("reset %s\nfrom %s\n\n",
-				refspec->dst, oid_to_hex(&null_oid));
+				refspec->dst, oid_to_hex(null_oid()));
 	}
 }
 
@@ -1184,7 +1159,6 @@ static int parse_opt_anonymize_map(const struct option *opt,
 int cmd_fast_export(int argc, const char **argv, const char *prefix)
 {
 	struct rev_info revs;
-	struct object_array commits = OBJECT_ARRAY_INIT;
 	struct commit *commit;
 	char *export_filename = NULL,
 	     *import_filename = NULL,
@@ -1205,32 +1179,32 @@ int cmd_fast_export(int argc, const char **argv, const char *prefix)
 			     N_("select handling of commit messages in an alternate encoding"),
 			     parse_opt_reencode_mode),
 		OPT_STRING(0, "export-marks", &export_filename, N_("file"),
-			     N_("Dump marks to this file")),
+			     N_("dump marks to this file")),
 		OPT_STRING(0, "import-marks", &import_filename, N_("file"),
-			     N_("Import marks from this file")),
+			     N_("import marks from this file")),
 		OPT_STRING(0, "import-marks-if-exists",
 			     &import_filename_if_exists,
 			     N_("file"),
-			     N_("Import marks from this file if it exists")),
+			     N_("import marks from this file if it exists")),
 		OPT_BOOL(0, "fake-missing-tagger", &fake_missing_tagger,
-			 N_("Fake a tagger when tags lack one")),
+			 N_("fake a tagger when tags lack one")),
 		OPT_BOOL(0, "full-tree", &full_tree,
-			 N_("Output full tree for each commit")),
+			 N_("output full tree for each commit")),
 		OPT_BOOL(0, "use-done-feature", &use_done_feature,
-			     N_("Use the done feature to terminate the stream")),
-		OPT_BOOL(0, "no-data", &no_data, N_("Skip output of blob data")),
+			     N_("use the done feature to terminate the stream")),
+		OPT_BOOL(0, "no-data", &no_data, N_("skip output of blob data")),
 		OPT_STRING_LIST(0, "refspec", &refspecs_list, N_("refspec"),
-			     N_("Apply refspec to exported refs")),
+			     N_("apply refspec to exported refs")),
 		OPT_BOOL(0, "anonymize", &anonymize, N_("anonymize output")),
 		OPT_CALLBACK_F(0, "anonymize-map", &anonymized_seeds, N_("from:to"),
 			       N_("convert <from> to <to> in anonymized output"),
 			       PARSE_OPT_NONEG, parse_opt_anonymize_map),
 		OPT_BOOL(0, "reference-excluded-parents",
-			 &reference_excluded_commits, N_("Reference parents which are not in fast-export stream by object id")),
+			 &reference_excluded_commits, N_("reference parents which are not in fast-export stream by object id")),
 		OPT_BOOL(0, "show-original-ids", &show_original_ids,
-			    N_("Show original object ids of blobs/commits")),
+			    N_("show original object ids of blobs/commits")),
 		OPT_BOOL(0, "mark-tags", &mark_tags,
-			    N_("Label tags with mark ids")),
+			    N_("label tags with mark ids")),
 
 		OPT_END()
 	};
@@ -1247,13 +1221,13 @@ int cmd_fast_export(int argc, const char **argv, const char *prefix)
 	revs.sources = &revision_sources;
 	revs.rewrite_parents = 1;
 	argc = parse_options(argc, argv, prefix, options, fast_export_usage,
-			PARSE_OPT_KEEP_ARGV0 | PARSE_OPT_KEEP_UNKNOWN);
+			PARSE_OPT_KEEP_ARGV0 | PARSE_OPT_KEEP_UNKNOWN_OPT);
 	argc = setup_revisions(argc, argv, &revs, NULL);
 	if (argc > 1)
 		usage_with_options (fast_export_usage, options);
 
 	if (anonymized_seeds.cmpfn && !anonymize)
-		die(_("--anonymize-map without --anonymize does not make sense"));
+		die(_("the option '%s' requires '%s'"), "--anonymize-map", "--anonymize");
 
 	if (refspecs_list.nr) {
 		int i;
@@ -1268,7 +1242,7 @@ int cmd_fast_export(int argc, const char **argv, const char *prefix)
 		printf("feature done\n");
 
 	if (import_filename && import_filename_if_exists)
-		die(_("Cannot pass both --import-marks and --import-marks-if-exists"));
+		die(_("options '%s' and '%s' cannot be used together"), "--import-marks", "--import-marks-if-exists");
 	if (import_filename)
 		import_marks(import_filename, 0);
 	else if (import_filename_if_exists)
@@ -1282,18 +1256,14 @@ int cmd_fast_export(int argc, const char **argv, const char *prefix)
 
 	if (prepare_revision_walk(&revs))
 		die("revision walk setup failed");
+
+	revs.reverse = 1;
 	revs.diffopt.format_callback = show_filemodify;
 	revs.diffopt.format_callback_data = &paths_of_changed_objects;
 	revs.diffopt.flags.recursive = 1;
-	while ((commit = get_revision(&revs))) {
-		if (has_unshown_parent(commit)) {
-			add_object_array(&commit->object, NULL, &commits);
-		}
-		else {
-			handle_commit(commit, &revs, &paths_of_changed_objects);
-			handle_tail(&commits, &revs, &paths_of_changed_objects);
-		}
-	}
+	revs.diffopt.no_free = 1;
+	while ((commit = get_revision(&revs)))
+		handle_commit(commit, &revs, &paths_of_changed_objects);
 
 	handle_tags_and_duplicates(&extra_refs);
 	handle_tags_and_duplicates(&tag_refs);
@@ -1306,6 +1276,7 @@ int cmd_fast_export(int argc, const char **argv, const char *prefix)
 		printf("done\n");
 
 	refspec_clear(&refspecs);
+	release_revisions(&revs);
 
 	return 0;
 }

@@ -352,7 +352,7 @@ static void add_non_note(struct notes_tree *t, char *path,
 	n->next = NULL;
 	n->path = path;
 	n->mode = mode;
-	hashcpy(n->oid.hash, sha1);
+	oidread(&n->oid, sha1);
 	t->prev_non_note = n;
 
 	if (!t->first_non_note) {
@@ -452,9 +452,11 @@ static void load_subtree(struct notes_tree *t, struct leaf_node *subtree,
 			goto handle_non_note;
 		}
 
-		l = xcalloc(1, sizeof(*l));
+		CALLOC_ARRAY(l, 1);
 		oidcpy(&l->key_oid, &object_oid);
 		oidcpy(&l->val_oid, &entry.oid);
+		oid_set_algo(&l->key_oid, the_hash_algo);
+		oid_set_algo(&l->val_oid, the_hash_algo);
 		if (note_tree_insert(t, node, n, l, type,
 				     combine_notes_concatenate))
 			die("Failed to load %s %s into notes tree "
@@ -484,6 +486,7 @@ handle_non_note:
 				strbuf_addch(&non_note_path, '/');
 			}
 			strbuf_addstr(&non_note_path, entry.path);
+			oid_set_algo(&entry.oid, the_hash_algo);
 			add_non_note(t, strbuf_detach(&non_note_path, NULL),
 				     entry.mode, entry.oid.hash);
 		}
@@ -672,7 +675,7 @@ static int tree_write_stack_finish_subtree(struct tree_write_stack *tws)
 		ret = tree_write_stack_finish_subtree(n);
 		if (ret)
 			return ret;
-		ret = write_object_file(n->buf.buf, n->buf.len, tree_type, &s);
+		ret = write_object_file(n->buf.buf, n->buf.len, OBJ_TREE, &s);
 		if (ret)
 			return ret;
 		strbuf_release(&n->buf);
@@ -833,7 +836,7 @@ int combine_notes_concatenate(struct object_id *cur_oid,
 	free(new_msg);
 
 	/* create a new blob object from buf */
-	ret = write_object_file(buf, buf_len, blob_type, cur_oid);
+	ret = write_object_file(buf, buf_len, OBJ_BLOB, cur_oid);
 	free(buf);
 	return ret;
 }
@@ -913,7 +916,7 @@ int combine_notes_cat_sort_uniq(struct object_id *cur_oid,
 				 string_list_join_lines_helper, &buf))
 		goto out;
 
-	ret = write_object_file(buf.buf, buf.len, blob_type, cur_oid);
+	ret = write_object_file(buf.buf, buf.len, OBJ_BLOB, cur_oid);
 
 out:
 	strbuf_release(&buf);
@@ -921,8 +924,9 @@ out:
 	return ret;
 }
 
-static int string_list_add_one_ref(const char *refname, const struct object_id *oid,
-				   int flag, void *cb)
+static int string_list_add_one_ref(const char *refname,
+				   const struct object_id *oid UNUSED,
+				   int flag UNUSED, void *cb)
 {
 	struct string_list *refs = cb;
 	if (!unsorted_string_list_has_string(refs, refname))
@@ -1002,6 +1006,7 @@ void init_notes(struct notes_tree *t, const char *notes_ref,
 
 	if (!notes_ref)
 		notes_ref = default_notes_ref();
+	update_ref_namespace(NAMESPACE_NOTES, xstrdup(notes_ref));
 
 	if (!combine_notes)
 		combine_notes = combine_notes_concatenate;
@@ -1134,7 +1139,7 @@ int remove_note(struct notes_tree *t, const unsigned char *object_sha1)
 	if (!t)
 		t = &default_notes_tree;
 	assert(t->initialized);
-	hashcpy(l.key_oid.hash, object_sha1);
+	oidread(&l.key_oid, object_sha1);
 	oidclr(&l.val_oid);
 	note_tree_remove(t, t->root, 0, &l);
 	if (is_null_oid(&l.val_oid)) /* no note was removed */
@@ -1189,7 +1194,7 @@ int write_notes_tree(struct notes_tree *t, struct object_id *result)
 	ret = for_each_note(t, flags, write_each_note, &cb_data) ||
 	      write_each_non_note_until(NULL, &cb_data) ||
 	      tree_write_stack_finish_subtree(&root) ||
-	      write_object_file(root.buf.buf, root.buf.len, tree_type, result);
+	      write_object_file(root.buf.buf, root.buf.len, OBJ_TREE, result);
 	strbuf_release(&root.buf);
 	return ret;
 }
@@ -1324,7 +1329,7 @@ int copy_note(struct notes_tree *t,
 	if (note)
 		return add_note(t, to_obj, note, combine_notes);
 	else if (existing_note)
-		return add_note(t, to_obj, &null_oid, combine_notes);
+		return add_note(t, to_obj, null_oid(), combine_notes);
 
 	return 0;
 }

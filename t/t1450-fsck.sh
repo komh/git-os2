@@ -3,7 +3,7 @@
 test_description='git fsck random collection of tests
 
 * (HEAD) B
-* (master) A
+* (main) A
 '
 
 . ./test-lib.sh
@@ -40,36 +40,78 @@ test_expect_success 'HEAD is part of refs, valid objects appear valid' '
 # specific corruption you test afterwards, lest a later test trip over
 # it.
 
-test_expect_success 'setup: helpers for corruption tests' '
-	sha1_file() {
-		remainder=${1#??} &&
-		firsttwo=${1%$remainder} &&
-		echo ".git/objects/$firsttwo/$remainder"
-	} &&
+sha1_file () {
+	git rev-parse --git-path objects/$(test_oid_to_path "$1")
+}
 
-	remove_object() {
-		rm "$(sha1_file "$1")"
-	}
+remove_object () {
+	rm "$(sha1_file "$1")"
+}
+
+test_expect_success 'object with hash mismatch' '
+	git init --bare hash-mismatch &&
+	(
+		cd hash-mismatch &&
+
+		oid=$(echo blob | git hash-object -w --stdin) &&
+		oldoid=$oid &&
+		old=$(test_oid_to_path "$oid") &&
+		new=$(dirname $old)/$(test_oid ff_2) &&
+		oid="$(dirname $new)$(basename $new)" &&
+
+		mv objects/$old objects/$new &&
+		git update-index --add --cacheinfo 100644 $oid foo &&
+		tree=$(git write-tree) &&
+		cmt=$(echo bogus | git commit-tree $tree) &&
+		git update-ref refs/heads/bogus $cmt &&
+
+		test_must_fail git fsck 2>out &&
+		grep "$oldoid: hash-path mismatch, found at: .*$new" out
+	)
 '
 
-test_expect_success 'object with bad sha1' '
-	sha=$(echo blob | git hash-object -w --stdin) &&
-	old=$(test_oid_to_path "$sha") &&
-	new=$(dirname $old)/$(test_oid ff_2) &&
-	sha="$(dirname $new)$(basename $new)" &&
-	mv .git/objects/$old .git/objects/$new &&
-	test_when_finished "remove_object $sha" &&
-	git update-index --add --cacheinfo 100644 $sha foo &&
-	test_when_finished "git read-tree -u --reset HEAD" &&
-	tree=$(git write-tree) &&
-	test_when_finished "remove_object $tree" &&
-	cmt=$(echo bogus | git commit-tree $tree) &&
-	test_when_finished "remove_object $cmt" &&
-	git update-ref refs/heads/bogus $cmt &&
-	test_when_finished "git update-ref -d refs/heads/bogus" &&
+test_expect_success 'object with hash and type mismatch' '
+	git init --bare hash-type-mismatch &&
+	(
+		cd hash-type-mismatch &&
 
-	test_must_fail git fsck 2>out &&
-	test_i18ngrep "$sha.*corrupt" out
+		oid=$(echo blob | git hash-object -w --stdin -t garbage --literally) &&
+		oldoid=$oid &&
+		old=$(test_oid_to_path "$oid") &&
+		new=$(dirname $old)/$(test_oid ff_2) &&
+		oid="$(dirname $new)$(basename $new)" &&
+
+		mv objects/$old objects/$new &&
+		git update-index --add --cacheinfo 100644 $oid foo &&
+		tree=$(git write-tree) &&
+		cmt=$(echo bogus | git commit-tree $tree) &&
+		git update-ref refs/heads/bogus $cmt &&
+
+
+		test_must_fail git fsck 2>out &&
+		grep "^error: $oldoid: hash-path mismatch, found at: .*$new" out &&
+		grep "^error: $oldoid: object is of unknown type '"'"'garbage'"'"'" out
+	)
+'
+
+test_expect_success 'zlib corrupt loose object output ' '
+	git init --bare corrupt-loose-output &&
+	(
+		cd corrupt-loose-output &&
+		oid=$(git hash-object -w --stdin --literally </dev/null) &&
+		oidf=objects/$(test_oid_to_path "$oid") &&
+		chmod +w $oidf &&
+		echo extra garbage >>$oidf &&
+
+		cat >expect.error <<-EOF &&
+		error: garbage at end of loose object '\''$oid'\''
+		error: unable to unpack contents of ./$oidf
+		error: $oid: object corrupt or missing: ./$oidf
+		EOF
+		test_must_fail git fsck 2>actual &&
+		grep ^error: actual >error &&
+		test_cmp expect.error error
+	)
 '
 
 test_expect_success 'branch pointing to non-commit' '
@@ -322,6 +364,20 @@ test_expect_success 'tree entry with type mismatch' '
 	test_i18ngrep ! "dangling blob" out
 '
 
+test_expect_success 'tree entry with bogus mode' '
+	test_when_finished "remove_object \$blob" &&
+	test_when_finished "remove_object \$tree" &&
+	blob=$(echo blob | git hash-object -w --stdin) &&
+	blob_oct=$(echo $blob | hex2oct) &&
+	tree=$(printf "100000 foo\0${blob_oct}" |
+	       git hash-object -t tree --stdin -w --literally) &&
+	git fsck 2>err &&
+	cat >expect <<-EOF &&
+	warning in tree $tree: badFilemode: contains bad file modes
+	EOF
+	test_cmp expect err
+'
+
 test_expect_success 'tag pointing to nonexistent' '
 	badoid=$(test_oid deadbeef) &&
 	cat >invalid-tag <<-EOF &&
@@ -380,7 +436,7 @@ test_expect_success 'tag with incorrect tag name & missing tagger' '
 	warning in tag $tag: badTagName: invalid '\''tag'\'' name: wrong name format
 	warning in tag $tag: missingTaggerEntry: invalid format - expected '\''tagger'\'' line
 	EOF
-	test_i18ncmp expect out
+	test_cmp expect out
 '
 
 test_expect_success 'tag with bad tagger' '
@@ -449,6 +505,54 @@ test_expect_success 'rev-list --verify-objects with bad sha1' '
 
 	test_might_fail git rev-list --verify-objects refs/heads/bogus >/dev/null 2>out &&
 	test_i18ngrep -q "error: hash mismatch $(dirname $new)$(test_oid ff_2)" out
+'
+
+# An actual bit corruption is more likely than swapped commits, but
+# this provides an easy way to have commits which don't match their purported
+# hashes, but which aren't so broken we can't read them at all.
+test_expect_success 'rev-list --verify-objects notices swapped commits' '
+	git init swapped-commits &&
+	(
+		cd swapped-commits &&
+		test_commit one &&
+		test_commit two &&
+		one_oid=$(git rev-parse HEAD) &&
+		two_oid=$(git rev-parse HEAD^) &&
+		one=.git/objects/$(test_oid_to_path $one_oid) &&
+		two=.git/objects/$(test_oid_to_path $two_oid) &&
+		mv $one tmp &&
+		mv $two $one &&
+		mv tmp $two &&
+		test_must_fail git rev-list --verify-objects HEAD
+	)
+'
+
+test_expect_success 'set up repository with commit-graph' '
+	git init corrupt-graph &&
+	(
+		cd corrupt-graph &&
+		test_commit one &&
+		test_commit two &&
+		git commit-graph write --reachable
+	)
+'
+
+corrupt_graph_obj () {
+	oid=$(git -C corrupt-graph rev-parse "$1") &&
+	obj=corrupt-graph/.git/objects/$(test_oid_to_path $oid) &&
+	test_when_finished 'mv backup $obj' &&
+	mv $obj backup &&
+	echo garbage >$obj
+}
+
+test_expect_success 'rev-list --verify-objects with commit graph (tip)' '
+	corrupt_graph_obj HEAD &&
+	test_must_fail git -C corrupt-graph rev-list --verify-objects HEAD
+'
+
+test_expect_success 'rev-list --verify-objects with commit graph (parent)' '
+	corrupt_graph_obj HEAD^ &&
+	test_must_fail git -C corrupt-graph rev-list --verify-objects HEAD
 '
 
 test_expect_success 'force fsck to ignore double author' '
@@ -662,13 +766,15 @@ test_expect_success 'fsck --name-objects' '
 	git init name-objects &&
 	(
 		cd name-objects &&
+		git config core.logAllRefUpdates false &&
 		test_commit julius caesar.t &&
-		test_commit augustus &&
-		test_commit caesar &&
+		test_commit augustus44 &&
+		test_commit caesar  &&
 		remove_object $(git rev-parse julius:caesar.t) &&
-		test_must_fail git fsck --name-objects >out &&
 		tree=$(git rev-parse --verify julius:) &&
-		test_i18ngrep "$tree (refs/tags/julius:" out
+		git tag -d julius &&
+		test_must_fail git fsck --name-objects >out &&
+		test_i18ngrep "$tree (refs/tags/augustus44\\^:" out
 	)
 '
 
@@ -730,10 +836,19 @@ test_expect_success 'fsck finds problems in duplicate loose objects' '
 		# no "-d" here, so we end up with duplicates
 		git repack &&
 		# now corrupt the loose copy
-		file=$(sha1_file "$(git rev-parse HEAD)") &&
+		oid="$(git rev-parse HEAD)" &&
+		file=$(sha1_file "$oid") &&
 		rm "$file" &&
 		echo broken >"$file" &&
-		test_must_fail git fsck
+		test_must_fail git fsck 2>err &&
+
+		cat >expect <<-EOF &&
+		error: inflate: data stream error (incorrect header check)
+		error: unable to unpack header of $file
+		error: $oid: object corrupt or missing: $file
+		EOF
+		grep "^error: " err >actual &&
+		test_cmp expect actual
 	)
 '
 
@@ -806,7 +921,7 @@ test_expect_success 'fsck notices dangling objects' '
 		git fsck >actual &&
 		# the output order is non-deterministic, as it comes from a hash
 		sort <actual >actual.sorted &&
-		test_i18ncmp expect actual.sorted
+		test_cmp expect actual.sorted
 	)
 '
 
@@ -816,7 +931,7 @@ test_expect_success 'fsck --connectivity-only notices dangling objects' '
 		git fsck --connectivity-only >actual &&
 		# the output order is non-deterministic, as it comes from a hash
 		sort <actual >actual.sorted &&
-		test_i18ncmp expect actual.sorted
+		test_cmp expect actual.sorted
 	)
 '
 
@@ -865,6 +980,47 @@ test_expect_success 'detect corrupt index file in fsck' '
 	corrupt_index_checksum &&
 	test_must_fail git fsck --cache 2>errors &&
 	test_i18ngrep "bad index file" errors
+'
+
+test_expect_success 'fsck error and recovery on invalid object type' '
+	git init --bare garbage-type &&
+	(
+		cd garbage-type &&
+
+		garbage_blob=$(git hash-object --stdin -w -t garbage --literally </dev/null) &&
+
+		cat >err.expect <<-\EOF &&
+		fatal: invalid object type
+		EOF
+		test_must_fail git fsck >out 2>err &&
+		grep -e "^error" -e "^fatal" err >errors &&
+		test_line_count = 1 errors &&
+		grep "$garbage_blob: object is of unknown type '"'"'garbage'"'"':" err
+	)
+'
+
+test_expect_success 'fsck error on gitattributes with excessive line lengths' '
+	blob=$(printf "pattern %02048d" 1 | git hash-object -w --stdin) &&
+	test_when_finished "remove_object $blob" &&
+	tree=$(printf "100644 blob %s\t%s\n" $blob .gitattributes | git mktree) &&
+	test_when_finished "remove_object $tree" &&
+	cat >expected <<-EOF &&
+	error in blob $blob: gitattributesLineLength: .gitattributes has too long lines to parse
+	EOF
+	test_must_fail git fsck --no-dangling >actual 2>&1 &&
+	test_cmp expected actual
+'
+
+test_expect_success 'fsck error on gitattributes with excessive size' '
+	blob=$(test-tool genzeros $((100 * 1024 * 1024 + 1)) | git hash-object -w --stdin) &&
+	test_when_finished "remove_object $blob" &&
+	tree=$(printf "100644 blob %s\t%s\n" $blob .gitattributes | git mktree) &&
+	test_when_finished "remove_object $tree" &&
+	cat >expected <<-EOF &&
+	error in blob $blob: gitattributesLarge: .gitattributes too large to parse
+	EOF
+	test_must_fail git fsck --no-dangling >actual 2>&1 &&
+	test_cmp expected actual
 '
 
 test_done

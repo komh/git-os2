@@ -15,8 +15,9 @@
 #include "parse-options.h"
 
 static const char * const commit_tree_usage[] = {
-	N_("git commit-tree [(-p <parent>)...] [-S[<keyid>]] [(-m <message>)...] "
-		"[(-F <file>)...] <tree>"),
+	N_("git commit-tree <tree> [(-p <parent>)...]"),
+	N_("git commit-tree [(-p <parent>)...] [-S[<keyid>]] [(-m <message>)...]\n"
+	   "                [(-F <file>)...] <tree>"),
 	NULL
 };
 
@@ -88,9 +89,7 @@ static int parse_file_arg_callback(const struct option *opt,
 	if (!strcmp(arg, "-"))
 		fd = 0;
 	else {
-		fd = open(arg, O_RDONLY);
-		if (fd < 0)
-			die_errno(_("git commit-tree: failed to open '%s'"), arg);
+		fd = xopen(arg, O_RDONLY);
 	}
 	if (strbuf_read(buf, fd, 0) < 0)
 		die_errno(_("git commit-tree: failed to read '%s'"), arg);

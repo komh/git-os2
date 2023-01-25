@@ -5,6 +5,9 @@
 
 test_description='git branch assorted tests'
 
+GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
+export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
+
 . ./test-lib.sh
 . "$TEST_DIRECTORY"/lib-rebase.sh
 
@@ -37,6 +40,23 @@ test_expect_success 'branch -h in broken repository' '
 
 test_expect_success 'git branch abc should create a branch' '
 	git branch abc && test_path_is_file .git/refs/heads/abc
+'
+
+test_expect_success 'git branch abc should fail when abc exists' '
+	test_must_fail git branch abc
+'
+
+test_expect_success 'git branch --force abc should fail when abc is checked out' '
+	test_when_finished git switch main &&
+	git switch abc &&
+	test_must_fail git branch --force abc HEAD~1
+'
+
+test_expect_success 'git branch --force abc should succeed when abc exists' '
+	git rev-parse HEAD~1 >expect &&
+	git branch --force abc HEAD~1 &&
+	git rev-parse abc >actual &&
+	test_cmp expect actual
 '
 
 test_expect_success 'git branch a/b/c should create a branch' '
@@ -165,6 +185,13 @@ test_expect_success 'git branch -M foo bar should fail when bar is checked out' 
 	test_must_fail git branch -M bar foo
 '
 
+test_expect_success 'git branch -M foo bar should fail when bar is checked out in worktree' '
+	git branch -f bar &&
+	test_when_finished "git worktree remove wt && git branch -D wt" &&
+	git worktree add wt &&
+	test_must_fail git branch -M bar wt
+'
+
 test_expect_success 'git branch -M baz bam should succeed when baz is checked out' '
 	git checkout -b baz &&
 	git branch bam &&
@@ -174,8 +201,8 @@ test_expect_success 'git branch -M baz bam should succeed when baz is checked ou
 
 test_expect_success 'git branch -M baz bam should add entries to .git/logs/HEAD' '
 	msg="Branch: renamed refs/heads/baz to refs/heads/bam" &&
-	grep " 0\{40\}.*$msg$" .git/logs/HEAD &&
-	grep "^0\{40\}.*$msg$" .git/logs/HEAD
+	grep " $ZERO_OID.*$msg$" .git/logs/HEAD &&
+	grep "^$ZERO_OID.*$msg$" .git/logs/HEAD
 '
 
 test_expect_success 'git branch -M should leave orphaned HEAD alone' '
@@ -241,6 +268,53 @@ test_expect_success 'git branch -M topic topic should work when main is checked 
 	git branch -M topic topic
 '
 
+test_expect_success 'git branch -M and -C fail on detached HEAD' '
+	git checkout HEAD^{} &&
+	test_when_finished git checkout - &&
+	echo "fatal: cannot rename the current branch while not on any." >expect &&
+	test_must_fail git branch -M must-fail 2>err &&
+	test_cmp expect err &&
+	echo "fatal: cannot copy the current branch while not on any." >expect &&
+	test_must_fail git branch -C must-fail 2>err &&
+	test_cmp expect err
+'
+
+test_expect_success 'git branch -d on orphan HEAD (merged)' '
+	test_when_finished git checkout main &&
+	git checkout --orphan orphan &&
+	test_when_finished "rm -rf .git/objects/commit-graph*" &&
+	git commit-graph write --reachable &&
+	git branch --track to-delete main &&
+	git branch -d to-delete
+'
+
+test_expect_success 'git branch -d on orphan HEAD (merged, graph)' '
+	test_when_finished git checkout main &&
+	git checkout --orphan orphan &&
+	git branch --track to-delete main &&
+	git branch -d to-delete
+'
+
+test_expect_success 'git branch -d on orphan HEAD (unmerged)' '
+	test_when_finished git checkout main &&
+	git checkout --orphan orphan &&
+	test_when_finished "git branch -D to-delete" &&
+	git branch to-delete main &&
+	test_must_fail git branch -d to-delete 2>err &&
+	grep "not fully merged" err
+'
+
+test_expect_success 'git branch -d on orphan HEAD (unmerged, graph)' '
+	test_when_finished git checkout main &&
+	git checkout --orphan orphan &&
+	test_when_finished "git branch -D to-delete" &&
+	git branch to-delete main &&
+	test_when_finished "rm -rf .git/objects/commit-graph*" &&
+	git commit-graph write --reachable &&
+	test_must_fail git branch -d to-delete 2>err &&
+	grep "not fully merged" err
+'
+
 test_expect_success 'git branch -v -d t should work' '
 	git branch t &&
 	git rev-parse --verify refs/heads/t &&
@@ -279,6 +353,7 @@ test_expect_success 'deleting checked-out branch from repo that is a submodule' 
 	git init repo1 &&
 	git init repo1/sub &&
 	test_commit -C repo1/sub x &&
+	test_config_global protocol.file.allow always &&
 	git -C repo1 submodule add ./sub &&
 	git -C repo1 commit -m "adding sub" &&
 
@@ -306,7 +381,9 @@ test_expect_success 'git branch --list -v with --abbrev' '
 
 	git branch -v --list --no-abbrev t >actual.noabbrev &&
 	git branch -v --list --abbrev=0 t >actual.0abbrev &&
+	git -c core.abbrev=no branch -v --list t >actual.noabbrev-conf &&
 	test_cmp actual.noabbrev actual.0abbrev &&
+	test_cmp actual.noabbrev actual.noabbrev-conf &&
 
 	git branch -v --list --abbrev=36 t >actual.36abbrev &&
 	# how many hexdigits are used?
@@ -690,7 +767,7 @@ test_expect_success 'deleting a symref' '
 	git branch -d symref >actual &&
 	test_path_is_file .git/refs/heads/target &&
 	test_path_is_missing .git/refs/heads/symref &&
-	test_i18ncmp expect actual
+	test_cmp expect actual
 '
 
 test_expect_success 'deleting a dangling symref' '
@@ -699,7 +776,7 @@ test_expect_success 'deleting a dangling symref' '
 	echo "Deleted branch dangling-symref (was nowhere)." >expect &&
 	git branch -d dangling-symref >actual &&
 	test_path_is_missing .git/refs/heads/dangling-symref &&
-	test_i18ncmp expect actual
+	test_cmp expect actual
 '
 
 test_expect_success 'deleting a self-referential symref' '
@@ -708,7 +785,7 @@ test_expect_success 'deleting a self-referential symref' '
 	echo "Deleted branch self-reference (was refs/heads/self-reference)." >expect &&
 	git branch -d self-reference >actual &&
 	test_path_is_missing .git/refs/heads/self-reference &&
-	test_i18ncmp expect actual
+	test_cmp expect actual
 '
 
 test_expect_success 'renaming a symref is not allowed' '
@@ -724,6 +801,28 @@ test_expect_success SYMLINKS 'git branch -m u v should fail when the reflog for 
 	mv .git/logs/refs/heads/u real-u &&
 	ln -s real-u .git/logs/refs/heads/u &&
 	test_must_fail git branch -m u v
+'
+
+test_expect_success SYMLINKS 'git branch -m with symlinked .git/refs' '
+	test_when_finished "rm -rf subdir" &&
+	git init --bare subdir &&
+
+	rm -rfv subdir/refs subdir/objects subdir/packed-refs &&
+	ln -s ../.git/refs subdir/refs &&
+	ln -s ../.git/objects subdir/objects &&
+	ln -s ../.git/packed-refs subdir/packed-refs &&
+
+	git -C subdir rev-parse --absolute-git-dir >subdir.dir &&
+	git rev-parse --absolute-git-dir >our.dir &&
+	! test_cmp subdir.dir our.dir &&
+
+	git -C subdir log &&
+	git -C subdir branch rename-src &&
+	git rev-parse rename-src >expect &&
+	git -C subdir branch -m rename-src rename-dest &&
+	git rev-parse rename-dest >actual &&
+	test_cmp expect actual &&
+	git branch -D rename-dest
 '
 
 test_expect_success 'test tracking setup via --track' '
@@ -803,7 +902,7 @@ test_expect_success 'test deleting branch without config' '
 	sha1=$(git rev-parse my7 | cut -c 1-7) &&
 	echo "Deleted branch my7 (was $sha1)." >expect &&
 	git branch -d my7 >actual 2>&1 &&
-	test_i18ncmp expect actual
+	test_cmp expect actual
 '
 
 test_expect_success 'deleting currently checked out branch fails' '
@@ -835,10 +934,45 @@ test_expect_success 'branch from tag w/--track causes failure' '
 	test_must_fail git branch --track my11 foobar
 '
 
+test_expect_success 'simple tracking works when remote branch name matches' '
+	test_when_finished "rm -rf otherserver" &&
+	git init otherserver &&
+	test_commit -C otherserver my_commit 1 &&
+	git -C otherserver branch feature &&
+	test_config branch.autosetupmerge simple &&
+	test_config remote.otherserver.url otherserver &&
+	test_config remote.otherserver.fetch refs/heads/*:refs/remotes/otherserver/* &&
+	git fetch otherserver &&
+	git branch feature otherserver/feature &&
+	test_cmp_config otherserver branch.feature.remote &&
+	test_cmp_config refs/heads/feature branch.feature.merge
+'
+
+test_expect_success 'simple tracking skips when remote branch name does not match' '
+	test_config branch.autosetupmerge simple &&
+	test_config remote.local.url . &&
+	test_config remote.local.fetch refs/heads/*:refs/remotes/local/* &&
+	git fetch local &&
+	git branch my-other local/main &&
+	test_cmp_config "" --default "" branch.my-other.remote &&
+	test_cmp_config "" --default "" branch.my-other.merge
+'
+
+test_expect_success 'simple tracking skips when remote ref is not a branch' '
+	test_config branch.autosetupmerge simple &&
+	test_config remote.localtags.url . &&
+	test_config remote.localtags.fetch refs/tags/*:refs/remotes/localtags/* &&
+	git tag mytag12 main &&
+	git fetch localtags &&
+	git branch mytag12 localtags/mytag12 &&
+	test_cmp_config "" --default "" branch.mytag12.remote &&
+	test_cmp_config "" --default "" branch.mytag12.merge
+'
+
 test_expect_success '--set-upstream-to fails on multiple branches' '
 	echo "fatal: too many arguments to set new upstream" >expect &&
 	test_must_fail git branch --set-upstream-to main a b c 2>err &&
-	test_i18ncmp expect err
+	test_cmp expect err
 '
 
 test_expect_success '--set-upstream-to fails on detached HEAD' '
@@ -846,13 +980,13 @@ test_expect_success '--set-upstream-to fails on detached HEAD' '
 	test_when_finished git checkout - &&
 	echo "fatal: could not set upstream of HEAD to main when it does not point to any branch." >expect &&
 	test_must_fail git branch --set-upstream-to main 2>err &&
-	test_i18ncmp expect err
+	test_cmp expect err
 '
 
 test_expect_success '--set-upstream-to fails on a missing dst branch' '
 	echo "fatal: branch '"'"'does-not-exist'"'"' does not exist" >expect &&
 	test_must_fail git branch --set-upstream-to main does-not-exist 2>err &&
-	test_i18ncmp expect err
+	test_cmp expect err
 '
 
 test_expect_success '--set-upstream-to fails on a missing src branch' '
@@ -861,9 +995,9 @@ test_expect_success '--set-upstream-to fails on a missing src branch' '
 '
 
 test_expect_success '--set-upstream-to fails on a non-ref' '
-	echo "fatal: Cannot setup tracking information; starting point '"'"'HEAD^{}'"'"' is not a branch." >expect &&
+	echo "fatal: cannot set up tracking information; starting point '"'"'HEAD^{}'"'"' is not a branch" >expect &&
 	test_must_fail git branch --set-upstream-to HEAD^{} 2>err &&
-	test_i18ncmp expect err
+	test_cmp expect err
 '
 
 test_expect_success '--set-upstream-to fails on locked config' '
@@ -894,7 +1028,7 @@ test_expect_success 'use --set-upstream-to modify a particular branch' '
 test_expect_success '--unset-upstream should fail if given a non-existent branch' '
 	echo "fatal: Branch '"'"'i-dont-exist'"'"' has no upstream information" >expect &&
 	test_must_fail git branch --unset-upstream i-dont-exist 2>err &&
-	test_i18ncmp expect err
+	test_cmp expect err
 '
 
 test_expect_success '--unset-upstream should fail if config is locked' '
@@ -916,13 +1050,13 @@ test_expect_success 'test --unset-upstream on HEAD' '
 	# fail for a branch without upstream set
 	echo "fatal: Branch '"'"'main'"'"' has no upstream information" >expect &&
 	test_must_fail git branch --unset-upstream 2>err &&
-	test_i18ncmp expect err
+	test_cmp expect err
 '
 
 test_expect_success '--unset-upstream should fail on multiple branches' '
 	echo "fatal: too many arguments to unset upstream" >expect &&
 	test_must_fail git branch --unset-upstream a b c 2>err &&
-	test_i18ncmp expect err
+	test_cmp expect err
 '
 
 test_expect_success '--unset-upstream should fail on detached HEAD' '
@@ -930,7 +1064,7 @@ test_expect_success '--unset-upstream should fail on detached HEAD' '
 	test_when_finished git checkout - &&
 	echo "fatal: could not unset upstream of HEAD when it does not point to any branch." >expect &&
 	test_must_fail git branch --unset-upstream 2>err &&
-	test_i18ncmp expect err
+	test_cmp expect err
 '
 
 test_expect_success 'test --unset-upstream on a particular branch' '
@@ -945,15 +1079,15 @@ test_expect_success 'disabled option --set-upstream fails' '
 	test_must_fail git branch --set-upstream origin/main
 '
 
-test_expect_success '--set-upstream-to notices an error to set branch as own upstream' '
+test_expect_success '--set-upstream-to notices an error to set branch as own upstream' "
 	git branch --set-upstream-to refs/heads/my13 my13 2>actual &&
 	cat >expect <<-\EOF &&
-	warning: Not setting branch my13 as its own upstream.
+	warning: not setting branch 'my13' as its own upstream
 	EOF
 	test_expect_code 1 git config branch.my13.remote &&
 	test_expect_code 1 git config branch.my13.merge &&
-	test_i18ncmp expect actual
-'
+	test_cmp expect actual
+"
 
 # Keep this test last, as it changes the current branch
 cat >expect <<EOF
@@ -988,13 +1122,27 @@ test_expect_success 'checkout -b with -l makes reflog when core.logAllRefUpdates
 	git rev-parse --verify gamma@{0}
 '
 
-test_expect_success 'avoid ambiguous track' '
+test_expect_success 'avoid ambiguous track and advise' '
 	git config branch.autosetupmerge true &&
 	git config remote.ambi1.url lalala &&
 	git config remote.ambi1.fetch refs/heads/lalala:refs/heads/main &&
 	git config remote.ambi2.url lilili &&
 	git config remote.ambi2.fetch refs/heads/lilili:refs/heads/main &&
-	test_must_fail git branch all1 main &&
+	cat <<-EOF >expected &&
+	fatal: not tracking: ambiguous information for ref '\''refs/heads/main'\''
+	hint: There are multiple remotes whose fetch refspecs map to the remote
+	hint: tracking ref '\''refs/heads/main'\'':
+	hint:   ambi1
+	hint:   ambi2
+	hint: ''
+	hint: This is typically a configuration error.
+	hint: ''
+	hint: To support setting up tracking branches, ensure that
+	hint: different remotes'\'' fetch refspecs map into different
+	hint: tracking namespaces.
+	EOF
+	test_must_fail git branch all1 main 2>actual &&
+	test_cmp expected actual &&
 	test -z "$(git config branch.all1.merge)"
 '
 
@@ -1267,7 +1415,23 @@ test_expect_success 'attempt to delete a branch merged to its base' '
 	test_must_fail git branch -d my10
 '
 
+test_expect_success 'branch --delete --force removes dangling branch' '
+	git checkout main &&
+	test_commit unstable &&
+	hash=$(git rev-parse HEAD) &&
+	objpath=$(echo $hash | sed -e "s|^..|.git/objects/&/|") &&
+	git branch --no-track dangling &&
+	mv $objpath $objpath.x &&
+	test_when_finished "mv $objpath.x $objpath" &&
+	git branch --delete --force dangling &&
+	git for-each-ref refs/heads/dangling >actual &&
+	test_must_be_empty actual
+'
+
 test_expect_success 'use --edit-description' '
+	EDITOR=: git branch --edit-description &&
+	test_expect_code 1 git config branch.main.description &&
+
 	write_script editor <<-\EOF &&
 		echo "New contents" >"$1"
 	EOF
@@ -1400,8 +1564,51 @@ test_expect_success 'invalid sort parameter in configuration' '
 	(
 		cd sort &&
 		git config branch.sort "v:notvalid" &&
-		test_must_fail git branch
+
+		# this works in the "listing" mode, so bad sort key
+		# is a dying offence.
+		test_must_fail git branch &&
+
+		# these do not need to use sorting, and should all
+		# succeed
+		git branch newone main &&
+		git branch -c newone newerone &&
+		git branch -m newone newestone &&
+		git branch -d newerone newestone
 	)
+'
+
+test_expect_success 'tracking info copied with --track=inherit' '
+	git branch --track=inherit foo2 my1 &&
+	test_cmp_config local branch.foo2.remote &&
+	test_cmp_config refs/heads/main branch.foo2.merge
+'
+
+test_expect_success 'tracking info copied with autoSetupMerge=inherit' '
+	test_unconfig branch.autoSetupMerge &&
+	# default config does not copy tracking info
+	git branch foo-no-inherit my1 &&
+	test_cmp_config "" --default "" branch.foo-no-inherit.remote &&
+	test_cmp_config "" --default "" branch.foo-no-inherit.merge &&
+	# with autoSetupMerge=inherit, we copy tracking info from my1
+	test_config branch.autoSetupMerge inherit &&
+	git branch foo3 my1 &&
+	test_cmp_config local branch.foo3.remote &&
+	test_cmp_config refs/heads/main branch.foo3.merge &&
+	# no tracking info to inherit from main
+	git branch main2 main &&
+	test_cmp_config "" --default "" branch.main2.remote &&
+	test_cmp_config "" --default "" branch.main2.merge
+'
+
+test_expect_success '--track overrides branch.autoSetupMerge' '
+	test_config branch.autoSetupMerge inherit &&
+	git branch --track=direct foo4 my1 &&
+	test_cmp_config . branch.foo4.remote &&
+	test_cmp_config refs/heads/my1 branch.foo4.merge &&
+	git branch --no-track foo5 my1 &&
+	test_cmp_config "" --default "" branch.foo5.remote &&
+	test_cmp_config "" --default "" branch.foo5.merge
 '
 
 test_done

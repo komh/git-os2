@@ -56,18 +56,25 @@ test_atom() {
 	# Automatically test "contents:size" atom after testing "contents"
 	if test "$2" = "contents"
 	then
-		case $(git cat-file -t "$ref") in
-		tag)
-			# We cannot use $3 as it expects sanitize_pgp to run
-			expect=$(git cat-file tag $ref | tail -n +6 | wc -c) ;;
-		tree | blob)
-			expect='' ;;
-		commit)
-			expect=$(printf '%s' "$3" | wc -c) ;;
-		esac
-		# Leave $expect unquoted to lose possible leading whitespaces
-		echo $expect >expected
+		# for commit leg, $3 is changed there
+		expect=$(printf '%s' "$3" | wc -c)
 		test_expect_${4:-success} $PREREQ "basic atom: $1 contents:size" '
+			type=$(git cat-file -t "$ref") &&
+			case $type in
+			tag)
+				# We cannot use $3 as it expects sanitize_pgp to run
+				git cat-file tag $ref >out &&
+				expect=$(tail -n +6 out | wc -c) &&
+				rm -f out ;;
+			tree | blob)
+				expect="" ;;
+			commit)
+				: "use the calculated expect" ;;
+			*)
+				BUG "unknown object type" ;;
+			esac &&
+			# Leave $expect unquoted to lose possible leading whitespaces
+			echo $expect >expected &&
 			git for-each-ref --format="%(contents:size)" "$ref" >actual &&
 			test_cmp expected actual
 		'
@@ -127,6 +134,8 @@ test_atom head parent:short=10 ''
 test_atom head numparent 0
 test_atom head object ''
 test_atom head type ''
+test_atom head raw "$(git cat-file commit refs/heads/main)
+"
 test_atom head '*objectname' ''
 test_atom head '*objecttype' ''
 test_atom head author 'A U Thor <author@example.com> 1151968724 +0200'
@@ -217,6 +226,15 @@ test_atom tag contents:signature ''
 test_atom tag contents 'Tagging at 1151968727
 '
 test_atom tag HEAD ' '
+
+test_expect_success 'basic atom: refs/tags/testtag *raw' '
+	git cat-file commit refs/tags/testtag^{} >expected &&
+	git for-each-ref --format="%(*raw)" refs/tags/testtag >actual &&
+	sanitize_pgp <expected >expected.clean &&
+	echo >>expected.clean &&
+	sanitize_pgp <actual >actual.clean &&
+	test_cmp expected.clean actual.clean
+'
 
 test_expect_success 'Check invalid atoms names are errors' '
 	test_must_fail git for-each-ref --format="%(INVALID)" refs/heads
@@ -396,6 +414,11 @@ EOF
 test_expect_success 'Verify descending sort' '
 	git for-each-ref --format="%(refname)" --sort=-refname >actual &&
 	test_cmp expected actual
+'
+
+test_expect_success 'Give help even with invalid sort atoms' '
+	test_expect_code 129 git for-each-ref --sort=bogus -h >actual 2>&1 &&
+	grep "^usage: git for-each-ref" actual
 '
 
 cat >expected <<\EOF
@@ -683,6 +706,15 @@ test_atom refs/tags/signed-empty contents:body ''
 test_atom refs/tags/signed-empty contents:signature "$sig"
 test_atom refs/tags/signed-empty contents "$sig"
 
+test_expect_success GPG 'basic atom: refs/tags/signed-empty raw' '
+	git cat-file tag refs/tags/signed-empty >expected &&
+	git for-each-ref --format="%(raw)" refs/tags/signed-empty >actual &&
+	sanitize_pgp <expected >expected.clean &&
+	echo >>expected.clean &&
+	sanitize_pgp <actual >actual.clean &&
+	test_cmp expected.clean actual.clean
+'
+
 test_atom refs/tags/signed-short subject 'subject line'
 test_atom refs/tags/signed-short subject:sanitize 'subject-line'
 test_atom refs/tags/signed-short contents:subject 'subject line'
@@ -691,6 +723,15 @@ test_atom refs/tags/signed-short contents:body ''
 test_atom refs/tags/signed-short contents:signature "$sig"
 test_atom refs/tags/signed-short contents "subject line
 $sig"
+
+test_expect_success GPG 'basic atom: refs/tags/signed-short raw' '
+	git cat-file tag refs/tags/signed-short >expected &&
+	git for-each-ref --format="%(raw)" refs/tags/signed-short >actual &&
+	sanitize_pgp <expected >expected.clean &&
+	echo >>expected.clean &&
+	sanitize_pgp <actual >actual.clean &&
+	test_cmp expected.clean actual.clean
+'
 
 test_atom refs/tags/signed-long subject 'subject line'
 test_atom refs/tags/signed-long subject:sanitize 'subject-line'
@@ -705,6 +746,15 @@ test_atom refs/tags/signed-long contents "subject line
 body contents
 $sig"
 
+test_expect_success GPG 'basic atom: refs/tags/signed-long raw' '
+	git cat-file tag refs/tags/signed-long >expected &&
+	git for-each-ref --format="%(raw)" refs/tags/signed-long >actual &&
+	sanitize_pgp <expected >expected.clean &&
+	echo >>expected.clean &&
+	sanitize_pgp <actual >actual.clean &&
+	test_cmp expected.clean actual.clean
+'
+
 test_expect_success 'set up refs pointing to tree and blob' '
 	git update-ref refs/mytrees/first refs/heads/main^{tree} &&
 	git update-ref refs/myblobs/first refs/heads/main:one
@@ -717,12 +767,202 @@ test_atom refs/mytrees/first contents:body ""
 test_atom refs/mytrees/first contents:signature ""
 test_atom refs/mytrees/first contents ""
 
+test_expect_success 'basic atom: refs/mytrees/first raw' '
+	git cat-file tree refs/mytrees/first >expected &&
+	echo >>expected &&
+	git for-each-ref --format="%(raw)" refs/mytrees/first >actual &&
+	test_cmp expected actual &&
+	git cat-file -s refs/mytrees/first >expected &&
+	git for-each-ref --format="%(raw:size)" refs/mytrees/first >actual &&
+	test_cmp expected actual
+'
+
 test_atom refs/myblobs/first subject ""
 test_atom refs/myblobs/first contents:subject ""
 test_atom refs/myblobs/first body ""
 test_atom refs/myblobs/first contents:body ""
 test_atom refs/myblobs/first contents:signature ""
 test_atom refs/myblobs/first contents ""
+
+test_expect_success 'basic atom: refs/myblobs/first raw' '
+	git cat-file blob refs/myblobs/first >expected &&
+	echo >>expected &&
+	git for-each-ref --format="%(raw)" refs/myblobs/first >actual &&
+	test_cmp expected actual &&
+	git cat-file -s refs/myblobs/first >expected &&
+	git for-each-ref --format="%(raw:size)" refs/myblobs/first >actual &&
+	test_cmp expected actual
+'
+
+test_expect_success 'set up refs pointing to binary blob' '
+	printf "a\0b\0c" >blob1 &&
+	printf "a\0c\0b" >blob2 &&
+	printf "\0a\0b\0c" >blob3 &&
+	printf "abc" >blob4 &&
+	printf "\0 \0 \0 " >blob5 &&
+	printf "\0 \0a\0 " >blob6 &&
+	printf "  " >blob7 &&
+	>blob8 &&
+	obj=$(git hash-object -w blob1) &&
+	git update-ref refs/myblobs/blob1 "$obj" &&
+	obj=$(git hash-object -w blob2) &&
+	git update-ref refs/myblobs/blob2 "$obj" &&
+	obj=$(git hash-object -w blob3) &&
+	git update-ref refs/myblobs/blob3 "$obj" &&
+	obj=$(git hash-object -w blob4) &&
+	git update-ref refs/myblobs/blob4 "$obj" &&
+	obj=$(git hash-object -w blob5) &&
+	git update-ref refs/myblobs/blob5 "$obj" &&
+	obj=$(git hash-object -w blob6) &&
+	git update-ref refs/myblobs/blob6 "$obj" &&
+	obj=$(git hash-object -w blob7) &&
+	git update-ref refs/myblobs/blob7 "$obj" &&
+	obj=$(git hash-object -w blob8) &&
+	git update-ref refs/myblobs/blob8 "$obj"
+'
+
+test_expect_success 'Verify sorts with raw' '
+	cat >expected <<-EOF &&
+	refs/myblobs/blob8
+	refs/myblobs/blob5
+	refs/myblobs/blob6
+	refs/myblobs/blob3
+	refs/myblobs/blob7
+	refs/mytrees/first
+	refs/myblobs/first
+	refs/myblobs/blob1
+	refs/myblobs/blob2
+	refs/myblobs/blob4
+	refs/heads/main
+	EOF
+	git for-each-ref --format="%(refname)" --sort=raw \
+		refs/heads/main refs/myblobs/ refs/mytrees/first >actual &&
+	test_cmp expected actual
+'
+
+test_expect_success 'Verify sorts with raw:size' '
+	cat >expected <<-EOF &&
+	refs/myblobs/blob8
+	refs/myblobs/first
+	refs/myblobs/blob7
+	refs/heads/main
+	refs/myblobs/blob4
+	refs/myblobs/blob1
+	refs/myblobs/blob2
+	refs/myblobs/blob3
+	refs/myblobs/blob5
+	refs/myblobs/blob6
+	refs/mytrees/first
+	EOF
+	git for-each-ref --format="%(refname)" --sort=raw:size \
+		refs/heads/main refs/myblobs/ refs/mytrees/first >actual &&
+	test_cmp expected actual
+'
+
+test_expect_success 'validate raw atom with %(if:equals)' '
+	cat >expected <<-EOF &&
+	not equals
+	not equals
+	not equals
+	not equals
+	not equals
+	not equals
+	refs/myblobs/blob4
+	not equals
+	not equals
+	not equals
+	not equals
+	not equals
+	EOF
+	git for-each-ref --format="%(if:equals=abc)%(raw)%(then)%(refname)%(else)not equals%(end)" \
+		refs/myblobs/ refs/heads/ >actual &&
+	test_cmp expected actual
+'
+
+test_expect_success 'validate raw atom with %(if:notequals)' '
+	cat >expected <<-EOF &&
+	refs/heads/ambiguous
+	refs/heads/main
+	refs/heads/newtag
+	refs/myblobs/blob1
+	refs/myblobs/blob2
+	refs/myblobs/blob3
+	equals
+	refs/myblobs/blob5
+	refs/myblobs/blob6
+	refs/myblobs/blob7
+	refs/myblobs/blob8
+	refs/myblobs/first
+	EOF
+	git for-each-ref --format="%(if:notequals=abc)%(raw)%(then)%(refname)%(else)equals%(end)" \
+		refs/myblobs/ refs/heads/ >actual &&
+	test_cmp expected actual
+'
+
+test_expect_success 'empty raw refs with %(if)' '
+	cat >expected <<-EOF &&
+	refs/myblobs/blob1 not empty
+	refs/myblobs/blob2 not empty
+	refs/myblobs/blob3 not empty
+	refs/myblobs/blob4 not empty
+	refs/myblobs/blob5 not empty
+	refs/myblobs/blob6 not empty
+	refs/myblobs/blob7 empty
+	refs/myblobs/blob8 empty
+	refs/myblobs/first not empty
+	EOF
+	git for-each-ref --format="%(refname) %(if)%(raw)%(then)not empty%(else)empty%(end)" \
+		refs/myblobs/ >actual &&
+	test_cmp expected actual
+'
+
+test_expect_success '%(raw) with --python must fail' '
+	test_must_fail git for-each-ref --format="%(raw)" --python
+'
+
+test_expect_success '%(raw) with --tcl must fail' '
+	test_must_fail git for-each-ref --format="%(raw)" --tcl
+'
+
+test_expect_success '%(raw) with --perl' '
+	git for-each-ref --format="\$name= %(raw);
+print \"\$name\"" refs/myblobs/blob1 --perl | perl >actual &&
+	cmp blob1 actual &&
+	git for-each-ref --format="\$name= %(raw);
+print \"\$name\"" refs/myblobs/blob3 --perl | perl >actual &&
+	cmp blob3 actual &&
+	git for-each-ref --format="\$name= %(raw);
+print \"\$name\"" refs/myblobs/blob8 --perl | perl >actual &&
+	cmp blob8 actual &&
+	git for-each-ref --format="\$name= %(raw);
+print \"\$name\"" refs/myblobs/first --perl | perl >actual &&
+	cmp one actual &&
+	git cat-file tree refs/mytrees/first > expected &&
+	git for-each-ref --format="\$name= %(raw);
+print \"\$name\"" refs/mytrees/first --perl | perl >actual &&
+	cmp expected actual
+'
+
+test_expect_success '%(raw) with --shell must fail' '
+	test_must_fail git for-each-ref --format="%(raw)" --shell
+'
+
+test_expect_success '%(raw) with --shell and --sort=raw must fail' '
+	test_must_fail git for-each-ref --format="%(raw)" --sort=raw --shell
+'
+
+test_expect_success '%(raw:size) with --shell' '
+	git for-each-ref --format="%(raw:size)" | sed "s/^/$SQ/;s/$/$SQ/" >expect &&
+	git for-each-ref --format="%(raw:size)" --shell >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'for-each-ref --format compare with cat-file --batch' '
+	git rev-parse refs/mytrees/first | git cat-file --batch >expected &&
+	git for-each-ref --format="%(objectname) %(objecttype) %(objectsize)
+%(raw)" refs/mytrees/first >actual &&
+	test_cmp expected actual
+'
 
 test_expect_success 'set up multiple-sort tags' '
 	for when in 100000 200000
@@ -778,6 +1018,27 @@ test_expect_success 'equivalent sorts fall back on refname' '
 	test_cmp expected actual
 '
 
+test_expect_success '--no-sort cancels the previous sort keys' '
+	cat >expected <<-\EOF &&
+	100000 <user1@example.com> refs/tags/multi-ref1-100000-user1
+	100000 <user2@example.com> refs/tags/multi-ref1-100000-user2
+	100000 <user1@example.com> refs/tags/multi-ref2-100000-user1
+	100000 <user2@example.com> refs/tags/multi-ref2-100000-user2
+	200000 <user1@example.com> refs/tags/multi-ref1-200000-user1
+	200000 <user2@example.com> refs/tags/multi-ref1-200000-user2
+	200000 <user1@example.com> refs/tags/multi-ref2-200000-user1
+	200000 <user2@example.com> refs/tags/multi-ref2-200000-user2
+	EOF
+	git for-each-ref \
+		--format="%(taggerdate:unix) %(taggeremail) %(refname)" \
+		--sort=-refname \
+		--sort=taggeremail \
+		--no-sort \
+		--sort=taggerdate \
+		"refs/tags/multi-*" >actual &&
+	test_cmp expected actual
+'
+
 test_expect_success 'do not dereference NULL upon %(HEAD) on unborn branch' '
 	test_when_finished "git checkout main" &&
 	git for-each-ref --format="%(HEAD) %(refname:short)" refs/heads/ >actual &&
@@ -811,60 +1072,159 @@ test_expect_success 'set up trailers for next test' '
 	EOF
 '
 
-test_expect_success '%(trailers:unfold) unfolds trailers' '
-	{
-		unfold <trailers
-		echo
-	} >expect &&
-	git for-each-ref --format="%(trailers:unfold)" refs/heads/main >actual &&
-	test_cmp expect actual &&
-	git for-each-ref --format="%(contents:trailers:unfold)" refs/heads/main >actual &&
-	test_cmp expect actual
-'
+test_trailer_option () {
+	title=$1 option=$2
+	cat >expect
+	test_expect_success "$title" '
+		git for-each-ref --format="%($option)" refs/heads/main >actual &&
+		test_cmp expect actual &&
+		git for-each-ref --format="%(contents:$option)" refs/heads/main >actual &&
+		test_cmp expect actual
+	'
+}
 
-test_expect_success '%(trailers:only) shows only "key: value" trailers' '
-	{
-		grep -v patch.description <trailers &&
-		echo
-	} >expect &&
-	git for-each-ref --format="%(trailers:only)" refs/heads/main >actual &&
-	test_cmp expect actual &&
-	git for-each-ref --format="%(contents:trailers:only)" refs/heads/main >actual &&
-	test_cmp expect actual
-'
+test_trailer_option '%(trailers:unfold) unfolds trailers' \
+	'trailers:unfold' <<-EOF
+	$(unfold <trailers)
 
-test_expect_success '%(trailers:only) and %(trailers:unfold) work together' '
-	{
-		grep -v patch.description <trailers | unfold &&
-		echo
-	} >expect &&
-	git for-each-ref --format="%(trailers:only,unfold)" refs/heads/main >actual &&
-	test_cmp expect actual &&
-	git for-each-ref --format="%(trailers:unfold,only)" refs/heads/main >actual &&
-	test_cmp actual actual &&
-	git for-each-ref --format="%(contents:trailers:only,unfold)" refs/heads/main >actual &&
-	test_cmp expect actual &&
-	git for-each-ref --format="%(contents:trailers:unfold,only)" refs/heads/main >actual &&
-	test_cmp actual actual
-'
+	EOF
 
-test_expect_success '%(trailers) rejects unknown trailers arguments' '
-	# error message cannot be checked under i18n
-	cat >expect <<-EOF &&
+test_trailer_option '%(trailers:only) shows only "key: value" trailers' \
+	'trailers:only' <<-EOF
+	$(grep -v patch.description <trailers)
+
+	EOF
+
+test_trailer_option '%(trailers:only=no,only=true) shows only "key: value" trailers' \
+	'trailers:only=no,only=true' <<-EOF
+	$(grep -v patch.description <trailers)
+
+	EOF
+
+test_trailer_option '%(trailers:only=yes) shows only "key: value" trailers' \
+	'trailers:only=yes' <<-EOF
+	$(grep -v patch.description <trailers)
+
+	EOF
+
+test_trailer_option '%(trailers:only=no) shows all trailers' \
+	'trailers:only=no' <<-EOF
+	$(cat trailers)
+
+	EOF
+
+test_trailer_option '%(trailers:only) and %(trailers:unfold) work together' \
+	'trailers:only,unfold' <<-EOF
+	$(grep -v patch.description <trailers | unfold)
+
+	EOF
+
+test_trailer_option '%(trailers:unfold) and %(trailers:only) work together' \
+	'trailers:unfold,only' <<-EOF
+	$(grep -v patch.description <trailers | unfold)
+
+	EOF
+
+test_trailer_option '%(trailers:key=foo) shows that trailer' \
+	'trailers:key=Signed-off-by' <<-EOF
+	Signed-off-by: A U Thor <author@example.com>
+
+	EOF
+
+test_trailer_option '%(trailers:key=foo) is case insensitive' \
+	'trailers:key=SiGned-oFf-bY' <<-EOF
+	Signed-off-by: A U Thor <author@example.com>
+
+	EOF
+
+test_trailer_option '%(trailers:key=foo:) trailing colon also works' \
+	'trailers:key=Signed-off-by:' <<-EOF
+	Signed-off-by: A U Thor <author@example.com>
+
+	EOF
+
+test_trailer_option '%(trailers:key=foo) multiple keys' \
+	'trailers:key=Reviewed-by:,key=Signed-off-by' <<-EOF
+	Reviewed-by: A U Thor <author@example.com>
+	Signed-off-by: A U Thor <author@example.com>
+
+	EOF
+
+test_trailer_option '%(trailers:key=nonexistent) becomes empty' \
+	'trailers:key=Shined-off-by:' <<-EOF
+
+	EOF
+
+test_trailer_option '%(trailers:key=foo) handles multiple lines even if folded' \
+	'trailers:key=Acked-by' <<-EOF
+	$(grep -v patch.description <trailers | grep -v Signed-off-by | grep -v Reviewed-by)
+
+	EOF
+
+test_trailer_option '%(trailers:key=foo,unfold) properly unfolds' \
+	'trailers:key=Signed-Off-by,unfold' <<-EOF
+	$(unfold <trailers | grep Signed-off-by)
+
+	EOF
+
+test_trailer_option '%(trailers:key=foo,only=no) also includes nontrailer lines' \
+	'trailers:key=Signed-off-by,only=no' <<-EOF
+	Signed-off-by: A U Thor <author@example.com>
+	$(grep patch.description <trailers)
+
+	EOF
+
+test_trailer_option '%(trailers:key=foo,valueonly) shows only value' \
+	'trailers:key=Signed-off-by,valueonly' <<-EOF
+	A U Thor <author@example.com>
+
+	EOF
+
+test_trailer_option '%(trailers:separator) changes separator' \
+	'trailers:separator=%x2C,key=Reviewed-by,key=Signed-off-by:' <<-EOF
+	Reviewed-by: A U Thor <author@example.com>,Signed-off-by: A U Thor <author@example.com>
+	EOF
+
+test_trailer_option '%(trailers:key_value_separator) changes key-value separator' \
+	'trailers:key_value_separator=%x2C,key=Reviewed-by,key=Signed-off-by:' <<-EOF
+	Reviewed-by,A U Thor <author@example.com>
+	Signed-off-by,A U Thor <author@example.com>
+
+	EOF
+
+test_trailer_option '%(trailers:separator,key_value_separator) changes both separators' \
+	'trailers:separator=%x2C,key_value_separator=%x2C,key=Reviewed-by,key=Signed-off-by:' <<-EOF
+	Reviewed-by,A U Thor <author@example.com>,Signed-off-by,A U Thor <author@example.com>
+	EOF
+
+test_failing_trailer_option () {
+	title=$1 option=$2
+	cat >expect
+	test_expect_success "$title" '
+		# error message cannot be checked under i18n
+		test_must_fail git for-each-ref --format="%($option)" refs/heads/main 2>actual &&
+		test_cmp expect actual &&
+		test_must_fail git for-each-ref --format="%(contents:$option)" refs/heads/main 2>actual &&
+		test_cmp expect actual
+	'
+}
+
+test_failing_trailer_option '%(trailers) rejects unknown trailers arguments' \
+	'trailers:unsupported' <<-\EOF
 	fatal: unknown %(trailers) argument: unsupported
 	EOF
-	test_must_fail git for-each-ref --format="%(trailers:unsupported)" 2>actual &&
-	test_i18ncmp expect actual &&
-	test_must_fail git for-each-ref --format="%(contents:trailers:unsupported)" 2>actual &&
-	test_i18ncmp expect actual
-'
+
+test_failing_trailer_option '%(trailers:key) without value is error' \
+	'trailers:key' <<-\EOF
+	fatal: expected %(trailers:key=<value>)
+	EOF
 
 test_expect_success 'if arguments, %(contents:trailers) shows error if colon is missing' '
 	cat >expect <<-EOF &&
 	fatal: unrecognized %(contents) argument: trailersonly
 	EOF
 	test_must_fail git for-each-ref --format="%(contents:trailersonly)" 2>actual &&
-	test_i18ncmp expect actual
+	test_cmp expect actual
 '
 
 test_expect_success 'basic atom: head contents:trailers' '
@@ -876,6 +1236,10 @@ test_expect_success 'basic atom: head contents:trailers' '
 
 	EOF
 	test_cmp expect actual.clean
+'
+
+test_expect_success 'basic atom: rest must fail' '
+	test_must_fail git for-each-ref --format="%(rest)" refs/heads/main
 '
 
 test_expect_success 'trailer parsing not fooled by --- line' '
@@ -971,7 +1335,7 @@ test_expect_success ':remotename and :remoteref' '
 			echo "${pair#*=}" >expect &&
 			git for-each-ref --format="${pair%=*}" \
 				refs/heads/main >actual &&
-			test_cmp expect actual
+			test_cmp expect actual || exit 1
 		done &&
 		git branch push-simple &&
 		git config branch.push-simple.pushRemote from &&
@@ -1031,5 +1395,55 @@ test_expect_success 'for-each-ref --ignore-case works on multiple sort keys' '
 	EOF
 	test_cmp expect actual
 '
+
+test_expect_success 'for-each-ref reports broken tags' '
+	git tag -m "good tag" broken-tag-good HEAD &&
+	git cat-file tag broken-tag-good >good &&
+	sed s/commit/blob/ <good >bad &&
+	bad=$(git hash-object -w -t tag bad) &&
+	git update-ref refs/tags/broken-tag-bad $bad &&
+	test_must_fail git for-each-ref --format="%(*objectname)" \
+		refs/tags/broken-tag-*
+'
+
+test_expect_success 'set up tag with signature and no blank lines' '
+	git tag -F - fake-sig-no-blanks <<-\EOF
+	this is the subject
+	-----BEGIN PGP SIGNATURE-----
+	not a real signature, but we just care about the
+	subject/body parsing. It is important here that
+	there are no blank lines in the signature.
+	-----END PGP SIGNATURE-----
+	EOF
+'
+
+test_atom refs/tags/fake-sig-no-blanks contents:subject 'this is the subject'
+test_atom refs/tags/fake-sig-no-blanks contents:body ''
+test_atom refs/tags/fake-sig-no-blanks contents:signature "$sig"
+
+test_expect_success 'set up tag with CRLF signature' '
+	append_cr <<-\EOF |
+	this is the subject
+	-----BEGIN PGP SIGNATURE-----
+
+	not a real signature, but we just care about
+	the subject/body parsing. It is important here
+	that there is a blank line separating this
+	from the signature header.
+	-----END PGP SIGNATURE-----
+	EOF
+	git tag -F - --cleanup=verbatim fake-sig-crlf
+'
+
+test_atom refs/tags/fake-sig-crlf contents:subject 'this is the subject'
+test_atom refs/tags/fake-sig-crlf contents:body ''
+
+# CRLF is retained in the signature, so we have to pass our expected value
+# through append_cr. But test_atom requires a shell string, which means command
+# substitution, and the shell will strip trailing newlines from the output of
+# the substitution. Hack around it by adding and then removing a dummy line.
+sig_crlf="$(printf "%s" "$sig" | append_cr; echo dummy)"
+sig_crlf=${sig_crlf%dummy}
+test_atom refs/tags/fake-sig-crlf contents:signature "$sig_crlf"
 
 test_done

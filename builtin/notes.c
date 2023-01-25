@@ -32,8 +32,8 @@ static const char * const git_notes_usage[] = {
 	N_("git notes [--ref <notes-ref>] edit [--allow-empty] [<object>]"),
 	N_("git notes [--ref <notes-ref>] show [<object>]"),
 	N_("git notes [--ref <notes-ref>] merge [-v | -q] [-s <strategy>] <notes-ref>"),
-	N_("git notes merge --commit [-v | -q]"),
-	N_("git notes merge --abort [-v | -q]"),
+	"git notes merge --commit [-v | -q]",
+	"git notes merge --abort [-v | -q]",
 	N_("git notes [--ref <notes-ref>] remove [<object>...]"),
 	N_("git notes [--ref <notes-ref>] prune [-n] [-v]"),
 	N_("git notes [--ref <notes-ref>] get-ref"),
@@ -89,7 +89,7 @@ static const char * const git_notes_prune_usage[] = {
 };
 
 static const char * const git_notes_get_ref_usage[] = {
-	N_("git notes get-ref"),
+	"git notes get-ref",
 	NULL
 };
 
@@ -134,14 +134,13 @@ static void copy_obj_to_fd(int fd, const struct object_id *oid)
 
 static void write_commented_object(int fd, const struct object_id *object)
 {
-	const char *show_args[5] =
-		{"show", "--stat", "--no-notes", oid_to_hex(object), NULL};
 	struct child_process show = CHILD_PROCESS_INIT;
 	struct strbuf buf = STRBUF_INIT;
 	struct strbuf cbuf = STRBUF_INIT;
 
 	/* Invoke "git show --stat --no-notes $object" */
-	show.argv = show_args;
+	strvec_pushl(&show.args, "show", "--stat", "--no-notes",
+		     oid_to_hex(object), NULL);
 	show.no_stdin = 1;
 	show.out = -1;
 	show.err = 0;
@@ -172,9 +171,7 @@ static void prepare_note_data(const struct object_id *object, struct note_data *
 
 		/* write the template message before editing: */
 		d->edit_path = git_pathdup("NOTES_EDITMSG");
-		fd = open(d->edit_path, O_CREAT | O_TRUNC | O_WRONLY, 0600);
-		if (fd < 0)
-			die_errno(_("could not create file '%s'"), d->edit_path);
+		fd = xopen(d->edit_path, O_CREAT | O_TRUNC | O_WRONLY, 0600);
 
 		if (d->given)
 			write_or_die(fd, d->buf.buf, d->buf.len);
@@ -184,7 +181,7 @@ static void prepare_note_data(const struct object_id *object, struct note_data *
 		strbuf_addch(&buf, '\n');
 		strbuf_add_commented_lines(&buf, "\n", strlen("\n"));
 		strbuf_add_commented_lines(&buf, _(note_template), strlen(_(note_template)));
-		strbuf_addch(&buf, '\n');
+		strbuf_add_commented_lines(&buf, "\n", strlen("\n"));
 		write_or_die(fd, buf.buf, buf.len);
 
 		write_commented_object(fd, object);
@@ -202,12 +199,13 @@ static void prepare_note_data(const struct object_id *object, struct note_data *
 
 static void write_note_data(struct note_data *d, struct object_id *oid)
 {
-	if (write_object_file(d->buf.buf, d->buf.len, blob_type, oid)) {
-		error(_("unable to write note object"));
+	if (write_object_file(d->buf.buf, d->buf.len, OBJ_BLOB, oid)) {
+		int status = die_message(_("unable to write note object"));
+
 		if (d->edit_path)
-			error(_("the note contents have been left in %s"),
-				d->edit_path);
-		exit(128);
+			die_message(_("the note contents have been left in %s"),
+				    d->edit_path);
+		exit(status);
 	}
 }
 
@@ -373,7 +371,7 @@ static int list(int argc, const char **argv, const char *prefix)
 				     git_notes_list_usage, 0);
 
 	if (1 < argc) {
-		error(_("too many parameters"));
+		error(_("too many arguments"));
 		usage_with_options(git_notes_list_usage, options);
 	}
 
@@ -428,7 +426,7 @@ static int add(int argc, const char **argv, const char *prefix)
 			     PARSE_OPT_KEEP_ARGV0);
 
 	if (2 < argc) {
-		error(_("too many parameters"));
+		error(_("too many arguments"));
 		usage_with_options(git_notes_add_usage, options);
 	}
 
@@ -506,7 +504,7 @@ static int copy(int argc, const char **argv, const char *prefix)
 
 	if (from_stdin || rewrite_cmd) {
 		if (argc) {
-			error(_("too many parameters"));
+			error(_("too many arguments"));
 			usage_with_options(git_notes_copy_usage, options);
 		} else {
 			return notes_copy_from_stdin(force, rewrite_cmd);
@@ -514,11 +512,11 @@ static int copy(int argc, const char **argv, const char *prefix)
 	}
 
 	if (argc < 1) {
-		error(_("too few parameters"));
+		error(_("too few arguments"));
 		usage_with_options(git_notes_copy_usage, options);
 	}
 	if (2 < argc) {
-		error(_("too many parameters"));
+		error(_("too many arguments"));
 		usage_with_options(git_notes_copy_usage, options);
 	}
 
@@ -595,7 +593,7 @@ static int append_edit(int argc, const char **argv, const char *prefix)
 			     PARSE_OPT_KEEP_ARGV0);
 
 	if (2 < argc) {
-		error(_("too many parameters"));
+		error(_("too many arguments"));
 		usage_with_options(usage, options);
 	}
 
@@ -662,7 +660,7 @@ static int show(int argc, const char **argv, const char *prefix)
 			     0);
 
 	if (1 < argc) {
-		error(_("too many parameters"));
+		error(_("too many arguments"));
 		usage_with_options(git_notes_show_usage, options);
 	}
 
@@ -730,7 +728,7 @@ static int merge_commit(struct notes_merge_options *o)
 	else
 		oidclr(&parent_oid);
 
-	t = xcalloc(1, sizeof(struct notes_tree));
+	CALLOC_ARRAY(t, 1);
 	init_notes(t, "NOTES_MERGE_PARTIAL", combine_notes_overwrite, 0);
 
 	o->local_ref = local_ref_to_free =
@@ -812,7 +810,7 @@ static int merge(int argc, const char **argv, const char *prefix)
 		error(_("must specify a notes ref to merge"));
 		usage_with_options(git_notes_merge_usage, options);
 	} else if (!do_merge && argc) {
-		error(_("too many parameters"));
+		error(_("too many arguments"));
 		usage_with_options(git_notes_merge_usage, options);
 	}
 
@@ -863,15 +861,19 @@ static int merge(int argc, const char **argv, const char *prefix)
 		update_ref(msg.buf, default_notes_ref(), &result_oid, NULL, 0,
 			   UPDATE_REFS_DIE_ON_ERR);
 	else { /* Merge has unresolved conflicts */
+		struct worktree **worktrees;
 		const struct worktree *wt;
 		/* Update .git/NOTES_MERGE_PARTIAL with partial merge result */
 		update_ref(msg.buf, "NOTES_MERGE_PARTIAL", &result_oid, NULL,
 			   0, UPDATE_REFS_DIE_ON_ERR);
 		/* Store ref-to-be-updated into .git/NOTES_MERGE_REF */
-		wt = find_shared_symref("NOTES_MERGE_REF", default_notes_ref());
+		worktrees = get_worktrees();
+		wt = find_shared_symref(worktrees, "NOTES_MERGE_REF",
+					default_notes_ref());
 		if (wt)
 			die(_("a notes merge into %s is already in-progress at %s"),
 			    default_notes_ref(), wt->path);
+		free_worktrees(worktrees);
 		if (create_symref("NOTES_MERGE_REF", default_notes_ref(), NULL))
 			die(_("failed to store link to current notes ref (%s)"),
 			    default_notes_ref());
@@ -960,7 +962,7 @@ static int prune(int argc, const char **argv, const char *prefix)
 			     0);
 
 	if (argc) {
-		error(_("too many parameters"));
+		error(_("too many arguments"));
 		usage_with_options(git_notes_prune_usage, options);
 	}
 
@@ -982,7 +984,7 @@ static int get_ref(int argc, const char **argv, const char *prefix)
 			     git_notes_get_ref_usage, 0);
 
 	if (argc) {
-		error(_("too many parameters"));
+		error(_("too many arguments"));
 		usage_with_options(git_notes_get_ref_usage, options);
 	}
 
@@ -992,17 +994,34 @@ static int get_ref(int argc, const char **argv, const char *prefix)
 
 int cmd_notes(int argc, const char **argv, const char *prefix)
 {
-	int result;
 	const char *override_notes_ref = NULL;
+	parse_opt_subcommand_fn *fn = NULL;
 	struct option options[] = {
 		OPT_STRING(0, "ref", &override_notes_ref, N_("notes-ref"),
 			   N_("use notes from <notes-ref>")),
+		OPT_SUBCOMMAND("list", &fn, list),
+		OPT_SUBCOMMAND("add", &fn, add),
+		OPT_SUBCOMMAND("copy", &fn, copy),
+		OPT_SUBCOMMAND("append", &fn, append_edit),
+		OPT_SUBCOMMAND("edit", &fn, append_edit),
+		OPT_SUBCOMMAND("show", &fn, show),
+		OPT_SUBCOMMAND("merge", &fn, merge),
+		OPT_SUBCOMMAND("remove", &fn, remove_cmd),
+		OPT_SUBCOMMAND("prune", &fn, prune),
+		OPT_SUBCOMMAND("get-ref", &fn, get_ref),
 		OPT_END()
 	};
 
 	git_config(git_default_config, NULL);
 	argc = parse_options(argc, argv, prefix, options, git_notes_usage,
-			     PARSE_OPT_STOP_AT_NON_OPTION);
+			     PARSE_OPT_SUBCOMMAND_OPTIONAL);
+	if (!fn) {
+		if (argc) {
+			error(_("unknown subcommand: `%s'"), argv[0]);
+			usage_with_options(git_notes_usage, options);
+		}
+		fn = list;
+	}
 
 	if (override_notes_ref) {
 		struct strbuf sb = STRBUF_INIT;
@@ -1012,28 +1031,5 @@ int cmd_notes(int argc, const char **argv, const char *prefix)
 		strbuf_release(&sb);
 	}
 
-	if (argc < 1 || !strcmp(argv[0], "list"))
-		result = list(argc, argv, prefix);
-	else if (!strcmp(argv[0], "add"))
-		result = add(argc, argv, prefix);
-	else if (!strcmp(argv[0], "copy"))
-		result = copy(argc, argv, prefix);
-	else if (!strcmp(argv[0], "append") || !strcmp(argv[0], "edit"))
-		result = append_edit(argc, argv, prefix);
-	else if (!strcmp(argv[0], "show"))
-		result = show(argc, argv, prefix);
-	else if (!strcmp(argv[0], "merge"))
-		result = merge(argc, argv, prefix);
-	else if (!strcmp(argv[0], "remove"))
-		result = remove_cmd(argc, argv, prefix);
-	else if (!strcmp(argv[0], "prune"))
-		result = prune(argc, argv, prefix);
-	else if (!strcmp(argv[0], "get-ref"))
-		result = get_ref(argc, argv, prefix);
-	else {
-		result = error(_("unknown subcommand: %s"), argv[0]);
-		usage_with_options(git_notes_usage, options);
-	}
-
-	return result ? 1 : 0;
+	return !!fn(argc, argv, prefix);
 }

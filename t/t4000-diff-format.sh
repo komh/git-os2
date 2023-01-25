@@ -6,8 +6,10 @@
 test_description='Test built-in diff output engine.
 
 '
+
+TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
-. "$TEST_DIRECTORY"/diff-lib.sh
+. "$TEST_DIRECTORY"/lib-diff.sh
 
 echo >path0 'Line 1
 Line 2

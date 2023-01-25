@@ -160,11 +160,13 @@ unspecified.
 ^^^^^
 
 This attribute sets a specific line-ending style to be used in the
-working directory.  It enables end-of-line conversion without any
-content checks, effectively setting the `text` attribute.  Note that
-setting this attribute on paths which are in the index with CRLF line
-endings may make the paths to be considered dirty.  Adding the path to
-the index again will normalize the line endings in the index.
+working directory.  This attribute has effect only if the `text`
+attribute is set or unspecified, or if it is set to `auto`, the file is
+detected as text, and it is stored with LF endings in the index.  Note
+that setting this attribute on paths which are in the index with CRLF
+line endings may make the paths to be considered dirty unless
+`text=auto` is set. Adding the path to the index again will normalize
+the line endings in the index.
 
 Set to string value "crlf"::
 
@@ -827,6 +829,8 @@ patterns are available:
 
 - `java` suitable for source code in the Java language.
 
+- `kotlin` suitable for source code in the Kotlin language.
+
 - `markdown` suitable for Markdown documents.
 
 - `matlab` suitable for source code in the MATLAB and Octave languages.
@@ -844,6 +848,8 @@ patterns are available:
 - `ruby` suitable for source code in the Ruby language.
 
 - `rust` suitable for source code in the Rust language.
+
+- `scheme` suitable for source code in the Scheme language.
 
 - `tex` suitable for source code for LaTeX documents.
 
@@ -1174,7 +1180,8 @@ tag then no replacement will be done.  The placeholders are the same
 as those for the option `--pretty=format:` of linkgit:git-log[1],
 except that they need to be wrapped like this: `$Format:PLACEHOLDERS$`
 in the file.  E.g. the string `$Format:%H$` will be replaced by the
-commit hash.
+commit hash.  However, only one `%(describe)` placeholder is expanded
+per archive to avoid denial-of-service attacks.
 
 
 Packing objects
@@ -1244,6 +1251,12 @@ to:
 [attr]binary -diff -merge -text
 ------------
 
+NOTES
+-----
+
+Git does not follow symbolic links when accessing a `.gitattributes`
+file in the working tree. This keeps behavior consistent when the file
+is accessed from the index or a tree versus from the filesystem.
 
 EXAMPLES
 --------

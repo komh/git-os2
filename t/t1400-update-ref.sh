@@ -318,8 +318,9 @@ $A $B $GIT_COMMITTER_NAME <$GIT_COMMITTER_EMAIL> 1117150260 +0000	Switch
 $B $A $GIT_COMMITTER_NAME <$GIT_COMMITTER_EMAIL> 1117150860 +0000
 EOF
 test_expect_success "verifying $m's log (logged by touch)" '
-	test_when_finished "rm -rf .git/$m .git/logs expect" &&
-	test_cmp expect .git/logs/$m
+	test_when_finished "git update-ref -d $m && rm -rf .git/logs actual expect" &&
+	test-tool ref-store main for-each-reflog-ent $m >actual &&
+	test_cmp actual expect
 '
 
 test_expect_success "create $m (logged by config)" '
@@ -347,8 +348,9 @@ $A $B $GIT_COMMITTER_NAME <$GIT_COMMITTER_EMAIL> 1117150380 +0000	Switch
 $B $A $GIT_COMMITTER_NAME <$GIT_COMMITTER_EMAIL> 1117150980 +0000
 EOF
 test_expect_success "verifying $m's log (logged by config)" '
-	test_when_finished "rm -f .git/$m .git/logs/$m expect" &&
-	test_cmp expect .git/logs/$m
+	test_when_finished "git update-ref -d $m && rm -rf .git/logs actual expect" &&
+	test-tool ref-store main for-each-reflog-ent $m >actual &&
+	test_cmp actual expect
 '
 
 test_expect_success 'set up for querying the reflog' '
@@ -371,7 +373,7 @@ test_expect_success 'Query "main@{May 25 2005}" (before history)' '
 	echo "$C" >expect &&
 	test_cmp expect o &&
 	echo "warning: log for '\''main'\'' only goes back to $ed" >expect &&
-	test_i18ncmp expect e
+	test_cmp expect e
 '
 test_expect_success 'Query main@{2005-05-25} (before history)' '
 	test_when_finished "rm -f o e" &&
@@ -379,7 +381,7 @@ test_expect_success 'Query main@{2005-05-25} (before history)' '
 	echo "$C" >expect &&
 	test_cmp expect o &&
 	echo "warning: log for '\''main'\'' only goes back to $ed" >expect &&
-	test_i18ncmp expect e
+	test_cmp expect e
 '
 test_expect_success 'Query "main@{May 26 2005 23:31:59}" (1 second before history)' '
 	test_when_finished "rm -f o e" &&
@@ -387,7 +389,7 @@ test_expect_success 'Query "main@{May 26 2005 23:31:59}" (1 second before histor
 	echo "$C" >expect &&
 	test_cmp expect o &&
 	echo "warning: log for '\''main'\'' only goes back to $ed" >expect &&
-	test_i18ncmp expect e
+	test_cmp expect e
 '
 test_expect_success 'Query "main@{May 26 2005 23:32:00}" (exactly history start)' '
 	test_when_finished "rm -f o e" &&
@@ -464,7 +466,8 @@ $h_OTHER $h_FIXED $GIT_COMMITTER_NAME <$GIT_COMMITTER_EMAIL> 1117151040 +0000	co
 $h_FIXED $h_MERGED $GIT_COMMITTER_NAME <$GIT_COMMITTER_EMAIL> 1117151100 +0000	commit (merge): Merged initial commit and a later commit.
 EOF
 test_expect_success 'git commit logged updates' '
-	test_cmp expect .git/logs/$m
+	test-tool ref-store main for-each-reflog-ent $m >actual &&
+	test_cmp expect actual
 '
 unset h_TEST h_OTHER h_FIXED h_MERGED
 
@@ -1365,7 +1368,7 @@ test_expect_success ULIMIT_FILE_DESCRIPTORS 'large transaction creating branches
 (
 	for i in $(test_seq 33)
 	do
-		echo "create refs/heads/$i HEAD"
+		echo "create refs/heads/$i HEAD" || exit 1
 	done >large_input &&
 	run_with_limited_open_files git update-ref --stdin <large_input &&
 	git rev-parse --verify -q refs/heads/33
@@ -1376,7 +1379,7 @@ test_expect_success ULIMIT_FILE_DESCRIPTORS 'large transaction deleting branches
 (
 	for i in $(test_seq 33)
 	do
-		echo "delete refs/heads/$i HEAD"
+		echo "delete refs/heads/$i HEAD" || exit 1
 	done >large_input &&
 	run_with_limited_open_files git update-ref --stdin <large_input &&
 	test_must_fail git rev-parse --verify -q refs/heads/33
@@ -1593,6 +1596,49 @@ test_expect_success 'transaction cannot restart ongoing transaction' '
 	EOF
 	test_must_fail git update-ref --stdin <stdin >actual &&
 	test_must_fail git show-ref --verify refs/heads/restart
+'
+
+test_expect_success PIPE 'transaction flushes status updates' '
+	mkfifo in out &&
+	(git update-ref --stdin <in >out &) &&
+
+	exec 9>in &&
+	exec 8<out &&
+	test_when_finished "exec 9>&-" &&
+	test_when_finished "exec 8<&-" &&
+
+	echo "start" >&9 &&
+	echo "start: ok" >expected &&
+	read line <&8 &&
+	echo "$line" >actual &&
+	test_cmp expected actual &&
+
+	echo "create refs/heads/flush $A" >&9 &&
+
+	echo prepare >&9 &&
+	echo "prepare: ok" >expected &&
+	read line <&8 &&
+	echo "$line" >actual &&
+	test_cmp expected actual &&
+
+	# This must now fail given that we have locked the ref.
+	test_must_fail git update-ref refs/heads/flush $B 2>stderr &&
+	grep "fatal: update_ref failed for ref ${SQ}refs/heads/flush${SQ}: cannot lock ref" stderr &&
+
+	echo commit >&9 &&
+	echo "commit: ok" >expected &&
+	read line <&8 &&
+	echo "$line" >actual &&
+	test_cmp expected actual
+'
+
+test_expect_success 'directory not created deleting packed ref' '
+	git branch d1/d2/r1 HEAD &&
+	git pack-refs --all &&
+	test_path_is_missing .git/refs/heads/d1/d2 &&
+	git update-ref -d refs/heads/d1/d2/r1 &&
+	test_path_is_missing .git/refs/heads/d1/d2 &&
+	test_path_is_missing .git/refs/heads/d1
 '
 
 test_done

@@ -12,7 +12,8 @@ SYNOPSIS
 'git merge' [-n] [--stat] [--no-commit] [--squash] [--[no-]edit]
 	[--no-verify] [-s <strategy>] [-X <strategy-option>] [-S[<keyid>]]
 	[--[no-]allow-unrelated-histories]
-	[--[no-]rerere-autoupdate] [-m <msg>] [-F <file>] [<commit>...]
+	[--[no-]rerere-autoupdate] [-m <msg>] [-F <file>]
+	[--into-name <branch>] [<commit>...]
 'git merge' (--continue | --abort | --quit)
 
 DESCRIPTION
@@ -61,6 +62,8 @@ merge has resulted in conflicts.
 
 OPTIONS
 -------
+:git-merge: 1
+
 include::merge-options.txt[]
 
 -m <msg>::
@@ -74,6 +77,11 @@ The 'git fmt-merge-msg' command can be
 used to give a good default for automated 'git merge'
 invocations. The automated message can include the branch description.
 
+--into-name <branch>::
+	Prepare the default merge message as if merging to the branch
+	`<branch>`, instead of the name of the real branch to which
+	the merge is made.
+
 -F <file>::
 --file=<file>::
 	Read the commit message to be used for the merge commit (in
@@ -82,10 +90,7 @@ invocations. The automated message can include the branch description.
 If `--log` is specified, a shortlog of the commits being merged
 will be appended to the specified message.
 
---rerere-autoupdate::
---no-rerere-autoupdate::
-	Allow the rerere mechanism to update the index with the
-	result of auto-conflict resolution if possible.
+include::rerere-options.txt[]
 
 --overwrite-ignore::
 --no-overwrite-ignore::
@@ -238,7 +243,8 @@ from the RCS suite to present such a conflicted hunk, like this:
 
 ------------
 Here are lines that are either unchanged from the common
-ancestor, or cleanly resolved because only one side changed.
+ancestor, or cleanly resolved because only one side changed,
+or cleanly resolved because both sides changed the same way.
 <<<<<<< yours:sample.txt
 Conflict resolution is hard;
 let's go shopping.
@@ -259,16 +265,37 @@ side wants to say it is hard and you'd prefer to go shopping, while the
 other side wants to claim it is easy.
 
 An alternative style can be used by setting the "merge.conflictStyle"
-configuration variable to "diff3".  In "diff3" style, the above conflict
-may look like this:
+configuration variable to either "diff3" or "zdiff3".  In "diff3"
+style, the above conflict may look like this:
 
 ------------
 Here are lines that are either unchanged from the common
-ancestor, or cleanly resolved because only one side changed.
+ancestor, or cleanly resolved because only one side changed,
+<<<<<<< yours:sample.txt
+or cleanly resolved because both sides changed the same way.
+Conflict resolution is hard;
+let's go shopping.
+||||||| base:sample.txt
+or cleanly resolved because both sides changed identically.
+Conflict resolution is hard.
+=======
+or cleanly resolved because both sides changed the same way.
+Git makes conflict resolution easy.
+>>>>>>> theirs:sample.txt
+And here is another line that is cleanly resolved or unmodified.
+------------
+
+while in "zdiff3" style, it may look like this:
+
+------------
+Here are lines that are either unchanged from the common
+ancestor, or cleanly resolved because only one side changed,
+or cleanly resolved because both sides changed the same way.
 <<<<<<< yours:sample.txt
 Conflict resolution is hard;
 let's go shopping.
-|||||||
+||||||| base:sample.txt
+or cleanly resolved because both sides changed identically.
 Conflict resolution is hard.
 =======
 Git makes conflict resolution easy.
@@ -356,12 +383,15 @@ include::merge-strategies.txt[]
 
 CONFIGURATION
 -------------
-include::config/merge.txt[]
 
 branch.<name>.mergeOptions::
 	Sets default options for merging into branch <name>. The syntax and
 	supported options are the same as those of 'git merge', but option
 	values containing whitespace characters are currently not supported.
+
+include::includes/cmd-config-section-rest.txt[]
+
+include::config/merge.txt[]
 
 SEE ALSO
 --------

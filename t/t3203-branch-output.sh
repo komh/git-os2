@@ -157,7 +157,7 @@ test_expect_success 'git branch shows detached HEAD properly' '
 EOF
 	git checkout HEAD^0 &&
 	git branch >actual &&
-	test_i18ncmp expect actual
+	test_cmp expect actual
 '
 
 test_expect_success 'git branch shows detached HEAD properly after checkout --detach' '
@@ -170,7 +170,7 @@ test_expect_success 'git branch shows detached HEAD properly after checkout --de
 EOF
 	git checkout --detach &&
 	git branch >actual &&
-	test_i18ncmp expect actual
+	test_cmp expect actual
 '
 
 test_expect_success 'git branch shows detached HEAD properly after moving' '
@@ -182,7 +182,7 @@ test_expect_success 'git branch shows detached HEAD properly after moving' '
 EOF
 	git reset --hard HEAD^1 &&
 	git branch >actual &&
-	test_i18ncmp expect actual
+	test_cmp expect actual
 '
 
 test_expect_success 'git branch shows detached HEAD properly from tag' '
@@ -195,7 +195,7 @@ EOF
 	git tag fromtag main &&
 	git checkout fromtag &&
 	git branch >actual &&
-	test_i18ncmp expect actual
+	test_cmp expect actual
 '
 
 test_expect_success 'git branch shows detached HEAD properly after moving from tag' '
@@ -207,10 +207,10 @@ test_expect_success 'git branch shows detached HEAD properly after moving from t
 EOF
 	git reset --hard HEAD^1 &&
 	git branch >actual &&
-	test_i18ncmp expect actual
+	test_cmp expect actual
 '
 
-test_expect_success 'git branch `--sort` option' '
+test_expect_success 'git branch `--sort=[-]objectsize` option' '
 	cat >expect <<-\EOF &&
 	* (HEAD detached from fromtag)
 	  branch-two
@@ -218,7 +218,56 @@ test_expect_success 'git branch `--sort` option' '
 	  main
 	EOF
 	git branch --sort=objectsize >actual &&
-	test_i18ncmp expect actual
+	test_cmp expect actual &&
+
+	cat >expect <<-\EOF &&
+	* (HEAD detached from fromtag)
+	  branch-one
+	  main
+	  branch-two
+	EOF
+	git branch --sort=-objectsize >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'git branch `--sort=[-]type` option' '
+	cat >expect <<-\EOF &&
+	* (HEAD detached from fromtag)
+	  branch-one
+	  branch-two
+	  main
+	EOF
+	git branch --sort=type >actual &&
+	test_cmp expect actual &&
+
+	cat >expect <<-\EOF &&
+	* (HEAD detached from fromtag)
+	  branch-one
+	  branch-two
+	  main
+	EOF
+	git branch --sort=-type >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'git branch `--sort=[-]version:refname` option' '
+	cat >expect <<-\EOF &&
+	* (HEAD detached from fromtag)
+	  branch-one
+	  branch-two
+	  main
+	EOF
+	git branch --sort=version:refname >actual &&
+	test_cmp expect actual &&
+
+	cat >expect <<-\EOF &&
+	* (HEAD detached from fromtag)
+	  main
+	  branch-two
+	  branch-one
+	EOF
+	git branch --sort=-version:refname >actual &&
+	test_cmp expect actual
 '
 
 test_expect_success 'git branch --points-at option' '
@@ -285,7 +334,11 @@ test_expect_success 'git branch --format option' '
 	Refname is refs/heads/ref-to-remote
 	EOF
 	git branch --format="Refname is %(refname)" >actual &&
-	test_i18ncmp expect actual
+	test_cmp expect actual
+'
+
+test_expect_success 'git branch with --format=%(rest) must fail' '
+	test_must_fail git branch --format="%(rest)" >actual
 '
 
 test_expect_success 'worktree colors correct' '
@@ -303,7 +356,7 @@ test_expect_success 'worktree colors correct' '
 	rm -r worktree_dir &&
 	git worktree prune &&
 	test_decode_color <actual.raw >actual &&
-	test_i18ncmp expect actual
+	test_cmp expect actual
 '
 
 test_expect_success "set up color tests" '
@@ -346,7 +399,7 @@ test_expect_success 'verbose output lists worktree path' '
 	git branch -vv >actual &&
 	rm -r worktree_dir &&
 	git worktree prune &&
-	test_i18ncmp expect actual
+	test_cmp expect actual
 '
 
 test_done

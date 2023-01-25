@@ -537,6 +537,15 @@ test_expect_success '__gitcomp - expand/narrow all negative options' '
 	EOF
 '
 
+test_expect_success '__gitcomp - equal skip' '
+	test_gitcomp "--option=" "--option=" <<-\EOF &&
+
+	EOF
+	test_gitcomp "option=" "option=" <<-\EOF
+
+	EOF
+'
+
 test_expect_success '__gitcomp - doesnt fail because of invalid variable name' '
 	__gitcomp "$invalid_variable_name"
 '
@@ -867,7 +876,7 @@ test_expect_success '__git_refs - unique remote branches for git checkout DWIMer
 		refs/remotes/remote/branch-in-remote
 	do
 		git update-ref $remote_ref main &&
-		test_when_finished "git update-ref -d $remote_ref"
+		test_when_finished "git update-ref -d $remote_ref" || return 1
 	done &&
 	(
 		cur= &&
@@ -1040,7 +1049,7 @@ test_expect_success '__git_refs - only matching refs - checkout DWIMery' '
 		refs/remotes/remote/branch-in-remote
 	do
 		git update-ref $remote_ref main &&
-		test_when_finished "git update-ref -d $remote_ref"
+		test_when_finished "git update-ref -d $remote_ref" || return 1
 	done &&
 	(
 		cur=mat &&
@@ -1433,6 +1442,161 @@ test_expect_success 'git checkout - with --detach, complete only references' '
 	other/branch-in-other Z
 	other/main-in-other Z
 	EOF
+'
+
+test_expect_success 'setup sparse-checkout tests' '
+	# set up sparse-checkout repo
+	git init sparse-checkout &&
+	(
+		cd sparse-checkout &&
+		mkdir -p folder1/0/1 folder2/0 folder3 &&
+		touch folder1/0/1/t.txt &&
+		touch folder2/0/t.txt &&
+		touch folder3/t.txt &&
+		git add . &&
+		git commit -am "Initial commit"
+	)
+'
+
+test_expect_success 'sparse-checkout completes subcommands' '
+	test_completion "git sparse-checkout " <<-\EOF
+	list Z
+	init Z
+	set Z
+	add Z
+	reapply Z
+	disable Z
+	EOF
+'
+
+test_expect_success 'cone mode sparse-checkout completes directory names' '
+	# initialize sparse-checkout definitions
+	git -C sparse-checkout sparse-checkout set --cone folder1/0 folder3 &&
+
+	# test tab completion
+	(
+		cd sparse-checkout &&
+		test_completion "git sparse-checkout set f" <<-\EOF
+		folder1/
+		folder2/
+		folder3/
+		EOF
+	) &&
+
+	(
+		cd sparse-checkout &&
+		test_completion "git sparse-checkout set folder1/" <<-\EOF
+		folder1/0/
+		EOF
+	) &&
+
+	(
+		cd sparse-checkout &&
+		test_completion "git sparse-checkout set folder1/0/" <<-\EOF
+		folder1/0/1/
+		EOF
+	) &&
+
+	(
+		cd sparse-checkout/folder1 &&
+		test_completion "git sparse-checkout add 0" <<-\EOF
+		0/
+		EOF
+	)
+'
+
+test_expect_success 'cone mode sparse-checkout completes directory names with spaces and accents' '
+	# reset sparse-checkout
+	git -C sparse-checkout sparse-checkout disable &&
+	(
+		cd sparse-checkout &&
+		mkdir "directory with spaces" &&
+		mkdir "directory-with-áccent" &&
+		>"directory with spaces/randomfile" &&
+		>"directory-with-áccent/randomfile" &&
+		git add . &&
+		git commit -m "Add directory with spaces and directory with accent" &&
+		git sparse-checkout set --cone "directory with spaces" \
+			"directory-with-áccent" &&
+		test_completion "git sparse-checkout add dir" <<-\EOF &&
+		directory with spaces/
+		directory-with-áccent/
+		EOF
+		rm -rf "directory with spaces" &&
+		rm -rf "directory-with-áccent" &&
+		git add . &&
+		git commit -m "Remove directory with spaces and directory with accent"
+	)
+'
+
+# use FUNNYNAMES to avoid running on Windows, which doesn't permit tabs in paths
+test_expect_success FUNNYNAMES 'cone mode sparse-checkout completes directory names with tabs' '
+	# reset sparse-checkout
+	git -C sparse-checkout sparse-checkout disable &&
+	(
+		cd sparse-checkout &&
+		mkdir "$(printf "directory\twith\ttabs")" &&
+		>"$(printf "directory\twith\ttabs")/randomfile" &&
+		git add . &&
+		git commit -m "Add directory with tabs" &&
+		git sparse-checkout set --cone \
+			"$(printf "directory\twith\ttabs")" &&
+		test_completion "git sparse-checkout add dir" <<-\EOF &&
+		directory	with	tabs/
+		EOF
+		rm -rf "$(printf "directory\twith\ttabs")" &&
+		git add . &&
+		git commit -m "Remove directory with tabs"
+	)
+'
+
+# use FUNNYNAMES to avoid running on Windows, and !CYGWIN for Cygwin, as neither permit backslashes in paths
+test_expect_success FUNNYNAMES,!CYGWIN 'cone mode sparse-checkout completes directory names with backslashes' '
+	# reset sparse-checkout
+	git -C sparse-checkout sparse-checkout disable &&
+	(
+		cd sparse-checkout &&
+		mkdir "directory\with\backslashes" &&
+		>"directory\with\backslashes/randomfile" &&
+		git add . &&
+		git commit -m "Add directory with backslashes" &&
+		git sparse-checkout set --cone \
+			"directory\with\backslashes" &&
+		test_completion "git sparse-checkout add dir" <<-\EOF &&
+		directory\with\backslashes/
+		EOF
+		rm -rf "directory\with\backslashes" &&
+		git add . &&
+		git commit -m "Remove directory with backslashes"
+	)
+'
+
+test_expect_success 'non-cone mode sparse-checkout uses bash completion' '
+	# reset sparse-checkout repo to non-cone mode
+	git -C sparse-checkout sparse-checkout disable &&
+	git -C sparse-checkout sparse-checkout set --no-cone &&
+
+	(
+		cd sparse-checkout &&
+		# expected to be empty since we have not configured
+		# custom completion for non-cone mode
+		test_completion "git sparse-checkout set f" <<-\EOF
+
+		EOF
+	)
+'
+
+test_expect_success 'git sparse-checkout set --cone completes directory names' '
+	git -C sparse-checkout sparse-checkout disable &&
+
+	(
+		cd sparse-checkout &&
+		test_completion "git sparse-checkout set --cone f" <<-\EOF
+		folder1/
+		folder2/
+		folder3/
+		EOF
+	)
 '
 
 test_expect_success 'git switch - with -d, complete all references' '
@@ -1876,6 +2040,7 @@ test_expect_success '__git_find_on_cmdline - single match' '
 	(
 		words=(git command --opt list) &&
 		cword=${#words[@]} &&
+		__git_cmd_idx=1 &&
 		__git_find_on_cmdline "add list remove" >actual
 	) &&
 	test_cmp expect actual
@@ -1886,6 +2051,7 @@ test_expect_success '__git_find_on_cmdline - multiple matches' '
 	(
 		words=(git command -o --opt remove list add) &&
 		cword=${#words[@]} &&
+		__git_cmd_idx=1 &&
 		__git_find_on_cmdline "add list remove" >actual
 	) &&
 	test_cmp expect actual
@@ -1895,6 +2061,7 @@ test_expect_success '__git_find_on_cmdline - no match' '
 	(
 		words=(git command --opt branch) &&
 		cword=${#words[@]} &&
+		__git_cmd_idx=1 &&
 		__git_find_on_cmdline "add list remove" >actual
 	) &&
 	test_must_be_empty actual
@@ -1905,6 +2072,7 @@ test_expect_success '__git_find_on_cmdline - single match with index' '
 	(
 		words=(git command --opt list) &&
 		cword=${#words[@]} &&
+		__git_cmd_idx=1 &&
 		__git_find_on_cmdline --show-idx "add list remove" >actual
 	) &&
 	test_cmp expect actual
@@ -1915,6 +2083,7 @@ test_expect_success '__git_find_on_cmdline - multiple matches with index' '
 	(
 		words=(git command -o --opt remove list add) &&
 		cword=${#words[@]} &&
+		__git_cmd_idx=1 &&
 		__git_find_on_cmdline --show-idx "add list remove" >actual
 	) &&
 	test_cmp expect actual
@@ -1924,9 +2093,21 @@ test_expect_success '__git_find_on_cmdline - no match with index' '
 	(
 		words=(git command --opt branch) &&
 		cword=${#words[@]} &&
+		__git_cmd_idx=1 &&
 		__git_find_on_cmdline --show-idx "add list remove" >actual
 	) &&
 	test_must_be_empty actual
+'
+
+test_expect_success '__git_find_on_cmdline - ignores matches before command with index' '
+	echo "6 remove" >expect &&
+	(
+		words=(git -C remove command -o --opt remove list add) &&
+		cword=${#words[@]} &&
+		__git_cmd_idx=3 &&
+		__git_find_on_cmdline --show-idx "add list remove" >actual
+	) &&
+	test_cmp expect actual
 '
 
 test_expect_success '__git_get_config_variables' '
@@ -2119,6 +2300,9 @@ test_expect_success PERL 'send-email' '
 	--cover-from-description=Z
 	--cover-letter Z
 	EOF
+	test_completion "git send-email --val" <<-\EOF &&
+	--validate Z
+	EOF
 	test_completion "git send-email ma" "main "
 '
 
@@ -2272,6 +2456,7 @@ do
 		(
 			words=(git push '$flag' other ma) &&
 			cword=${#words[@]} cur=${words[cword-1]} &&
+			__git_cmd_idx=1 &&
 			__git_complete_remote_or_refspec &&
 			print_comp
 		) &&
@@ -2285,6 +2470,7 @@ do
 		(
 			words=(git push other '$flag' ma) &&
 			cword=${#words[@]} cur=${words[cword-1]} &&
+			__git_cmd_idx=1 &&
 			__git_complete_remote_or_refspec &&
 			print_comp
 		) &&
@@ -2299,10 +2485,24 @@ test_expect_success 'git config - section' '
 	EOF
 '
 
+test_expect_success 'git config - section include, includeIf' '
+	test_completion "git config inclu" <<-\EOF
+	include.Z
+	includeIf.Z
+	EOF
+'
+
 test_expect_success 'git config - variable name' '
 	test_completion "git config log.d" <<-\EOF
 	log.date Z
 	log.decorate Z
+	log.diffMerges Z
+	EOF
+'
+
+test_expect_success 'git config - variable name include' '
+	test_completion "git config include.p" <<-\EOF
+	include.path Z
 	EOF
 '
 
@@ -2324,6 +2524,7 @@ test_expect_success 'git -c - variable name' '
 	test_completion "git -c log.d" <<-\EOF
 	log.date=Z
 	log.decorate=Z
+	log.diffMerges=Z
 	EOF
 '
 
@@ -2345,6 +2546,7 @@ test_expect_success 'git clone --config= - variable name' '
 	test_completion "git clone --config=log.d" <<-\EOF
 	log.date=Z
 	log.decorate=Z
+	log.diffMerges=Z
 	EOF
 '
 
@@ -2355,29 +2557,106 @@ test_expect_success 'git clone --config= - value' '
 	EOF
 '
 
+test_expect_success 'options with value' '
+	test_completion "git merge -X diff-algorithm=" <<-\EOF
+
+	EOF
+'
+
 test_expect_success 'sourcing the completion script clears cached commands' '
-	__git_compute_all_commands &&
-	verbose test -n "$__git_all_commands" &&
-	. "$GIT_BUILD_DIR/contrib/completion/git-completion.bash" &&
-	verbose test -z "$__git_all_commands"
+	(
+		__git_compute_all_commands &&
+		verbose test -n "$__git_all_commands" &&
+		. "$GIT_BUILD_DIR/contrib/completion/git-completion.bash" &&
+		verbose test -z "$__git_all_commands"
+	)
 '
 
 test_expect_success 'sourcing the completion script clears cached merge strategies' '
-	GIT_TEST_GETTEXT_POISON=false &&
-	__git_compute_merge_strategies &&
-	verbose test -n "$__git_merge_strategies" &&
-	. "$GIT_BUILD_DIR/contrib/completion/git-completion.bash" &&
-	verbose test -z "$__git_merge_strategies"
+	(
+		__git_compute_merge_strategies &&
+		verbose test -n "$__git_merge_strategies" &&
+		. "$GIT_BUILD_DIR/contrib/completion/git-completion.bash" &&
+		verbose test -z "$__git_merge_strategies"
+	)
 '
 
 test_expect_success 'sourcing the completion script clears cached --options' '
-	__gitcomp_builtin checkout &&
-	verbose test -n "$__gitcomp_builtin_checkout" &&
-	__gitcomp_builtin notes_edit &&
-	verbose test -n "$__gitcomp_builtin_notes_edit" &&
-	. "$GIT_BUILD_DIR/contrib/completion/git-completion.bash" &&
-	verbose test -z "$__gitcomp_builtin_checkout" &&
-	verbose test -z "$__gitcomp_builtin_notes_edit"
+	(
+		__gitcomp_builtin checkout &&
+		verbose test -n "$__gitcomp_builtin_checkout" &&
+		__gitcomp_builtin notes_edit &&
+		verbose test -n "$__gitcomp_builtin_notes_edit" &&
+		. "$GIT_BUILD_DIR/contrib/completion/git-completion.bash" &&
+		verbose test -z "$__gitcomp_builtin_checkout" &&
+		verbose test -z "$__gitcomp_builtin_notes_edit"
+	)
+'
+
+test_expect_success 'option aliases are not shown by default' '
+	test_completion "git clone --recurs" "--recurse-submodules "
+'
+
+test_expect_success 'option aliases are shown with GIT_COMPLETION_SHOW_ALL' '
+	(
+		. "$GIT_BUILD_DIR/contrib/completion/git-completion.bash" &&
+		GIT_COMPLETION_SHOW_ALL=1 && export GIT_COMPLETION_SHOW_ALL &&
+		test_completion "git clone --recurs" <<-\EOF
+		--recurse-submodules Z
+		--recursive Z
+		EOF
+	)
+'
+
+test_expect_success 'plumbing commands are excluded without GIT_COMPLETION_SHOW_ALL_COMMANDS' '
+	(
+		. "$GIT_BUILD_DIR/contrib/completion/git-completion.bash" &&
+		sane_unset GIT_TESTING_PORCELAIN_COMMAND_LIST &&
+
+		# Just mainporcelain, not plumbing commands
+		run_completion "git c" &&
+		grep checkout out &&
+		! grep cat-file out
+	)
+'
+
+test_expect_success 'all commands are shown with GIT_COMPLETION_SHOW_ALL_COMMANDS (also main non-builtin)' '
+	(
+		. "$GIT_BUILD_DIR/contrib/completion/git-completion.bash" &&
+		GIT_COMPLETION_SHOW_ALL_COMMANDS=1 &&
+		export GIT_COMPLETION_SHOW_ALL_COMMANDS &&
+		sane_unset GIT_TESTING_PORCELAIN_COMMAND_LIST &&
+
+		# Both mainporcelain and plumbing commands
+		run_completion "git c" &&
+		grep checkout out &&
+		grep cat-file out &&
+
+		# Check "gitk", a "main" command, but not a built-in + more plumbing
+		run_completion "git g" &&
+		grep gitk out &&
+		grep get-tar-commit-id out
+	)
+'
+
+test_expect_success '__git_complete' '
+	unset -f __git_wrap__git_main &&
+
+	__git_complete foo __git_main &&
+	__git_have_func __git_wrap__git_main &&
+	unset -f __git_wrap__git_main &&
+
+	__git_complete gf _git_fetch &&
+	__git_have_func __git_wrap_git_fetch &&
+
+	__git_complete foo git &&
+	__git_have_func __git_wrap__git_main &&
+	unset -f __git_wrap__git_main &&
+
+	__git_complete gd git_diff &&
+	__git_have_func __git_wrap_git_diff &&
+
+	test_must_fail __git_complete ga missing
 '
 
 test_done

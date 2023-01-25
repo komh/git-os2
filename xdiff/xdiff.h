@@ -50,6 +50,7 @@ extern "C" {
 
 /* xdemitconf_t.flags */
 #define XDL_EMIT_FUNCNAMES (1 << 0)
+#define XDL_EMIT_NO_HUNK_HDR (1 << 1)
 #define XDL_EMIT_FUNCCONTEXT (1 << 2)
 
 /* merge simplification levels */
@@ -65,6 +66,7 @@ extern "C" {
 
 /* merge output styles */
 #define XDL_MERGE_DIFF3 1
+#define XDL_MERGE_ZEALOUS_DIFF3 2
 
 typedef struct s_mmfile {
 	char *ptr;
@@ -118,6 +120,7 @@ typedef struct s_bdiffparam {
 
 
 #define xdl_malloc(x) xmalloc(x)
+#define xdl_calloc(n, sz) xcalloc(n, sz)
 #define xdl_free(ptr) free(ptr)
 #define xdl_realloc(ptr,x) xrealloc(ptr,x)
 

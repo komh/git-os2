@@ -2,10 +2,10 @@
 #include "strmap.h"
 #include "mem-pool.h"
 
-int cmp_strmap_entry(const void *hashmap_cmp_fn_data,
+int cmp_strmap_entry(const void *hashmap_cmp_fn_data UNUSED,
 		     const struct hashmap_entry *entry1,
 		     const struct hashmap_entry *entry2,
-		     const void *keydata)
+		     const void *keydata UNUSED)
 {
 	const struct strmap_entry *e1, *e2;
 
@@ -25,7 +25,8 @@ static struct strmap_entry *find_strmap_entry(struct strmap *map,
 
 void strmap_init(struct strmap *map)
 {
-	strmap_init_with_options(map, NULL, 1);
+	struct strmap blank = STRMAP_INIT;
+	memcpy(map, &blank, sizeof(*map));
 }
 
 void strmap_init_with_options(struct strmap *map,

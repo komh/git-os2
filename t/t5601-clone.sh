@@ -2,6 +2,9 @@
 
 test_description=clone
 
+GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
+export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
+
 . ./test-lib.sh
 
 X=
@@ -37,7 +40,7 @@ test_expect_success 'clone with excess parameters (2)' '
 
 '
 
-test_expect_success C_LOCALE_OUTPUT 'output from clone' '
+test_expect_success 'output from clone' '
 	rm -fr dst &&
 	git clone -n "file://$(pwd)/src" dst >output 2>&1 &&
 	test $(grep Clon output | wc -l) = 1
@@ -76,12 +79,10 @@ test_expect_success 'clone from hooks' '
 	cd .. &&
 	git init r1 &&
 	cd r1 &&
-	cat >.git/hooks/pre-commit <<-\EOF &&
-	#!/bin/sh
+	test_hook pre-commit <<-\EOF &&
 	git clone ../r0 ../r2
 	exit 1
 	EOF
-	chmod u+x .git/hooks/pre-commit &&
 	: >file &&
 	git add file &&
 	test_must_fail git commit -m invoke-hook &&
@@ -217,7 +218,7 @@ test_expect_success 'clone respects global branch.autosetuprebase' '
 		rm -fr dst &&
 		git clone src dst &&
 		cd dst &&
-		actual="z$(git config branch.master.rebase)" &&
+		actual="z$(git config branch.main.rebase)" &&
 		test ztrue = $actual
 	)
 '
@@ -302,7 +303,8 @@ test_expect_success 'clone from original with relative alternate' '
 test_expect_success 'clone checking out a tag' '
 	git clone --branch=some-tag src dst.tag &&
 	GIT_DIR=src/.git git rev-parse some-tag >expected &&
-	test_cmp expected dst.tag/.git/HEAD &&
+	GIT_DIR=dst.tag/.git git rev-parse HEAD >actual &&
+	test_cmp expected actual &&
 	GIT_DIR=dst.tag/.git git config remote.origin.fetch >fetch.actual &&
 	echo "+refs/heads/*:refs/remotes/origin/*" >fetch.expected &&
 	test_cmp fetch.expected fetch.actual
@@ -591,7 +593,7 @@ test_expect_success 'clone from a repository with two identical branches' '
 
 	(
 		cd src &&
-		git checkout -b another master
+		git checkout -b another main
 	) &&
 	git clone src target-11 &&
 	test "z$( cd target-11 && git symbolic-ref HEAD )" = zrefs/heads/another
@@ -718,7 +720,11 @@ test_expect_success 'batch missing blob request during checkout' '
 
 	# Ensure that there is only one negotiation by checking that there is
 	# only "done" line sent. ("done" marks the end of negotiation.)
-	GIT_TRACE_PACKET="$(pwd)/trace" git -C client checkout HEAD^ &&
+	GIT_TRACE_PACKET="$(pwd)/trace" \
+		GIT_TRACE2_EVENT="$(pwd)/trace2_event" \
+		git -C client -c trace2.eventNesting=5 checkout HEAD^ &&
+	grep \"key\":\"total_rounds\",\"value\":\"1\" trace2_event >trace_lines &&
+	test_line_count = 1 trace_lines &&
 	grep "fetch> done" trace >done_lines &&
 	test_line_count = 1 done_lines
 '
@@ -738,6 +744,7 @@ test_expect_success 'batch missing blob request does not inadvertently try to fe
 	echo aa >server/a &&
 	echo bb >server/b &&
 	# Also add a gitlink pointing to an arbitrary repository
+	test_config_global protocol.file.allow always &&
 	git -C server submodule add "$(pwd)/repo_for_submodule" c &&
 	git -C server add a b c &&
 	git -C server commit -m x &&
@@ -754,6 +761,15 @@ start_httpd
 
 test_expect_success 'partial clone using HTTP' '
 	partial_clone "$HTTPD_DOCUMENT_ROOT_PATH/server" "$HTTPD_URL/smart/server"
+'
+
+test_expect_success 'reject cloning shallow repository using HTTP' '
+	test_when_finished "rm -rf repo" &&
+	git clone --bare --no-local --depth=1 src "$HTTPD_DOCUMENT_ROOT_PATH/repo.git" &&
+	test_must_fail git -c protocol.version=2 clone --reject-shallow $HTTPD_URL/smart/repo.git repo 2>err &&
+	test_i18ngrep -e "source repository is shallow, reject to clone." err &&
+
+	git clone --no-reject-shallow $HTTPD_URL/smart/repo.git repo
 '
 
 # DO NOT add non-httpd-specific tests here, because the last part of this

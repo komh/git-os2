@@ -27,6 +27,7 @@ static int uic_is_stale(const struct update_info_ctx *uic)
 	return uic->old_fp == NULL;
 }
 
+__attribute__((format (printf, 2, 3)))
 static int uic_printf(struct update_info_ctx *uic, const char *fmt, ...)
 {
 	va_list ap;
@@ -146,7 +147,8 @@ out:
 }
 
 static int add_info_ref(const char *path, const struct object_id *oid,
-			int flag, void *cb_data)
+			int flag UNUSED,
+			void *cb_data)
 {
 	struct update_info_ctx *uic = cb_data;
 	struct object *o = parse_object(the_repository, oid);
@@ -296,7 +298,7 @@ static void init_pack_info(const char *infofile, int force)
 
 		i = num_pack++;
 		ALLOC_GROW(info, num_pack, alloc);
-		info[i] = xcalloc(1, sizeof(struct pack_info));
+		CALLOC_ARRAY(info[i], 1);
 		info[i]->p = p;
 		info[i]->old_num = -1;
 	}

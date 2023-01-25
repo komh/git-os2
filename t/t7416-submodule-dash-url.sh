@@ -3,6 +3,10 @@
 test_description='check handling of disallowed .gitmodule urls'
 . ./test-lib.sh
 
+test_expect_success 'setup' '
+	git config --global protocol.file.allow always
+'
+
 test_expect_success 'create submodule with protected dash in url' '
 	git init upstream &&
 	git -C upstream commit --allow-empty -m base &&
@@ -194,6 +198,21 @@ test_expect_success 'fsck rejects embedded newline in relative url' '
 	EOF
 	git add .gitmodules &&
 	git commit -m "relative url with newline" &&
+	test_when_finished "rm -rf dst" &&
+	git init --bare dst &&
+	git -C dst config transfer.fsckObjects true &&
+	test_must_fail git push dst HEAD 2>err &&
+	grep gitmodulesUrl err
+'
+
+test_expect_success 'fsck rejects embedded newline in git url' '
+	git checkout --orphan git-newline &&
+	cat >.gitmodules <<-\EOF &&
+	[submodule "foo"]
+	url = "git://example.com:1234/repo%0a.git"
+	EOF
+	git add .gitmodules &&
+	git commit -m "git url with newline" &&
 	test_when_finished "rm -rf dst" &&
 	git init --bare dst &&
 	git -C dst config transfer.fsckObjects true &&

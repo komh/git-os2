@@ -1,4 +1,4 @@
-#define USE_THE_INDEX_COMPATIBILITY_MACROS
+#define USE_THE_INDEX_VARIABLE
 #include "cache.h"
 #include "config.h"
 #include "lockfile.h"
@@ -23,8 +23,9 @@
 define_commit_slab(commit_names, struct commit_name *);
 
 static const char * const describe_usage[] = {
-	N_("git describe [<options>] [<commit-ish>...]"),
-	N_("git describe [<options>] --dirty"),
+	N_("git describe [--all] [--tags] [--contains] [--abbrev=<n>] [<commit-ish>...]"),
+	N_("git describe [--all] [--tags] [--contains] [--abbrev=<n>] --dirty[=<mark>]"),
+	N_("git describe <blob>"),
 	NULL
 };
 
@@ -63,7 +64,7 @@ static const char *prio_names[] = {
 	N_("head"), N_("lightweight"), N_("annotated"),
 };
 
-static int commit_name_neq(const void *unused_cmp_data,
+static int commit_name_neq(const void *cmp_data UNUSED,
 			   const struct hashmap_entry *eptr,
 			   const struct hashmap_entry *entry_or_key,
 			   const void *peeled)
@@ -140,7 +141,8 @@ static void add_to_known_names(const char *path,
 	}
 }
 
-static int get_name(const char *path, const struct object_id *oid, int flag, void *cb_data)
+static int get_name(const char *path, const struct object_id *oid,
+		    int flag UNUSED, void *cb_data UNUSED)
 {
 	int is_tag = 0;
 	struct object_id peeled;
@@ -194,7 +196,7 @@ static int get_name(const char *path, const struct object_id *oid, int flag, voi
 	}
 
 	/* Is it annotated? */
-	if (!peel_ref(path, &peeled)) {
+	if (!peel_iterated_oid(oid, &peeled)) {
 		is_annotated = !oideq(oid, &peeled);
 	} else {
 		oidcpy(&peeled, oid);
@@ -502,7 +504,7 @@ static void describe_blob(struct object_id oid, struct strbuf *dst)
 {
 	struct rev_info revs;
 	struct strvec args = STRVEC_INIT;
-	struct process_commit_data pcd = { null_oid, oid, dst, &revs};
+	struct process_commit_data pcd = { *null_oid(), oid, dst, &revs};
 
 	strvec_pushl(&args, "internal: The first arg is not parsed",
 		     "--objects", "--in-commit-order", "--reverse", "HEAD",
@@ -517,6 +519,7 @@ static void describe_blob(struct object_id oid, struct strbuf *dst)
 
 	traverse_commit_list(&revs, process_commit, process_object, &pcd);
 	reset_revision_walk();
+	release_revisions(&revs);
 }
 
 static void describe(const char *arg, int last_one)
@@ -590,7 +593,7 @@ int cmd_describe(int argc, const char **argv, const char *prefix)
 	save_commit_buffer = 0;
 
 	if (longformat && abbrev == 0)
-		die(_("--long is incompatible with --abbrev=0"));
+		die(_("options '%s' and '%s' cannot be used together"), "--long", "--abbrev=0");
 
 	if (contains) {
 		struct string_list_item *item;
@@ -650,10 +653,11 @@ int cmd_describe(int argc, const char **argv, const char *prefix)
 			int fd, result;
 
 			setup_work_tree();
-			read_cache();
+			repo_read_index(the_repository);
 			refresh_index(&the_index, REFRESH_QUIET|REFRESH_UNMERGED,
 				      NULL, NULL, NULL);
-			fd = hold_locked_index(&index_lock, 0);
+			fd = repo_hold_locked_index(the_repository,
+						    &index_lock, 0);
 			if (0 <= fd)
 				repo_update_index_if_able(the_repository, &index_lock);
 
@@ -667,12 +671,13 @@ int cmd_describe(int argc, const char **argv, const char *prefix)
 				suffix = NULL;
 			else
 				suffix = dirty;
+			release_revisions(&revs);
 		}
 		describe("HEAD", 1);
 	} else if (dirty) {
-		die(_("--dirty is incompatible with commit-ishes"));
+		die(_("option '%s' and commit-ishes cannot be used together"), "--dirty");
 	} else if (broken) {
-		die(_("--broken is incompatible with commit-ishes"));
+		die(_("option '%s' and commit-ishes cannot be used together"), "--broken");
 	} else {
 		while (argc-- > 0)
 			describe(*argv++, argc == 0);

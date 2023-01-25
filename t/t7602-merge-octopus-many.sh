@@ -29,8 +29,8 @@ test_expect_success 'merge c1 with c2, c3, c4, ... c29' '
 	refs="" &&
 	while test $i -le 30
 	do
-		refs="$refs c$i"
-		i=$(expr $i + 1)
+		refs="$refs c$i" &&
+		i=$(expr $i + 1) || return 1
 	done &&
 	git merge $refs &&
 	test "$(git rev-parse c1)" != "$(git rev-parse HEAD)" &&
@@ -66,7 +66,7 @@ EOF
 test_expect_success 'merge output uses pretty names' '
 	git reset --hard c1 &&
 	git merge c2 c3 c4 >actual &&
-	test_i18ncmp expected actual
+	test_cmp expected actual
 '
 
 cat >expected <<\EOF
@@ -84,7 +84,7 @@ test_expect_success 'merge reduces irrelevant remote heads' '
 		rm expected.tmp
 	fi &&
 	GIT_MERGE_VERBOSITY=0 git merge c4 c5 >actual &&
-	test_i18ncmp expected actual
+	test_cmp expected actual
 '
 
 cat >expected <<\EOF
@@ -101,7 +101,7 @@ EOF
 test_expect_success 'merge fast-forward output uses pretty names' '
 	git reset --hard c0 &&
 	git merge c1 c2 >actual &&
-	test_i18ncmp expected actual
+	test_cmp expected actual
 '
 
 test_done

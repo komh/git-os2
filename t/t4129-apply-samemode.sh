@@ -2,6 +2,8 @@
 
 test_description='applying patch with mode bits'
 
+
+TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 test_expect_success setup '
@@ -78,7 +80,7 @@ test_expect_success POSIXPERM 'do not use core.sharedRepository for working tree
 	test_config core.sharedRepository 0666 &&
 	(
 		# Remove a default ACL if possible.
-		(setfacl -k newdir 2>/dev/null || true) &&
+		(setfacl -k . 2>/dev/null || true) &&
 		umask 0077 &&
 
 		# Test both files (f1) and leading dirs (d)

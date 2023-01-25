@@ -8,6 +8,8 @@ test_description='Two way merge with read-tree -m -u $H $M
 This is identical to t1001, but uses -u to update the work tree as well.
 
 '
+
+TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 . "$TEST_DIRECTORY"/lib-read-tree.sh
 
@@ -21,11 +23,12 @@ compare_change () {
 }
 
 check_cache_at () {
-	clean_if_empty=$(git diff-files -- "$1")
+	git diff-files -- "$1" >out &&
+	clean_if_empty=$(cat out) &&
 	case "$clean_if_empty" in
 	'')  echo "$1: clean" ;;
 	?*)  echo "$1: dirty" ;;
-	esac
+	esac &&
 	case "$2,$clean_if_empty" in
 	clean,)		:     ;;
 	clean,?*)	false ;;
@@ -151,7 +154,7 @@ test_expect_success \
      read_tree_u_must_succeed --reset -u $treeH &&
      echo frotz frotz >frotz &&
      git update-index --add frotz &&
-     if read_tree_u_must_succeed -m -u $treeH $treeM; then false; else :; fi'
+     ! read_tree_u_must_succeed -m -u $treeH $treeM'
 
 test_expect_success \
     '9 - conflicting addition.' \
@@ -160,7 +163,7 @@ test_expect_success \
      echo frotz frotz >frotz &&
      git update-index --add frotz &&
      echo frotz >frotz &&
-     if read_tree_u_must_succeed -m -u $treeH $treeM; then false; else :; fi'
+     ! read_tree_u_must_succeed -m -u $treeH $treeM'
 
 test_expect_success \
     '10 - path removed.' \
@@ -183,7 +186,7 @@ test_expect_success \
      echo rezrov >rezrov &&
      git update-index --add rezrov &&
      echo rezrov rezrov >rezrov &&
-     if read_tree_u_must_succeed -m -u $treeH $treeM; then false; else :; fi'
+     ! read_tree_u_must_succeed -m -u $treeH $treeM'
 
 test_expect_success \
     '12 - unmatching local changes being removed.' \
@@ -191,7 +194,7 @@ test_expect_success \
      read_tree_u_must_succeed --reset -u $treeH &&
      echo rezrov rezrov >rezrov &&
      git update-index --add rezrov &&
-     if read_tree_u_must_succeed -m -u $treeH $treeM; then false; else :; fi'
+     ! read_tree_u_must_succeed -m -u $treeH $treeM'
 
 test_expect_success \
     '13 - unmatching local changes being removed.' \
@@ -200,7 +203,7 @@ test_expect_success \
      echo rezrov rezrov >rezrov &&
      git update-index --add rezrov &&
      echo rezrov >rezrov &&
-     if read_tree_u_must_succeed -m -u $treeH $treeM; then false; else :; fi'
+     ! read_tree_u_must_succeed -m -u $treeH $treeM'
 
 cat >expected <<EOF
 -100644 X 0	nitfol
@@ -248,7 +251,7 @@ test_expect_success \
      read_tree_u_must_succeed --reset -u $treeH &&
      echo bozbar bozbar >bozbar &&
      git update-index --add bozbar &&
-     if read_tree_u_must_succeed -m -u $treeH $treeM; then false; else :; fi'
+     ! read_tree_u_must_succeed -m -u $treeH $treeM'
 
 test_expect_success \
     '17 - conflicting local change.' \
@@ -257,7 +260,7 @@ test_expect_success \
      echo bozbar bozbar >bozbar &&
      git update-index --add bozbar &&
      echo bozbar bozbar bozbar >bozbar &&
-     if read_tree_u_must_succeed -m -u $treeH $treeM; then false; else :; fi'
+     ! read_tree_u_must_succeed -m -u $treeH $treeM'
 
 test_expect_success \
     '18 - local change already having a good result.' \
@@ -313,7 +316,7 @@ test_expect_success \
      echo bozbar >bozbar &&
      git update-index --add bozbar &&
      echo gnusto gnusto >bozbar &&
-     if read_tree_u_must_succeed -m -u $treeH $treeM; then false; else :; fi'
+     ! read_tree_u_must_succeed -m -u $treeH $treeM'
 
 # Also make sure we did not break DF vs DF/DF case.
 test_expect_success \

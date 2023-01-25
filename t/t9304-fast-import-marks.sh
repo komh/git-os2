@@ -16,7 +16,7 @@ test_expect_success 'setup large marks file' '
 	blob=$(git rev-parse HEAD:one.t) &&
 	for i in $(test_seq 1024 16384)
 	do
-		echo ":$i $blob"
+		echo ":$i $blob" || return 1
 	done >>marks
 '
 
@@ -25,6 +25,7 @@ test_expect_success 'import with large marks file' '
 '
 
 test_expect_success 'setup dump with submodule' '
+	test_config_global protocol.file.allow always &&
 	git submodule add "$PWD" sub &&
 	git commit -m "add submodule" &&
 	git fast-export HEAD >dump

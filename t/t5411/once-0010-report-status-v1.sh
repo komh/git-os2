@@ -3,7 +3,7 @@ test_expect_success "setup receive.procReceiveRefs" '
 '
 
 test_expect_success "setup proc-receive hook" '
-	write_script "$upstream/hooks/proc-receive" <<-EOF
+	test_hook -C "$upstream" --clobber proc-receive <<-EOF
 	printf >&2 "# proc-receive hook\n"
 	test-tool proc-receive -v \
 		-r "ok refs/for/main/topic1" \
@@ -28,10 +28,10 @@ test_expect_success "proc-receive: report status v1" '
 		if test -z "$GIT_DEFAULT_HASH" || test "$GIT_DEFAULT_HASH" = "sha1"
 		then
 			printf "%s %s refs/heads/main\0report-status\n" \
-				$A $B | packetize
+				$A $B | packetize_raw
 		else
 			printf "%s %s refs/heads/main\0report-status object-format=$GIT_DEFAULT_HASH\n" \
-				$A $B | packetize
+				$A $B | packetize_raw
 		fi &&
 		printf "%s %s refs/for/main/topic1\n" \
 			$ZERO_OID $A | packetize &&
@@ -83,12 +83,9 @@ test_expect_success "proc-receive: report status v1" '
 	EOF
 	test_cmp expect actual &&
 
-	git -C "$upstream" show-ref >out &&
-	make_user_friendly_and_stable_output <out >actual &&
-	cat >expect <<-EOF &&
+	test_cmp_refs -C "$upstream" <<-EOF
 	<COMMIT-A> refs/for/main/topic1
 	<COMMIT-A> refs/heads/foo
 	<COMMIT-B> refs/heads/main
 	EOF
-	test_cmp expect actual
 '

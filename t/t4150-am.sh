@@ -2,6 +2,9 @@
 
 test_description='git am running'
 
+GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
+export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
+
 . ./test-lib.sh
 
 test_expect_success 'setup: messages' '
@@ -113,7 +116,7 @@ test_expect_success setup '
 		git format-patch --stdout first | sed -e "1d"
 	} | append_cr >patch1-crlf.eml &&
 	{
-		printf "%255s\\n" ""
+		printf "%255s\\n" "" &&
 		echo "X-Fake-Field: Line One" &&
 		echo "X-Fake-Field: Line Two" &&
 		echo "X-Fake-Field: Line Three" &&
@@ -179,8 +182,8 @@ test_expect_success setup '
 	test_tick &&
 	git commit -m "added another file" &&
 
-	git format-patch --stdout master >lorem-move.patch &&
-	git format-patch --no-prefix --stdout master >lorem-zero.patch &&
+	git format-patch --stdout main >lorem-move.patch &&
+	git format-patch --no-prefix --stdout main >lorem-zero.patch &&
 
 	git checkout -b rename &&
 	git mv file renamed &&
@@ -192,6 +195,12 @@ test_expect_success setup '
 	git commit -m "renamed a file and added another" &&
 
 	git format-patch -M --stdout lorem^ >rename-add.patch &&
+
+	git checkout -b empty-commit &&
+	git commit -m "empty commit" --allow-empty &&
+
+	: >empty.patch &&
+	git format-patch --always --stdout empty-commit^ >empty-commit.patch &&
 
 	# reset time
 	sane_unset test_tick &&
@@ -306,12 +315,10 @@ test_expect_success 'am --patch-format=hg applies hg patch' '
 '
 
 test_expect_success 'am with applypatch-msg hook' '
-	test_when_finished "rm -f .git/hooks/applypatch-msg" &&
 	rm -fr .git/rebase-apply &&
 	git reset --hard &&
 	git checkout first &&
-	mkdir -p .git/hooks &&
-	write_script .git/hooks/applypatch-msg <<-\EOF &&
+	test_hook applypatch-msg <<-\EOF &&
 	cat "$1" >actual-msg &&
 	echo hook-message >"$1"
 	EOF
@@ -326,12 +333,10 @@ test_expect_success 'am with applypatch-msg hook' '
 '
 
 test_expect_success 'am with failing applypatch-msg hook' '
-	test_when_finished "rm -f .git/hooks/applypatch-msg" &&
 	rm -fr .git/rebase-apply &&
 	git reset --hard &&
 	git checkout first &&
-	mkdir -p .git/hooks &&
-	write_script .git/hooks/applypatch-msg <<-\EOF &&
+	test_hook applypatch-msg <<-\EOF &&
 	exit 1
 	EOF
 	test_must_fail git am patch1 &&
@@ -341,12 +346,10 @@ test_expect_success 'am with failing applypatch-msg hook' '
 '
 
 test_expect_success 'am with pre-applypatch hook' '
-	test_when_finished "rm -f .git/hooks/pre-applypatch" &&
 	rm -fr .git/rebase-apply &&
 	git reset --hard &&
 	git checkout first &&
-	mkdir -p .git/hooks &&
-	write_script .git/hooks/pre-applypatch <<-\EOF &&
+	test_hook pre-applypatch <<-\EOF &&
 	git diff first >diff.actual
 	exit 0
 	EOF
@@ -359,12 +362,10 @@ test_expect_success 'am with pre-applypatch hook' '
 '
 
 test_expect_success 'am with failing pre-applypatch hook' '
-	test_when_finished "rm -f .git/hooks/pre-applypatch" &&
 	rm -fr .git/rebase-apply &&
 	git reset --hard &&
 	git checkout first &&
-	mkdir -p .git/hooks &&
-	write_script .git/hooks/pre-applypatch <<-\EOF &&
+	test_hook pre-applypatch <<-\EOF &&
 	exit 1
 	EOF
 	test_must_fail git am patch1 &&
@@ -374,12 +375,10 @@ test_expect_success 'am with failing pre-applypatch hook' '
 '
 
 test_expect_success 'am with post-applypatch hook' '
-	test_when_finished "rm -f .git/hooks/post-applypatch" &&
 	rm -fr .git/rebase-apply &&
 	git reset --hard &&
 	git checkout first &&
-	mkdir -p .git/hooks &&
-	write_script .git/hooks/post-applypatch <<-\EOF &&
+	test_hook post-applypatch <<-\EOF &&
 	git rev-parse HEAD >head.actual
 	git diff second >diff.actual
 	exit 0
@@ -394,12 +393,10 @@ test_expect_success 'am with post-applypatch hook' '
 '
 
 test_expect_success 'am with failing post-applypatch hook' '
-	test_when_finished "rm -f .git/hooks/post-applypatch" &&
 	rm -fr .git/rebase-apply &&
 	git reset --hard &&
 	git checkout first &&
-	mkdir -p .git/hooks &&
-	write_script .git/hooks/post-applypatch <<-\EOF &&
+	test_hook post-applypatch <<-\EOF &&
 	git rev-parse HEAD >head.actual
 	exit 1
 	EOF
@@ -453,11 +450,11 @@ test_expect_success 'am changes committer and keeps author' '
 	git checkout first &&
 	git am patch2 &&
 	test_path_is_missing .git/rebase-apply &&
-	test "$(git rev-parse master^^)" = "$(git rev-parse HEAD^^)" &&
-	git diff --exit-code master..HEAD &&
-	git diff --exit-code master^..HEAD^ &&
-	compare author master HEAD &&
-	compare author master^ HEAD^ &&
+	test "$(git rev-parse main^^)" = "$(git rev-parse HEAD^^)" &&
+	git diff --exit-code main..HEAD &&
+	git diff --exit-code main^..HEAD^ &&
+	compare author main HEAD &&
+	compare author main^ HEAD^ &&
 	test "$GIT_COMMITTER_NAME <$GIT_COMMITTER_EMAIL>" = \
 	     "$(git log -1 --pretty=format:"%cn <%ce>" HEAD)"
 '
@@ -759,7 +756,7 @@ test_expect_success 'am takes patches from a Pine mailbox' '
 	git checkout first &&
 	cat pine patch1 | git am &&
 	test_path_is_missing .git/rebase-apply &&
-	git diff --exit-code master^..HEAD
+	git diff --exit-code main^..HEAD
 '
 
 test_expect_success 'am fails on mail without patch' '
@@ -903,7 +900,7 @@ test_expect_success 'am empty-file does not infloop' '
 	test_tick &&
 	test_must_fail git am empty-file 2>actual &&
 	echo Patch format detection failed. >expected &&
-	test_i18ncmp expected actual
+	test_cmp expected actual
 '
 
 test_expect_success 'am --message-id really adds the message id' '
@@ -1112,21 +1109,21 @@ test_expect_success 'am and .gitattibutes' '
 		test_commit sixth &&
 
 		git checkout test &&
-		git format-patch --stdout master..HEAD >patches &&
-		git reset --hard master &&
+		git format-patch --stdout main..HEAD >patches &&
+		git reset --hard main &&
 		git am patches &&
 		grep "smudged" a.txt &&
 
 		git checkout removal &&
 		git reset --hard &&
-		git format-patch --stdout master..HEAD >patches &&
-		git reset --hard master &&
+		git format-patch --stdout main..HEAD >patches &&
+		git reset --hard main &&
 		git am patches &&
 		grep "clean" a.txt &&
 
 		git checkout conflict &&
 		git reset --hard &&
-		git format-patch --stdout master..HEAD >patches &&
+		git format-patch --stdout main..HEAD >patches &&
 		git reset --hard fourth &&
 		test_must_fail git am -3 patches &&
 		grep "<<<<<<<<<<" a.txt
@@ -1147,6 +1144,107 @@ test_expect_success 'apply binary blob in partial clone' '
 
 	# Exercise to make sure that it works
 	git -C client am ../patch
+'
+
+test_expect_success 'an empty input file is error regardless of --empty option' '
+	test_when_finished "git am --abort || :" &&
+	test_must_fail git am --empty=drop empty.patch 2>actual &&
+	echo "Patch format detection failed." >expected &&
+	test_cmp expected actual
+'
+
+test_expect_success 'invalid when passing the --empty option alone' '
+	test_when_finished "git am --abort || :" &&
+	git checkout empty-commit^ &&
+	test_must_fail git am --empty empty-commit.patch 2>err &&
+	echo "error: invalid value for '\''--empty'\'': '\''empty-commit.patch'\''" >expected &&
+	test_cmp expected err
+'
+
+test_expect_success 'a message without a patch is an error (default)' '
+	test_when_finished "git am --abort || :" &&
+	test_must_fail git am empty-commit.patch >err &&
+	grep "Patch is empty" err
+'
+
+test_expect_success 'a message without a patch is an error where an explicit "--empty=stop" is given' '
+	test_when_finished "git am --abort || :" &&
+	test_must_fail git am --empty=stop empty-commit.patch >err &&
+	grep "Patch is empty." err
+'
+
+test_expect_success 'a message without a patch will be skipped when "--empty=drop" is given' '
+	git am --empty=drop empty-commit.patch >output &&
+	git rev-parse empty-commit^ >expected &&
+	git rev-parse HEAD >actual &&
+	test_cmp expected actual &&
+	grep "Skipping: empty commit" output
+'
+
+test_expect_success 'record as an empty commit when meeting e-mail message that lacks a patch' '
+	git am --empty=keep empty-commit.patch >output &&
+	test_path_is_missing .git/rebase-apply &&
+	git show empty-commit --format="%B" >expected &&
+	git show HEAD --format="%B" >actual &&
+	grep -f actual expected &&
+	grep "Creating an empty commit: empty commit" output
+'
+
+test_expect_success 'skip an empty patch in the middle of an am session' '
+	git checkout empty-commit^ &&
+	test_must_fail git am empty-commit.patch >err &&
+	grep "Patch is empty." err &&
+	grep "To record the empty patch as an empty commit, run \"git am --allow-empty\"." err &&
+	git am --skip &&
+	test_path_is_missing .git/rebase-apply &&
+	git rev-parse empty-commit^ >expected &&
+	git rev-parse HEAD >actual &&
+	test_cmp expected actual
+'
+
+test_expect_success 'record an empty patch as an empty commit in the middle of an am session' '
+	git checkout empty-commit^ &&
+	test_must_fail git am empty-commit.patch >err &&
+	grep "Patch is empty." err &&
+	grep "To record the empty patch as an empty commit, run \"git am --allow-empty\"." err &&
+	git am --allow-empty >output &&
+	grep "No changes - recorded it as an empty commit." output &&
+	test_path_is_missing .git/rebase-apply &&
+	git show empty-commit --format="%B" >expected &&
+	git show HEAD --format="%B" >actual &&
+	grep -f actual expected
+'
+
+test_expect_success 'create an non-empty commit when the index IS changed though "--allow-empty" is given' '
+	git checkout empty-commit^ &&
+	test_must_fail git am empty-commit.patch >err &&
+	: >empty-file &&
+	git add empty-file &&
+	git am --allow-empty &&
+	git show empty-commit --format="%B" >expected &&
+	git show HEAD --format="%B" >actual &&
+	grep -f actual expected &&
+	git diff HEAD^..HEAD --name-only
+'
+
+test_expect_success 'cannot create empty commits when there is a clean index due to merge conflicts' '
+	test_when_finished "git am --abort || :" &&
+	git rev-parse HEAD >expected &&
+	test_must_fail git am seq.patch &&
+	test_must_fail git am --allow-empty >err &&
+	! grep "To record the empty patch as an empty commit, run \"git am --allow-empty\"." err &&
+	git rev-parse HEAD >actual &&
+	test_cmp actual expected
+'
+
+test_expect_success 'cannot create empty commits when there is unmerged index due to merge conflicts' '
+	test_when_finished "git am --abort || :" &&
+	git rev-parse HEAD >expected &&
+	test_must_fail git am -3 seq.patch &&
+	test_must_fail git am --allow-empty >err &&
+	! grep "To record the empty patch as an empty commit, run \"git am --allow-empty\"." err &&
+	git rev-parse HEAD >actual &&
+	test_cmp actual expected
 '
 
 test_done

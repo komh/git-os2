@@ -151,7 +151,7 @@ static struct option builtin_config_options[] = {
 	OPT_BIT(0, "get-color", &actions, N_("find the color configured: slot [default]"), ACTION_GET_COLOR),
 	OPT_BIT(0, "get-colorbool", &actions, N_("find the color setting: slot [stdout-is-tty]"), ACTION_GET_COLORBOOL),
 	OPT_GROUP(N_("Type")),
-	OPT_CALLBACK('t', "type", &type, "", N_("value is given this type"), option_parse_type),
+	OPT_CALLBACK('t', "type", &type, N_("type"), N_("value is given this type"), option_parse_type),
 	OPT_CALLBACK_VALUE(0, "bool", &type, N_("value is \"true\" or \"false\""), TYPE_BOOL),
 	OPT_CALLBACK_VALUE(0, "int", &type, N_("value is decimal number"), TYPE_INT),
 	OPT_CALLBACK_VALUE(0, "bool-or-int", &type, N_("value is --bool or --int"), TYPE_BOOL_OR_INT),
@@ -207,7 +207,8 @@ static void show_config_scope(struct strbuf *buf)
 	strbuf_addch(buf, term);
 }
 
-static int show_all_config(const char *key_, const char *value_, void *cb)
+static int show_all_config(const char *key_, const char *value_,
+			   void *cb UNUSED)
 {
 	if (show_origin || show_scope) {
 		struct strbuf buf = STRBUF_INIT;
@@ -458,7 +459,8 @@ static const char *get_color_slot;
 static const char *get_colorbool_slot;
 static char parsed_color[COLOR_MAXLEN];
 
-static int git_get_color_config(const char *var, const char *value, void *cb)
+static int git_get_color_config(const char *var, const char *value,
+				void *cb UNUSED)
 {
 	if (!strcmp(var, get_color_slot)) {
 		if (!value)
@@ -490,7 +492,7 @@ static int get_colorbool_found;
 static int get_diff_color_found;
 static int get_color_ui_found;
 static int git_get_colorbool_config(const char *var, const char *value,
-		void *cb)
+				    void *data UNUSED)
 {
 	if (!strcmp(var, get_colorbool_slot))
 		get_colorbool_found = git_config_colorbool(var, value);
@@ -575,7 +577,7 @@ static int get_urlmatch(const char *var, const char *url)
 	int ret;
 	char *section_tail;
 	struct string_list_item *item;
-	struct urlmatch_config config = { STRING_LIST_INIT_DUP };
+	struct urlmatch_config config = URLMATCH_CONFIG_INIT;
 	struct string_list values = STRING_LIST_INIT_DUP;
 
 	config.collect_fn = urlmatch_collect_fn;
@@ -612,7 +614,7 @@ static int get_urlmatch(const char *var, const char *url)
 
 		strbuf_release(&matched->value);
 	}
-	string_list_clear(&config.vars, 1);
+	urlmatch_config_release(&config);
 	string_list_clear(&values, 1);
 	free(config.url.url);
 
@@ -671,9 +673,9 @@ int cmd_config(int argc, const char **argv, const char *prefix)
 	}
 
 	if (use_global_config) {
-		char *user_config = expand_user_path("~/.gitconfig", 0);
-		char *xdg_config = xdg_config_home("config");
+		char *user_config, *xdg_config;
 
+		git_global_config(&user_config, &xdg_config);
 		if (!user_config)
 			/*
 			 * It is unknown if HOME/.gitconfig exists, so
@@ -695,7 +697,7 @@ int cmd_config(int argc, const char **argv, const char *prefix)
 		}
 	}
 	else if (use_system_config) {
-		given_config_source.file = git_etc_gitconfig();
+		given_config_source.file = git_system_config();
 		given_config_source.scope = CONFIG_SCOPE_SYSTEM;
 	} else if (use_local_config) {
 		given_config_source.file = git_pathdup("config");

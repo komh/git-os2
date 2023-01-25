@@ -242,7 +242,7 @@ static struct commit *fake_working_tree_commit(struct repository *r,
 		switch (st.st_mode & S_IFMT) {
 		case S_IFREG:
 			if (opt->flags.allow_textconv &&
-			    textconv_object(r, read_from, mode, &null_oid, 0, &buf_ptr, &buf_len))
+			    textconv_object(r, read_from, mode, null_oid(), 0, &buf_ptr, &buf_len))
 				strbuf_attach(&buf, buf_ptr, buf_len, buf_len + 1);
 			else if (strbuf_read_file(&buf, read_from, st.st_size) != st.st_size)
 				die_errno("cannot open or read '%s'", read_from);
@@ -951,13 +951,13 @@ static int *fuzzy_find_matching_lines(struct blame_origin *parent,
 	max_search_distance_b = ((2 * max_search_distance_a + 1) * length_b
 				 - 1) / length_a;
 
-	result = xcalloc(sizeof(int), length_b);
-	second_best_result = xcalloc(sizeof(int), length_b);
-	certainties = xcalloc(sizeof(int), length_b);
+	CALLOC_ARRAY(result, length_b);
+	CALLOC_ARRAY(second_best_result, length_b);
+	CALLOC_ARRAY(certainties, length_b);
 
 	/* See get_similarity() for details of similarities. */
 	similarity_count = length_b * (max_search_distance_a * 2 + 1);
-	similarities = xcalloc(sizeof(int), similarity_count);
+	CALLOC_ARRAY(similarities, similarity_count);
 
 	for (i = 0; i < length_b; ++i) {
 		result[i] = -1;
@@ -995,7 +995,7 @@ static void fill_origin_fingerprints(struct blame_origin *o)
 		return;
 	o->num_lines = find_line_starts(&line_starts, o->file.ptr,
 					o->file.size);
-	o->fingerprints = xcalloc(sizeof(struct fingerprint), o->num_lines);
+	CALLOC_ARRAY(o->fingerprints, o->num_lines);
 	get_line_fingerprints(o->fingerprints, o->file.ptr, line_starts,
 			      0, o->num_lines);
 	free(line_starts);
@@ -1072,7 +1072,7 @@ static struct blame_entry *blame_merge(struct blame_entry *list1,
 	if (p1->s_lno <= p2->s_lno) {
 		do {
 			tail = &p1->next;
-			if ((p1 = *tail) == NULL) {
+			if (!(p1 = *tail)) {
 				*tail = p2;
 				return list1;
 			}
@@ -1082,7 +1082,7 @@ static struct blame_entry *blame_merge(struct blame_entry *list1,
 		*tail = p2;
 		do {
 			tail = &p2->next;
-			if ((p2 = *tail) == NULL)  {
+			if (!(p2 = *tail))  {
 				*tail = p1;
 				return list1;
 			}
@@ -1090,7 +1090,7 @@ static struct blame_entry *blame_merge(struct blame_entry *list1,
 		*tail = p1;
 		do {
 			tail = &p1->next;
-			if ((p1 = *tail) == NULL) {
+			if (!(p1 = *tail)) {
 				*tail = p2;
 				return list1;
 			}
@@ -1098,30 +1098,22 @@ static struct blame_entry *blame_merge(struct blame_entry *list1,
 	}
 }
 
-static void *get_next_blame(const void *p)
-{
-	return ((struct blame_entry *)p)->next;
-}
-
-static void set_next_blame(void *p1, void *p2)
-{
-	((struct blame_entry *)p1)->next = p2;
-}
+DEFINE_LIST_SORT(static, sort_blame_entries, struct blame_entry, next);
 
 /*
  * Final image line numbers are all different, so we don't need a
  * three-way comparison here.
  */
 
-static int compare_blame_final(const void *p1, const void *p2)
+static int compare_blame_final(const struct blame_entry *e1,
+			       const struct blame_entry *e2)
 {
-	return ((struct blame_entry *)p1)->lno > ((struct blame_entry *)p2)->lno
-		? 1 : -1;
+	return e1->lno > e2->lno ? 1 : -1;
 }
 
-static int compare_blame_suspect(const void *p1, const void *p2)
+static int compare_blame_suspect(const struct blame_entry *s1,
+				 const struct blame_entry *s2)
 {
-	const struct blame_entry *s1 = p1, *s2 = p2;
 	/*
 	 * to allow for collating suspects, we sort according to the
 	 * respective pointer value as the primary sorting criterion.
@@ -1138,8 +1130,7 @@ static int compare_blame_suspect(const void *p1, const void *p2)
 
 void blame_sort_final(struct blame_scoreboard *sb)
 {
-	sb->ent = llist_mergesort(sb->ent, get_next_blame, set_next_blame,
-				  compare_blame_final);
+	sort_blame_entries(&sb->ent, compare_blame_final);
 }
 
 static int compare_commits_by_reverse_commit_date(const void *a,
@@ -1403,7 +1394,6 @@ static struct blame_origin *find_origin(struct repository *r,
 		}
 	}
 	diff_flush(&diff_opts);
-	clear_pathspec(&diff_opts.pathspec);
 	return porigin;
 }
 
@@ -1447,7 +1437,6 @@ static struct blame_origin *find_rename(struct repository *r,
 		}
 	}
 	diff_flush(&diff_opts);
-	clear_pathspec(&diff_opts.pathspec);
 	return porigin;
 }
 
@@ -1853,8 +1842,7 @@ static void blame_chunk(struct blame_entry ***dstq, struct blame_entry ***srcq,
 	diffp = NULL;
 
 	if (ignore_diffs && same - tlno > 0) {
-		line_blames = xcalloc(sizeof(struct blame_line_tracker),
-				      same - tlno);
+		CALLOC_ARRAY(line_blames, same - tlno);
 		guess_line_blames(parent, target, tlno, offset, same,
 				  parent_len, line_blames);
 	}
@@ -1967,9 +1955,7 @@ static void pass_blame_to_parent(struct blame_scoreboard *sb,
 		    parent, target, 0);
 	*d.dstq = NULL;
 	if (ignore_diffs)
-		newdest = llist_mergesort(newdest, get_next_blame,
-					  set_next_blame,
-					  compare_blame_suspect);
+		sort_blame_entries(&newdest, compare_blame_suspect);
 	queue_blames(sb, parent, newdest);
 
 	return;
@@ -2216,7 +2202,7 @@ static struct blame_list *setup_blame_list(struct blame_entry *unblamed,
 	for (e = unblamed, num_ents = 0; e; e = e->next)
 		num_ents++;
 	if (num_ents) {
-		blame_list = xcalloc(num_ents, sizeof(struct blame_list));
+		CALLOC_ARRAY(blame_list, num_ents);
 		for (e = unblamed, i = 0; e; e = e->next)
 			blame_list[i++].ent = e;
 	}
@@ -2329,7 +2315,6 @@ static void find_copy_in_parent(struct blame_scoreboard *sb,
 	} while (unblamed);
 	target->suspects = reverse_blame(leftover, NULL);
 	diff_flush(&diff_opts);
-	clear_pathspec(&diff_opts.pathspec);
 }
 
 /*
@@ -2387,8 +2372,7 @@ static int num_scapegoats(struct rev_info *revs, struct commit *commit, int reve
  */
 static void distribute_blame(struct blame_scoreboard *sb, struct blame_entry *blamed)
 {
-	blamed = llist_mergesort(blamed, get_next_blame, set_next_blame,
-				 compare_blame_suspect);
+	sort_blame_entries(&blamed, compare_blame_suspect);
 	while (blamed)
 	{
 		struct blame_origin *porigin = blamed->suspect;
@@ -2428,7 +2412,7 @@ static void pass_blame(struct blame_scoreboard *sb, struct blame_origin *origin,
 	else if (num_sg < ARRAY_SIZE(sg_buf))
 		memset(sg_buf, 0, sizeof(sg_buf));
 	else
-		sg_origin = xcalloc(num_sg, sizeof(*sg_origin));
+		CALLOC_ARRAY(sg_origin, num_sg);
 
 	/*
 	 * The first pass looks for unrenamed path to optimize for
@@ -2616,7 +2600,7 @@ void assign_blame(struct blame_scoreboard *sb, int opt)
 		else {
 			commit->object.flags |= UNINTERESTING;
 			if (commit->object.parsed)
-				mark_parents_uninteresting(commit);
+				mark_parents_uninteresting(sb->revs, commit);
 		}
 		/* treat root commit as boundary */
 		if (!commit->parents && !sb->show_root)

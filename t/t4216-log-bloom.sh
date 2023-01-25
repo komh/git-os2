@@ -1,6 +1,9 @@
 #!/bin/sh
 
 test_description='git log for a path with Bloom filters'
+GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
+export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
+
 . ./test-lib.sh
 
 GIT_TEST_COMMIT_GRAPH=0
@@ -21,7 +24,7 @@ test_expect_success 'setup test - repo, commits, commit graph, log outputs' '
 	test_commit c10 file_to_be_deleted &&
 	git checkout -b side HEAD~4 &&
 	test_commit side-1 file4 &&
-	git checkout master &&
+	git checkout main &&
 	git merge side &&
 	test_commit c11 file5 &&
 	mv file5 file5_renamed &&
@@ -40,11 +43,12 @@ test_expect_success 'setup test - repo, commits, commit graph, log outputs' '
 '
 
 graph_read_expect () {
-	NUM_CHUNKS=5
+	NUM_CHUNKS=6
 	cat >expect <<- EOF
 	header: 43475048 1 $(test_oid oid_version) $NUM_CHUNKS 0
 	num_commits: $1
-	chunks: oid_fanout oid_lookup commit_metadata bloom_indexes bloom_data
+	chunks: oid_fanout oid_lookup commit_metadata generation_data bloom_indexes bloom_data
+	options: bloom(1,10,7) read_generation_data
 	EOF
 	test-tool read-graph >actual &&
 	test_cmp expect actual
@@ -94,7 +98,7 @@ do
 		      "--topo-order" \
 		      "--date-order" \
 		      "--author-date-order" \
-		      "--ancestry-path side..master"
+		      "--ancestry-path side..main"
 	do
 		test_expect_success "git log option: $option for path: $path" '
 			test_bloom_filters_used "$option -- $path" &&
@@ -172,13 +176,11 @@ test_expect_success 'persist filter settings' '
 	test_when_finished rm -rf .git/objects/info/commit-graph* &&
 	rm -rf .git/objects/info/commit-graph* &&
 	GIT_TRACE2_EVENT="$(pwd)/trace2.txt" \
-		GIT_TRACE2_EVENT_NESTING=5 \
 		GIT_TEST_BLOOM_SETTINGS_NUM_HASHES=9 \
 		GIT_TEST_BLOOM_SETTINGS_BITS_PER_ENTRY=15 \
 		git commit-graph write --reachable --changed-paths &&
 	grep "{\"hash_version\":1,\"num_hashes\":9,\"bits_per_entry\":15,\"max_changed_paths\":512" trace2.txt &&
 	GIT_TRACE2_EVENT="$(pwd)/trace2-auto.txt" \
-		GIT_TRACE2_EVENT_NESTING=5 \
 		git commit-graph write --reachable --changed-paths &&
 	grep "{\"hash_version\":1,\"num_hashes\":9,\"bits_per_entry\":15,\"max_changed_paths\":512" trace2-auto.txt
 '
@@ -373,7 +375,7 @@ test_expect_success 'Bloom generation backfills empty commits' '
 		cd empty &&
 		for i in $(test_seq 1 6)
 		do
-			git commit --allow-empty -m "$i"
+			git commit --allow-empty -m "$i" || return 1
 		done &&
 
 		# Generate Bloom filters for empty commits 1-6, two at a time.
@@ -386,7 +388,7 @@ test_expect_success 'Bloom generation backfills empty commits' '
 			test_filter_computed 2 trace.event &&
 			test_filter_not_computed 4 trace.event &&
 			test_filter_trunc_empty 2 trace.event &&
-			test_filter_trunc_large 0 trace.event
+			test_filter_trunc_large 0 trace.event || return 1
 		done &&
 
 		# Finally, make sure that once all commits have filters, that

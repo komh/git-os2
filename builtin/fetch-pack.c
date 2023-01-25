@@ -62,6 +62,7 @@ int cmd_fetch_pack(int argc, const char **argv, const char *prefix)
 	packet_trace_identity("fetch-pack");
 
 	memset(&args, 0, sizeof(args));
+	list_objects_filter_init(&args.filter_options);
 	args.uploadpack = "git-upload-pack";
 
 	for (i = 1; i < argc && *argv[i] == '-'; i++) {
@@ -153,11 +154,15 @@ int cmd_fetch_pack(int argc, const char **argv, const char *prefix)
 			args.from_promisor = 1;
 			continue;
 		}
-		if (skip_prefix(arg, ("--" CL_ARG__FILTER "="), &arg)) {
+		if (!strcmp("--refetch", arg)) {
+			args.refetch = 1;
+			continue;
+		}
+		if (skip_prefix(arg, ("--filter="), &arg)) {
 			parse_list_objects_filter(&args.filter_options, arg);
 			continue;
 		}
-		if (!strcmp(arg, ("--no-" CL_ARG__FILTER))) {
+		if (!strcmp(arg, ("--no-filter"))) {
 			list_objects_filter_set_no_filter(&args.filter_options);
 			continue;
 		}
@@ -220,7 +225,8 @@ int cmd_fetch_pack(int argc, const char **argv, const char *prefix)
 	version = discover_version(&reader);
 	switch (version) {
 	case protocol_v2:
-		get_remote_refs(fd[1], &reader, &ref, 0, NULL, NULL, args.stateless_rpc);
+		get_remote_refs(fd[1], &reader, &ref, 0, NULL, NULL,
+				args.stateless_rpc);
 		break;
 	case protocol_v1:
 	case protocol_v0:

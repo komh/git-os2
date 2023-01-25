@@ -49,6 +49,8 @@ const char *config_scope_name(enum config_scope scope);
 struct git_config_source {
 	unsigned int use_stdin:1;
 	const char *file;
+	/* The repository if blob is not NULL; leave blank for the_repository */
+	struct repository *repo;
 	const char *blob;
 	enum config_scope scope;
 };
@@ -87,6 +89,15 @@ struct config_options {
 	unsigned int ignore_worktree : 1;
 	unsigned int ignore_cmdline : 1;
 	unsigned int system_gently : 1;
+
+	/*
+	 * For internal use. Include all includeif.hasremoteurl paths without
+	 * checking if the repo has that remote URL, and when doing so, verify
+	 * that files included in this way do not configure any remote URLs
+	 * themselves.
+	 */
+	unsigned int unconditional_remote_url : 1;
+
 	const char *commondir;
 	const char *git_dir;
 	config_parser_event_fn_t event_fn;
@@ -124,6 +135,8 @@ int git_default_config(const char *, const char *, void *);
 /**
  * Read a specific file in git-config format.
  * This function takes the same callback and data parameters as `git_config`.
+ *
+ * Unlike git_config(), this function does not respect includes.
  */
 int git_config_from_file(config_fn_t fn, const char *, void *);
 
@@ -136,8 +149,10 @@ int git_config_from_mem(config_fn_t fn,
 			const char *buf, size_t len,
 			void *data, const struct config_options *opts);
 int git_config_from_blob_oid(config_fn_t fn, const char *name,
+			     struct repository *repo,
 			     const struct object_id *oid, void *data);
 void git_config_push_parameter(const char *text);
+void git_config_push_env(const char *spec);
 int git_config_from_parameters(config_fn_t fn, void *data);
 void read_early_config(config_fn_t cb, void *data);
 void read_very_early_config(config_fn_t cb, void *data);
@@ -154,6 +169,8 @@ void read_very_early_config(config_fn_t cb, void *data);
  * will first feed the user-wide one to the callback, and then the
  * repo-specific one; by overwriting, the higher-priority repo-specific
  * value is left at the end).
+ *
+ * Unlike git_config_from_file(), this function respects includes.
  */
 void git_config(config_fn_t fn, void *);
 
@@ -189,6 +206,7 @@ int config_with_options(config_fn_t fn, void *,
 
 int git_parse_ssize_t(const char *, ssize_t *);
 int git_parse_ulong(const char *, unsigned long *);
+int git_parse_int(const char *value, int *ret);
 
 /**
  * Same as `git_config_bool`, except that it returns -1 on error rather
@@ -250,12 +268,18 @@ void git_config_set_in_file(const char *, const char *, const char *);
 int git_config_set_gently(const char *, const char *);
 
 /**
+ * Write a config value that should apply to the current worktree. If
+ * extensions.worktreeConfig is enabled, then the write will happen in the
+ * current worktree's config. Otherwise, write to the common config file.
+ */
+int repo_config_set_worktree_gently(struct repository *, const char *, const char *);
+
+/**
  * write config values to `.git/config`, takes a key/value pair as parameter.
  */
 void git_config_set(const char *, const char *);
 
 int git_config_parse_key(const char *, char **, size_t *);
-int git_config_key_is_valid(const char *key);
 
 /*
  * The following macros specify flag bits that alter the behavior
@@ -278,6 +302,7 @@ int git_config_key_is_valid(const char *key);
 
 int git_config_set_multivar_gently(const char *, const char *, const char *, unsigned);
 void git_config_set_multivar(const char *, const char *, const char *, unsigned);
+int repo_config_set_multivar_gently(struct repository *, const char *, const char *, const char *, unsigned);
 int git_config_set_multivar_in_file_gently(const char *, const char *, const char *, const char *, unsigned);
 
 /**
@@ -317,7 +342,6 @@ int git_config_rename_section(const char *, const char *);
 int git_config_rename_section_in_file(const char *, const char *, const char *);
 int git_config_copy_section(const char *, const char *);
 int git_config_copy_section_in_file(const char *, const char *, const char *);
-const char *git_etc_gitconfig(void);
 int git_env_bool(const char *, int);
 unsigned long git_env_ulong(const char *, unsigned long);
 int git_config_system(void);
@@ -326,45 +350,15 @@ int config_error_nonbool(const char *);
 #define config_error_nonbool(s) (config_error_nonbool(s), const_error())
 #endif
 
+char *git_system_config(void);
+void git_global_config(char **user, char **xdg);
+
 int git_config_parse_parameter(const char *, config_fn_t fn, void *data);
 
 enum config_scope current_config_scope(void);
 const char *current_config_origin_type(void);
 const char *current_config_name(void);
 int current_config_line(void);
-
-/**
- * Include Directives
- * ------------------
- *
- * By default, the config parser does not respect include directives.
- * However, a caller can use the special `git_config_include` wrapper
- * callback to support them. To do so, you simply wrap your "real" callback
- * function and data pointer in a `struct config_include_data`, and pass
- * the wrapper to the regular config-reading functions. For example:
- *
- * -------------------------------------------
- * int read_file_with_include(const char *file, config_fn_t fn, void *data)
- * {
- * struct config_include_data inc = CONFIG_INCLUDE_INIT;
- * inc.fn = fn;
- * inc.data = data;
- * return git_config_from_file(git_config_include, file, &inc);
- * }
- * -------------------------------------------
- *
- * `git_config` respects includes automatically. The lower-level
- * `git_config_from_file` does not.
- *
- */
-struct config_include_data {
-	int depth;
-	config_fn_t fn;
-	void *data;
-	const struct config_options *opts;
-};
-#define CONFIG_INCLUDE_INIT { 0 }
-int git_config_include(const char *name, const char *value, void *data);
 
 /*
  * Match and parse a config key of the form:
@@ -447,11 +441,20 @@ void git_configset_init(struct config_set *cs);
 /**
  * Parses the file and adds the variable-value pairs to the `config_set`,
  * dies if there is an error in parsing the file. Returns 0 on success, or
- * -1 if the file does not exist or is inaccessible. The user has to decide
- * if he wants to free the incomplete configset or continue using it when
+ * -1 if the file does not exist or is inaccessible. The caller decides
+ * whether to free the incomplete configset or continue using it when
  * the function returns -1.
  */
 int git_configset_add_file(struct config_set *cs, const char *filename);
+
+/**
+ * Parses command line options and environment variables, and adds the
+ * variable-value pairs to the `config_set`. Returns 0 on success, or -1
+ * if there is an error in parsing. The caller decides whether to free
+ * the incomplete configset or continue using it when the function
+ * returns -1.
+ */
+int git_configset_add_parameters(struct config_set *cs);
 
 /**
  * Finds and returns the value list, sorted in order of increasing priority
@@ -481,7 +484,6 @@ void git_configset_clear(struct config_set *cs);
 int git_configset_get_value(struct config_set *cs, const char *key, const char **dest);
 
 int git_configset_get_string(struct config_set *cs, const char *key, char **dest);
-int git_configset_get_string_tmp(struct config_set *cs, const char *key, const char **dest);
 int git_configset_get_int(struct config_set *cs, const char *key, int *dest);
 int git_configset_get_ulong(struct config_set *cs, const char *key, unsigned long *dest);
 int git_configset_get_bool(struct config_set *cs, const char *key, int *dest);
@@ -512,6 +514,13 @@ int repo_config_get_maybe_bool(struct repository *repo,
 			       const char *key, int *dest);
 int repo_config_get_pathname(struct repository *repo,
 			     const char *key, const char **dest);
+
+/*
+ * Functions for reading protected config. By definition, protected
+ * config ignores repository config, so these do not take a `struct
+ * repository` parameter.
+ */
+void git_protected_config(config_fn_t fn, void *data);
 
 /**
  * Querying For Specific Variables
@@ -603,10 +612,8 @@ int git_config_get_maybe_bool(const char *key, int *dest);
 int git_config_get_pathname(const char *key, const char **dest);
 
 int git_config_get_index_threads(int *dest);
-int git_config_get_untracked_cache(void);
 int git_config_get_split_index(void);
 int git_config_get_max_percent_split_change(void);
-int git_config_get_fsmonitor(void);
 
 /* This dies if the configured or default date is in the future */
 int git_config_get_expiry(const char *key, const char **output);

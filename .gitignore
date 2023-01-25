@@ -1,7 +1,5 @@
-/fuzz-commit-graph
 /fuzz_corpora
-/fuzz-pack-headers
-/fuzz-pack-idx
+/GIT-BUILD-DIR
 /GIT-BUILD-OPTIONS
 /GIT-CFLAGS
 /GIT-LDFLAGS
@@ -10,6 +8,7 @@
 /GIT-PERL-HEADER
 /GIT-PYTHON-VARS
 /GIT-SCRIPT-DEFINES
+/GIT-SPATCH-DEFINES
 /GIT-USER-AGENT
 /GIT-VERSION-FILE
 /bin-wrappers/
@@ -33,6 +32,7 @@
 /git-check-mailmap
 /git-check-ref-format
 /git-checkout
+/git-checkout--worker
 /git-checkout-index
 /git-cherry
 /git-cherry-pick
@@ -52,6 +52,7 @@
 /git-cvsimport
 /git-cvsserver
 /git-daemon
+/git-diagnose
 /git-diff
 /git-diff-files
 /git-diff-index
@@ -71,11 +72,13 @@
 /git-format-patch
 /git-fsck
 /git-fsck-objects
+/git-fsmonitor--daemon
 /git-gc
 /git-get-tar-commit-id
 /git-grep
 /git-hash-object
 /git-help
+/git-hook
 /git-http-backend
 /git-http-fetch
 /git-http-push
@@ -124,7 +127,6 @@
 /git-range-diff
 /git-read-tree
 /git-rebase
-/git-rebase--preserve-merges
 /git-receive-pack
 /git-reflog
 /git-remote
@@ -162,6 +164,7 @@
 /git-stripspace
 /git-submodule
 /git-submodule--helper
+/git-subtree
 /git-svn
 /git-switch
 /git-symbolic-ref
@@ -177,17 +180,21 @@
 /git-verify-commit
 /git-verify-pack
 /git-verify-tag
+/git-version
 /git-web--browse
 /git-whatchanged
 /git-worktree
 /git-write-tree
+/scalar
 /git-core-*/?*
+/git.res
 /gitweb/GITWEB-BUILD-OPTIONS
 /gitweb/gitweb.cgi
 /gitweb/static/gitweb.js
 /gitweb/static/gitweb.min.*
 /config-list.h
 /command-list.h
+/hook-list.h
 *.tar.gz
 *.dsc
 *.deb
@@ -196,6 +203,7 @@
 *.[aos]
 *.o.json
 *.py[co]
+.build/
 .depend/
 *.gcda
 *.gcno
@@ -220,8 +228,8 @@
 *.hcc
 *.obj
 *.lib
-*.res
 *.sln
+*.sp
 *.suo
 *.ncb
 *.vcproj

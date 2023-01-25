@@ -16,6 +16,7 @@ static void add_string_to_filter(const char *data, struct bloom_filter *filter) 
 		}
 		printf("\n");
 		add_key_to_filter(&key, filter, &settings);
+		clear_bloom_key(&key);
 }
 
 static void print_bloom_filter(struct bloom_filter *filter) {
@@ -48,7 +49,7 @@ static void get_bloom_filter_for_commit(const struct object_id *commit_oid)
 static const char *bloom_usage = "\n"
 "  test-tool bloom get_murmur3 <string>\n"
 "  test-tool bloom generate_filter <string> [<string>...]\n"
-"  test-tool get_filter_for_commit <commit-hex>\n";
+"  test-tool bloom get_filter_for_commit <commit-hex>\n";
 
 int cmd__bloom(int argc, const char **argv)
 {
@@ -69,7 +70,7 @@ int cmd__bloom(int argc, const char **argv)
 		struct bloom_filter filter;
 		int i = 2;
 		filter.len =  (settings.bits_per_entry + BITS_PER_WORD - 1) / BITS_PER_WORD;
-		filter.data = xcalloc(filter.len, sizeof(unsigned char));
+		CALLOC_ARRAY(filter.data, filter.len);
 
 		if (argc - 1 < i)
 			usage(bloom_usage);
@@ -80,6 +81,7 @@ int cmd__bloom(int argc, const char **argv)
 		}
 
 		print_bloom_filter(&filter);
+		free(filter.data);
 	}
 
 	if (!strcmp(argv[1], "get_filter_for_commit")) {

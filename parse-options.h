@@ -8,10 +8,10 @@
 enum parse_opt_type {
 	/* special types */
 	OPTION_END,
-	OPTION_ARGUMENT,
 	OPTION_GROUP,
 	OPTION_NUMBER,
 	OPTION_ALIAS,
+	OPTION_SUBCOMMAND,
 	/* options with no arguments */
 	OPTION_BIT,
 	OPTION_NEGBIT,
@@ -28,26 +28,28 @@ enum parse_opt_type {
 };
 
 enum parse_opt_flags {
-	PARSE_OPT_KEEP_DASHDASH = 1,
-	PARSE_OPT_STOP_AT_NON_OPTION = 2,
-	PARSE_OPT_KEEP_ARGV0 = 4,
-	PARSE_OPT_KEEP_UNKNOWN = 8,
-	PARSE_OPT_NO_INTERNAL_HELP = 16,
-	PARSE_OPT_ONE_SHOT = 32
+	PARSE_OPT_KEEP_DASHDASH = 1 << 0,
+	PARSE_OPT_STOP_AT_NON_OPTION = 1 << 1,
+	PARSE_OPT_KEEP_ARGV0 = 1 << 2,
+	PARSE_OPT_KEEP_UNKNOWN_OPT = 1 << 3,
+	PARSE_OPT_NO_INTERNAL_HELP = 1 << 4,
+	PARSE_OPT_ONE_SHOT = 1 << 5,
+	PARSE_OPT_SHELL_EVAL = 1 << 6,
+	PARSE_OPT_SUBCOMMAND_OPTIONAL = 1 << 7,
 };
 
 enum parse_opt_option_flags {
-	PARSE_OPT_OPTARG  = 1,
-	PARSE_OPT_NOARG   = 2,
-	PARSE_OPT_NONEG   = 4,
-	PARSE_OPT_HIDDEN  = 8,
-	PARSE_OPT_LASTARG_DEFAULT = 16,
-	PARSE_OPT_NODASH = 32,
-	PARSE_OPT_LITERAL_ARGHELP = 64,
-	PARSE_OPT_SHELL_EVAL = 256,
-	PARSE_OPT_NOCOMPLETE = 512,
-	PARSE_OPT_COMP_ARG = 1024,
-	PARSE_OPT_CMDMODE = 2048
+	PARSE_OPT_OPTARG  = 1 << 0,
+	PARSE_OPT_NOARG   = 1 << 1,
+	PARSE_OPT_NONEG   = 1 << 2,
+	PARSE_OPT_HIDDEN  = 1 << 3,
+	PARSE_OPT_LASTARG_DEFAULT = 1 << 4,
+	PARSE_OPT_NODASH = 1 << 5,
+	PARSE_OPT_LITERAL_ARGHELP = 1 << 6,
+	PARSE_OPT_FROM_ALIAS = 1 << 7,
+	PARSE_OPT_NOCOMPLETE = 1 << 9,
+	PARSE_OPT_COMP_ARG = 1 << 10,
+	PARSE_OPT_CMDMODE = 1 << 11,
 };
 
 enum parse_opt_result {
@@ -56,6 +58,7 @@ enum parse_opt_result {
 	PARSE_OPT_ERROR = -1,	/* must be the same as error() */
 	PARSE_OPT_DONE = 0,	/* fixed so that "return 0" works */
 	PARSE_OPT_NON_OPTION,
+	PARSE_OPT_SUBCOMMAND,
 	PARSE_OPT_UNKNOWN
 };
 
@@ -67,6 +70,9 @@ typedef enum parse_opt_result parse_opt_ll_cb(struct parse_opt_ctx_t *ctx,
 					      const struct option *opt,
 					      const char *arg, int unset);
 
+typedef int parse_opt_subcommand_fn(int argc, const char **argv,
+				    const char *prefix);
+
 /*
  * `type`::
  *   holds the type of the option, you must have an OPTION_END last in your
@@ -76,19 +82,25 @@ typedef enum parse_opt_result parse_opt_ll_cb(struct parse_opt_ctx_t *ctx,
  *   the character to use as a short option name, '\0' if none.
  *
  * `long_name`::
- *   the long option name, without the leading dashes, NULL if none.
+ *   the long option (without the leading dashes) or subcommand name,
+ *   NULL if none.
  *
  * `value`::
  *   stores pointers to the values to be filled.
  *
  * `argh`::
- *   token to explain the kind of argument this option wants. Keep it
- *   homogeneous across the repository. Should be wrapped by N_() for
- *   translation.
+ *   token to explain the kind of argument this option wants. Does not
+ *   begin in capital letter, and does not end with a full stop.
+ *   Should be wrapped by N_() for translation.
+ *   Is automatically enclosed in brackets when printed, unless it
+ *   contains any of the following characters: ()<>[]|
+ *   E.g. "name" is shown as "<name>" to indicate that a name value
+ *   needs to be supplied, not the literal string "name", but
+ *   "<start>,<end>" and "(this|that)" are printed verbatim.
  *
  * `help`::
  *   the short help associated to what the option does.
- *   Must never be NULL (except for OPTION_END).
+ *   Must never be NULL (except for OPTION_END and OPTION_SUBCOMMAND).
  *   OPTION_GROUP uses this pointer to store the group header.
  *   Should be wrapped by N_() for translation.
  *
@@ -104,7 +116,8 @@ typedef enum parse_opt_result parse_opt_ll_cb(struct parse_opt_ctx_t *ctx,
  *				is last on the command line. If the option is
  *				not last it will require an argument.
  *				Should not be used with PARSE_OPT_OPTARG.
- *   PARSE_OPT_NODASH: this option doesn't start with a dash.
+ *   PARSE_OPT_NODASH: this option doesn't start with a dash; can only be a
+ *		       short option and can't accept arguments.
  *   PARSE_OPT_LITERAL_ARGHELP: says that argh shouldn't be enclosed in brackets
  *				(i.e. '<argh>') in the help message.
  *				Useful for options with multiple parameters.
@@ -125,6 +138,9 @@ typedef enum parse_opt_result parse_opt_ll_cb(struct parse_opt_ctx_t *ctx,
  * `ll_callback`::
  *   pointer to the callback to use for OPTION_LOWLEVEL_CALLBACK
  *
+ * `subcommand_fn`::
+ *   pointer to a function to use for OPTION_SUBCOMMAND.
+ *   It will be put in value when the subcommand is given on the command line.
  */
 struct option {
 	enum parse_opt_type type;
@@ -134,11 +150,12 @@ struct option {
 	const char *argh;
 	const char *help;
 
-	int flags;
+	enum parse_opt_option_flags flags;
 	parse_opt_cb *callback;
 	intptr_t defval;
 	parse_opt_ll_cb *ll_callback;
 	intptr_t extra;
+	parse_opt_subcommand_fn *subcommand_fn;
 };
 
 #define OPT_BIT_F(s, l, v, h, b, f) { OPTION_BIT, (s), (l), (v), NULL, (h), \
@@ -154,8 +171,6 @@ struct option {
 #define OPT_INTEGER_F(s, l, v, h, f)     { OPTION_INTEGER, (s), (l), (v), N_("n"), (h), (f) }
 
 #define OPT_END()                   { OPTION_END }
-#define OPT_ARGUMENT(l, v, h)       { OPTION_ARGUMENT, 0, (l), (v), NULL, \
-				      (h), PARSE_OPT_NOARG, NULL, 1 }
 #define OPT_GROUP(h)                { OPTION_GROUP, 0, NULL, NULL, NULL, (h) }
 #define OPT_BIT(s, l, v, h, b)      OPT_BIT_F(s, l, v, h, b, 0)
 #define OPT_BITOP(s, l, v, h, set, clear) { OPTION_BITOP, (s), (l), (v), NULL, (h), \
@@ -168,8 +183,10 @@ struct option {
 #define OPT_BOOL(s, l, v, h)        OPT_BOOL_F(s, l, v, h, 0)
 #define OPT_HIDDEN_BOOL(s, l, v, h) { OPTION_SET_INT, (s), (l), (v), NULL, \
 				      (h), PARSE_OPT_NOARG | PARSE_OPT_HIDDEN, NULL, 1}
-#define OPT_CMDMODE(s, l, v, h, i)  { OPTION_SET_INT, (s), (l), (v), NULL, \
-				      (h), PARSE_OPT_CMDMODE|PARSE_OPT_NOARG|PARSE_OPT_NONEG, NULL, (i) }
+#define OPT_CMDMODE_F(s, l, v, h, i, f)  { OPTION_SET_INT, (s), (l), (v), NULL, \
+				      (h), PARSE_OPT_CMDMODE|PARSE_OPT_NOARG|PARSE_OPT_NONEG | (f), NULL, (i) }
+#define OPT_CMDMODE(s, l, v, h, i)  OPT_CMDMODE_F(s, l, v, h, i, 0)
+
 #define OPT_INTEGER(s, l, v, h)     OPT_INTEGER_F(s, l, v, h, 0)
 #define OPT_MAGNITUDE(s, l, v, h)   { OPTION_MAGNITUDE, (s), (l), (v), \
 				      N_("n"), (h), PARSE_OPT_NONEG }
@@ -200,6 +217,14 @@ struct option {
 #define OPT_ALIAS(s, l, source_long_name) \
 	{ OPTION_ALIAS, (s), (l), (source_long_name) }
 
+#define OPT_SUBCOMMAND_F(l, v, fn, f) { \
+	.type = OPTION_SUBCOMMAND, \
+	.long_name = (l), \
+	.value = (v), \
+	.flags = (f), \
+	.subcommand_fn = (fn) }
+#define OPT_SUBCOMMAND(l, v, fn)    OPT_SUBCOMMAND_F((l), (v), (fn), 0)
+
 /*
  * parse_options() will filter out the processed options and leave the
  * non-option arguments in argv[]. argv0 is assumed program name and
@@ -215,7 +240,8 @@ struct option {
  */
 int parse_options(int argc, const char **argv, const char *prefix,
 		  const struct option *options,
-		  const char * const usagestr[], int flags);
+		  const char * const usagestr[],
+		  enum parse_opt_flags flags);
 
 NORETURN void usage_with_options(const char * const *usagestr,
 				 const struct option *options);
@@ -224,8 +250,31 @@ NORETURN void usage_msg_opt(const char *msg,
 			    const char * const *usagestr,
 			    const struct option *options);
 
-int optbug(const struct option *opt, const char *reason);
-const char *optname(const struct option *opt, int flags);
+/**
+ * usage_msg_optf() is like usage_msg_opt() except that the first
+ * argument is a format string, and optional format arguments follow
+ * after the 3rd option.
+ */
+__attribute__((format (printf,1,4)))
+void NORETURN usage_msg_optf(const char *fmt,
+			     const char * const *usagestr,
+			     const struct option *options, ...);
+
+void die_for_incompatible_opt4(int opt1, const char *opt1_name,
+			       int opt2, const char *opt2_name,
+			       int opt3, const char *opt3_name,
+			       int opt4, const char *opt4_name);
+
+
+static inline void die_for_incompatible_opt3(int opt1, const char *opt1_name,
+					     int opt2, const char *opt2_name,
+					     int opt3, const char *opt3_name)
+{
+	die_for_incompatible_opt4(opt1, opt1_name,
+				  opt2, opt2_name,
+				  opt3, opt3_name,
+				  0, "");
+}
 
 /*
  * Use these assertions for callbacks that expect to be called with NONEG and
@@ -264,7 +313,8 @@ struct parse_opt_ctx_t {
 	const char **out;
 	int argc, cpidx, total;
 	const char *opt;
-	int flags;
+	enum parse_opt_flags flags;
+	unsigned has_subcommands;
 	const char *prefix;
 	const char **alias_groups; /* must be in groups of 3 elements! */
 	struct option *updated_options;
@@ -272,11 +322,12 @@ struct parse_opt_ctx_t {
 
 void parse_options_start(struct parse_opt_ctx_t *ctx,
 			 int argc, const char **argv, const char *prefix,
-			 const struct option *options, int flags);
+			 const struct option *options,
+			 enum parse_opt_flags flags);
 
-int parse_options_step(struct parse_opt_ctx_t *ctx,
-		       const struct option *options,
-		       const char * const usagestr[]);
+enum parse_opt_result parse_options_step(struct parse_opt_ctx_t *ctx,
+					 const struct option *options,
+					 const char * const usagestr[]);
 
 int parse_options_end(struct parse_opt_ctx_t *ctx);
 
@@ -302,6 +353,8 @@ enum parse_opt_result parse_opt_unknown_cb(struct parse_opt_ctx_t *ctx,
 					   const char *, int);
 int parse_opt_passthru(const struct option *, const char *, int);
 int parse_opt_passthru_argv(const struct option *, const char *, int);
+/* value is enum branch_track* */
+int parse_opt_tracking_mode(const struct option *, const char *, int);
 
 #define OPT__VERBOSE(var, h)  OPT_COUNTUP('v', "verbose", (var), (h))
 #define OPT__QUIET(var, h)    OPT_COUNTUP('q', "quiet",   (var), (h))
