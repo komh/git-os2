@@ -160,6 +160,11 @@ enum atom_type {
 	ATOM_REST,
 };
 
+#ifdef __OS2__
+/* O_SIZE is OS/2 extension for open() which is defined in sys/fcntl.h. */
+#undef O_SIZE
+#endif
+
 /*
  * An atom is a valid field atom listed below, possibly prefixed with
  * a "*" to denote deref_tag().
