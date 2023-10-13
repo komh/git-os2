@@ -1,15 +1,21 @@
 #include "builtin.h"
+#include "abspath.h"
 #include "config.h"
+#include "environment.h"
+#include "gettext.h"
 #include "parse-options.h"
-#include "fsmonitor.h"
+#include "fsmonitor-ll.h"
 #include "fsmonitor-ipc.h"
 #include "fsmonitor-path-utils.h"
+#include "fsmonitor-settings.h"
 #include "compat/fsmonitor/fsm-health.h"
 #include "compat/fsmonitor/fsm-listen.h"
 #include "fsmonitor--daemon.h"
 #include "simple-ipc.h"
 #include "khash.h"
 #include "pkt-line.h"
+#include "trace.h"
+#include "trace2.h"
 
 static const char * const builtin_fsmonitor__daemon_usage[] = {
 	N_("git fsmonitor--daemon start [<options>]"),
@@ -32,10 +38,11 @@ static int fsmonitor__start_timeout_sec = 60;
 #define FSMONITOR__ANNOUNCE_STARTUP "fsmonitor.announcestartup"
 static int fsmonitor__announce_startup = 0;
 
-static int fsmonitor_config(const char *var, const char *value, void *cb)
+static int fsmonitor_config(const char *var, const char *value,
+			    const struct config_context *ctx, void *cb)
 {
 	if (!strcmp(var, FSMONITOR__IPC_THREADS)) {
-		int i = git_config_int(var, value);
+		int i = git_config_int(var, value, ctx->kvi);
 		if (i < 1)
 			return error(_("value of '%s' out of range: %d"),
 				     FSMONITOR__IPC_THREADS, i);
@@ -44,7 +51,7 @@ static int fsmonitor_config(const char *var, const char *value, void *cb)
 	}
 
 	if (!strcmp(var, FSMONITOR__START_TIMEOUT)) {
-		int i = git_config_int(var, value);
+		int i = git_config_int(var, value, ctx->kvi);
 		if (i < 0)
 			return error(_("value of '%s' out of range: %d"),
 				     FSMONITOR__START_TIMEOUT, i);
@@ -54,7 +61,7 @@ static int fsmonitor_config(const char *var, const char *value, void *cb)
 
 	if (!strcmp(var, FSMONITOR__ANNOUNCE_STARTUP)) {
 		int is_bool;
-		int i = git_config_bool_or_int(var, value, &is_bool);
+		int i = git_config_bool_or_int(var, value, ctx->kvi, &is_bool);
 		if (i < 0)
 			return error(_("value of '%s' not bool or int: %d"),
 				     var, i);
@@ -62,7 +69,7 @@ static int fsmonitor_config(const char *var, const char *value, void *cb)
 		return 0;
 	}
 
-	return git_default_config(var, value, cb);
+	return git_default_config(var, value, ctx, cb);
 }
 
 /*
@@ -710,6 +717,7 @@ static int do_handle_client(struct fsmonitor_daemon_state *state,
 				  "fsmonitor: unsupported V1 protocol '%s'"),
 				 command);
 		do_trivial = 1;
+		do_cookie = 1;
 
 	} else {
 		/* We have "builtin:*" */
@@ -719,6 +727,7 @@ static int do_handle_client(struct fsmonitor_daemon_state *state,
 					 "fsmonitor: invalid V2 protocol token '%s'",
 					 command);
 			do_trivial = 1;
+			do_cookie = 1;
 
 		} else {
 			/*
@@ -1209,7 +1218,7 @@ static int fsmonitor_run_daemon_1(struct fsmonitor_daemon_state *state)
 	 * events.
 	 */
 	if (pthread_create(&state->listener_thread, NULL,
-			   fsm_listen__thread_proc, state) < 0) {
+			   fsm_listen__thread_proc, state)) {
 		ipc_server_stop_async(state->ipc_server_data);
 		err = error(_("could not start fsmonitor listener thread"));
 		goto cleanup;
@@ -1220,7 +1229,7 @@ static int fsmonitor_run_daemon_1(struct fsmonitor_daemon_state *state)
 	 * Start the health thread to watch over our process.
 	 */
 	if (pthread_create(&state->health_thread, NULL,
-			   fsm_health__thread_proc, state) < 0) {
+			   fsm_health__thread_proc, state)) {
 		ipc_server_stop_async(state->ipc_server_data);
 		err = error(_("could not start fsmonitor health thread"));
 		goto cleanup;
@@ -1572,7 +1581,7 @@ int cmd_fsmonitor__daemon(int argc, const char **argv, const char *prefix)
 }
 
 #else
-int cmd_fsmonitor__daemon(int argc, const char **argv, const char *prefix)
+int cmd_fsmonitor__daemon(int argc, const char **argv, const char *prefix UNUSED)
 {
 	struct option options[] = {
 		OPT_END()

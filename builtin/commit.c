@@ -5,17 +5,20 @@
  * Based on git-commit.sh by Junio C Hamano and Linus Torvalds
  */
 
-#define USE_THE_INDEX_COMPATIBILITY_MACROS
-#include "cache.h"
+#define USE_THE_INDEX_VARIABLE
+#include "builtin.h"
+#include "advice.h"
 #include "config.h"
 #include "lockfile.h"
 #include "cache-tree.h"
 #include "color.h"
 #include "dir.h"
-#include "builtin.h"
+#include "editor.h"
+#include "environment.h"
 #include "diff.h"
 #include "diffcore.h"
 #include "commit.h"
+#include "gettext.h"
 #include "revision.h"
 #include "wt-status.h"
 #include "run-command.h"
@@ -24,7 +27,11 @@
 #include "log-tree.h"
 #include "strbuf.h"
 #include "utf8.h"
+#include "object-name.h"
 #include "parse-options.h"
+#include "path.h"
+#include "preload-index.h"
+#include "read-cache.h"
 #include "string-list.h"
 #include "rerere.h"
 #include "unpack-trees.h"
@@ -33,6 +40,7 @@
 #include "gpg-interface.h"
 #include "column.h"
 #include "sequencer.h"
+#include "sparse-index.h"
 #include "mailmap.h"
 #include "help.h"
 #include "commit-reach.h"
@@ -414,7 +422,7 @@ static const char *prepare_index(const char **argv, const char *prefix,
 		discard_index(&the_index);
 		read_index_from(&the_index, get_lock_file_path(&index_lock),
 				get_git_dir());
-		if (update_main_cache_tree(WRITE_TREE_SILENT) == 0) {
+		if (cache_tree_update(&the_index, WRITE_TREE_SILENT) == 0) {
 			if (reopen_lock_file(&index_lock) < 0)
 				die(_("unable to write index file"));
 			if (write_locked_index(&the_index, &index_lock, 0))
@@ -442,9 +450,10 @@ static const char *prepare_index(const char **argv, const char *prefix,
 	if (all || (also && pathspec.nr)) {
 		repo_hold_locked_index(the_repository, &index_lock,
 				       LOCK_DIE_ON_ERROR);
-		add_files_to_cache(also ? prefix : NULL, &pathspec, 0);
+		add_files_to_cache(the_repository, also ? prefix : NULL,
+				   &pathspec, 0, 0);
 		refresh_cache_or_die(refresh_flags);
-		update_main_cache_tree(WRITE_TREE_SILENT);
+		cache_tree_update(&the_index, WRITE_TREE_SILENT);
 		if (write_locked_index(&the_index, &index_lock, 0))
 			die(_("unable to write new_index file"));
 		commit_style = COMMIT_NORMAL;
@@ -467,7 +476,7 @@ static const char *prepare_index(const char **argv, const char *prefix,
 		refresh_cache_or_die(refresh_flags);
 		if (the_index.cache_changed
 		    || !cache_tree_fully_valid(the_index.cache_tree))
-			update_main_cache_tree(WRITE_TREE_SILENT);
+			cache_tree_update(&the_index, WRITE_TREE_SILENT);
 		if (write_locked_index(&the_index, &index_lock,
 				       COMMIT_LOCK | SKIP_IF_UNCHANGED))
 			die(_("unable to write new_index file"));
@@ -516,7 +525,7 @@ static const char *prepare_index(const char **argv, const char *prefix,
 	repo_hold_locked_index(the_repository, &index_lock, LOCK_DIE_ON_ERROR);
 	add_remove_files(&partial);
 	refresh_index(&the_index, REFRESH_QUIET, NULL, NULL, NULL);
-	update_main_cache_tree(WRITE_TREE_SILENT);
+	cache_tree_update(&the_index, WRITE_TREE_SILENT);
 	if (write_locked_index(&the_index, &index_lock, 0))
 		die(_("unable to write new_index file"));
 
@@ -557,7 +566,7 @@ static int run_status(FILE *fp, const char *index_file, const char *prefix, int 
 	s->index_file = index_file;
 	s->fp = fp;
 	s->nowarn = nowarn;
-	s->is_initial = get_oid(s->reference, &oid) ? 1 : 0;
+	s->is_initial = repo_get_oid(the_repository, s->reference, &oid) ? 1 : 0;
 	if (!s->is_initial)
 		oidcpy(&s->oid_commit, &oid);
 	s->status_format = status_format;
@@ -712,15 +721,15 @@ static void prepare_amend_commit(struct commit *commit, struct strbuf *sb,
 {
 	const char *buffer, *subject, *fmt;
 
-	buffer = get_commit_buffer(commit, NULL);
+	buffer = repo_get_commit_buffer(the_repository, commit, NULL);
 	find_commit_subject(buffer, &subject);
 	/*
 	 * If we amend the 'amend!' commit then we don't want to
 	 * duplicate the subject line.
 	 */
 	fmt = starts_with(subject, "amend!") ? "%b" : "%B";
-	format_commit_message(commit, fmt, sb, ctx);
-	unuse_commit_buffer(commit, buffer);
+	repo_format_commit_message(the_repository, commit, fmt, sb, ctx);
+	repo_unuse_commit_buffer(the_repository, commit, buffer);
 }
 
 static int prepare_to_commit(const char *index_file, const char *prefix,
@@ -758,10 +767,11 @@ static int prepare_to_commit(const char *index_file, const char *prefix,
 			struct commit *c;
 			c = lookup_commit_reference_by_name(squash_message);
 			if (!c)
-				die(_("could not lookup commit %s"), squash_message);
+				die(_("could not lookup commit '%s'"), squash_message);
 			ctx.output_encoding = get_commit_output_encoding();
-			format_commit_message(c, "squash! %s\n\n", &sb,
-					      &ctx);
+			repo_format_commit_message(the_repository, c,
+						   "squash! %s\n\n", &sb,
+						   &ctx);
 		}
 	}
 
@@ -792,10 +802,11 @@ static int prepare_to_commit(const char *index_file, const char *prefix,
 		char *fmt;
 		commit = lookup_commit_reference_by_name(fixup_commit);
 		if (!commit)
-			die(_("could not lookup commit %s"), fixup_commit);
+			die(_("could not lookup commit '%s'"), fixup_commit);
 		ctx.output_encoding = get_commit_output_encoding();
 		fmt = xstrfmt("%s! %%s\n\n", fixup_prefix);
-		format_commit_message(commit, fmt, &sb, &ctx);
+		repo_format_commit_message(the_repository, commit, fmt, &sb,
+					   &ctx);
 		free(fmt);
 		hook_arg1 = "message";
 
@@ -886,7 +897,7 @@ static int prepare_to_commit(const char *index_file, const char *prefix,
 	s->hints = 0;
 
 	if (clean_message_contents)
-		strbuf_stripspace(&sb, 0);
+		strbuf_stripspace(&sb, '\0');
 
 	if (signoff)
 		append_signoff(&sb, ignore_non_trailer(sb.buf, sb.len), 0);
@@ -991,13 +1002,13 @@ static int prepare_to_commit(const char *index_file, const char *prefix,
 		struct object_id oid;
 		const char *parent = "HEAD";
 
-		if (!active_nr && read_cache() < 0)
+		if (!the_index.initialized && repo_read_index(the_repository) < 0)
 			die(_("Cannot read index"));
 
 		if (amend)
 			parent = "HEAD^1";
 
-		if (get_oid(parent, &oid)) {
+		if (repo_get_oid(the_repository, parent, &oid)) {
 			int i, ita_nr = 0;
 
 			/* TODO: audit for interaction with sparse-index. */
@@ -1033,7 +1044,8 @@ static int prepare_to_commit(const char *index_file, const char *prefix,
 		struct child_process run_trailer = CHILD_PROCESS_INIT;
 
 		strvec_pushl(&run_trailer.args, "interpret-trailers",
-			     "--in-place", git_path_commit_editmsg(), NULL);
+			     "--in-place", "--no-divider",
+			     git_path_commit_editmsg(), NULL);
 		strvec_pushv(&run_trailer.args, trailer_args.v);
 		run_trailer.git_cmd = 1;
 		if (run_command(&run_trailer))
@@ -1076,7 +1088,7 @@ static int prepare_to_commit(const char *index_file, const char *prefix,
 	}
 	read_index_from(&the_index, index_file, get_git_dir());
 
-	if (update_main_cache_tree(0)) {
+	if (cache_tree_update(&the_index, 0)) {
 		error(_("Error building trees"));
 		return 0;
 	}
@@ -1132,7 +1144,8 @@ static const char *find_author_by_nickname(const char *name)
 		struct pretty_print_context ctx = {0};
 		ctx.date_mode.type = DATE_NORMAL;
 		strbuf_release(&buf);
-		format_commit_message(commit, "%aN <%aE>", &buf, &ctx);
+		repo_format_commit_message(the_repository, commit,
+					   "%aN <%aE>", &buf, &ctx);
 		release_revisions(&revs);
 		return strbuf_detach(&buf, NULL);
 	}
@@ -1178,9 +1191,9 @@ static const char *read_commit_message(const char *name)
 
 	commit = lookup_commit_reference_by_name(name);
 	if (!commit)
-		die(_("could not lookup commit %s"), name);
+		die(_("could not lookup commit '%s'"), name);
 	out_enc = get_commit_output_encoding();
-	return logmsg_reencode(commit, NULL, out_enc);
+	return repo_logmsg_reencode(the_repository, commit, NULL, out_enc);
 }
 
 /*
@@ -1394,7 +1407,8 @@ static int parse_status_slot(const char *slot)
 	return LOOKUP_CONFIG(color_status_slots, slot);
 }
 
-static int git_status_config(const char *k, const char *v, void *cb)
+static int git_status_config(const char *k, const char *v,
+			     const struct config_context *ctx, void *cb)
 {
 	struct wt_status *s = cb;
 	const char *slot_name;
@@ -1403,7 +1417,8 @@ static int git_status_config(const char *k, const char *v, void *cb)
 		return git_column_config(k, v, "status", &s->colopts);
 	if (!strcmp(k, "status.submodulesummary")) {
 		int is_bool;
-		s->submodule_summary = git_config_bool_or_int(k, v, &is_bool);
+		s->submodule_summary = git_config_bool_or_int(k, v, ctx->kvi,
+							      &is_bool);
 		if (is_bool && s->submodule_summary)
 			s->submodule_summary = -1;
 		return 0;
@@ -1463,11 +1478,11 @@ static int git_status_config(const char *k, const char *v, void *cb)
 	}
 	if (!strcmp(k, "diff.renamelimit")) {
 		if (s->rename_limit == -1)
-			s->rename_limit = git_config_int(k, v);
+			s->rename_limit = git_config_int(k, v, ctx->kvi);
 		return 0;
 	}
 	if (!strcmp(k, "status.renamelimit")) {
-		s->rename_limit = git_config_int(k, v);
+		s->rename_limit = git_config_int(k, v, ctx->kvi);
 		return 0;
 	}
 	if (!strcmp(k, "diff.renames")) {
@@ -1479,7 +1494,7 @@ static int git_status_config(const char *k, const char *v, void *cb)
 		s->detect_rename = git_config_rename(k, v);
 		return 0;
 	}
-	return git_diff_ui_config(k, v, NULL);
+	return git_diff_ui_config(k, v, ctx, NULL);
 }
 
 int cmd_status(int argc, const char **argv, const char *prefix)
@@ -1564,7 +1579,7 @@ int cmd_status(int argc, const char **argv, const char *prefix)
 	else
 		fd = -1;
 
-	s.is_initial = get_oid(s.reference, &oid) ? 1 : 0;
+	s.is_initial = repo_get_oid(the_repository, s.reference, &oid) ? 1 : 0;
 	if (!s.is_initial)
 		oidcpy(&s.oid_commit, &oid);
 
@@ -1594,10 +1609,10 @@ int cmd_status(int argc, const char **argv, const char *prefix)
 	return 0;
 }
 
-static int git_commit_config(const char *k, const char *v, void *cb)
+static int git_commit_config(const char *k, const char *v,
+			     const struct config_context *ctx, void *cb)
 {
 	struct wt_status *s = cb;
-	int status;
 
 	if (!strcmp(k, "commit.template"))
 		return git_config_pathname(&template_file, k, v);
@@ -1613,14 +1628,12 @@ static int git_commit_config(const char *k, const char *v, void *cb)
 	}
 	if (!strcmp(k, "commit.verbose")) {
 		int is_bool;
-		config_commit_verbose = git_config_bool_or_int(k, v, &is_bool);
+		config_commit_verbose = git_config_bool_or_int(k, v, ctx->kvi,
+							       &is_bool);
 		return 0;
 	}
 
-	status = git_gpg_config(k, v, NULL);
-	if (status)
-		return status;
-	return git_status_config(k, v, s);
+	return git_status_config(k, v, ctx, s);
 }
 
 int cmd_commit(int argc, const char **argv, const char *prefix)
@@ -1711,11 +1724,11 @@ int cmd_commit(int argc, const char **argv, const char *prefix)
 	status_format = STATUS_FORMAT_NONE; /* Ignore status.short */
 	s.colopts = 0;
 
-	if (get_oid("HEAD", &oid))
+	if (repo_get_oid(the_repository, "HEAD", &oid))
 		current_head = NULL;
 	else {
 		current_head = lookup_commit_or_die(&oid, "HEAD");
-		if (parse_commit(current_head))
+		if (repo_parse_commit(the_repository, current_head))
 			die(_("could not parse HEAD commit"));
 	}
 	verbose = -1; /* unspecified */
@@ -1875,8 +1888,8 @@ int cmd_commit(int argc, const char **argv, const char *prefix)
 	apply_autostash(git_path_merge_autostash(the_repository));
 
 cleanup:
-	UNLEAK(author_ident);
-	UNLEAK(err);
-	UNLEAK(sb);
+	strbuf_release(&author_ident);
+	strbuf_release(&err);
+	strbuf_release(&sb);
 	return ret;
 }

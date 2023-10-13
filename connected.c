@@ -1,5 +1,7 @@
-#include "cache.h"
-#include "object-store.h"
+#include "git-compat-util.h"
+#include "gettext.h"
+#include "hex.h"
+#include "object-store-ll.h"
 #include "run-command.h"
 #include "sigchain.h"
 #include "connected.h"
@@ -54,7 +56,7 @@ int check_connected(oid_iterate_fn fn, void *cb_data,
 		strbuf_release(&idx_file);
 	}
 
-	if (has_promisor_remote()) {
+	if (repo_has_promisor_remote(the_repository)) {
 		/*
 		 * For partial clones, we don't want to have to do a regular
 		 * connectivity check because we have to enumerate and exclude
@@ -85,6 +87,7 @@ int check_connected(oid_iterate_fn fn, void *cb_data,
 promisor_pack_found:
 			;
 		} while ((oid = fn(cb_data)) != NULL);
+		free(new_pack);
 		return 0;
 	}
 
@@ -96,7 +99,7 @@ no_promisor_pack_found:
 	strvec_push(&rev_list.args,"rev-list");
 	strvec_push(&rev_list.args, "--objects");
 	strvec_push(&rev_list.args, "--stdin");
-	if (has_promisor_remote())
+	if (repo_has_promisor_remote(the_repository))
 		strvec_push(&rev_list.args, "--exclude-promisor-objects");
 	if (!opt->is_deepening_fetch) {
 		strvec_push(&rev_list.args, "--not");
@@ -121,8 +124,10 @@ no_promisor_pack_found:
 	else
 		rev_list.no_stderr = opt->quiet;
 
-	if (start_command(&rev_list))
+	if (start_command(&rev_list)) {
+		free(new_pack);
 		return error(_("Could not run 'git rev-list'"));
+	}
 
 	sigchain_push(SIGPIPE, SIG_IGN);
 
@@ -154,5 +159,6 @@ no_promisor_pack_found:
 		err = error_errno(_("failed to close rev-list's stdin"));
 
 	sigchain_pop(SIGPIPE);
+	free(new_pack);
 	return finish_command(&rev_list) || err;
 }

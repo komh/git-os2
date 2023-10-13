@@ -3,22 +3,32 @@
  *
  * Copyright (C) Linus Torvalds, 2005
  */
-#define USE_THE_INDEX_COMPATIBILITY_MACROS
-#include "cache.h"
+#define USE_THE_INDEX_VARIABLE
+#include "builtin.h"
 #include "bulk-checkin.h"
 #include "config.h"
+#include "environment.h"
+#include "gettext.h"
+#include "hash.h"
+#include "hex.h"
 #include "lockfile.h"
 #include "quote.h"
 #include "cache-tree.h"
 #include "tree-walk.h"
-#include "builtin.h"
+#include "object-file.h"
 #include "refs.h"
 #include "resolve-undo.h"
 #include "parse-options.h"
 #include "pathspec.h"
 #include "dir.h"
+#include "read-cache.h"
+#include "repository.h"
+#include "setup.h"
+#include "sparse-index.h"
 #include "split-index.h"
+#include "symlinks.h"
 #include "fsmonitor.h"
+#include "write-or-die.h"
 
 /*
  * Default to not allowing changes to the list of files. The
@@ -381,7 +391,7 @@ static int process_path(const char *path, struct stat *st, int stat_errno)
 	if (has_symlink_leading_path(path, len))
 		return error("'%s' is beyond a symbolic link", path);
 
-	pos = cache_name_pos(path, len);
+	pos = index_name_pos(&the_index, path, len);
 	ce = pos < 0 ? NULL : the_index.cache[pos];
 	if (ce && ce_skip_worktree(ce)) {
 		/*

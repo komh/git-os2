@@ -1,4 +1,4 @@
-#include "cache.h"
+#include "git-compat-util.h"
 #include "config.h"
 #include "repository.h"
 #include "midx.h"
@@ -43,10 +43,11 @@ void prepare_repo_settings(struct repository *r)
 	/* Defaults modified by feature.* */
 	if (experimental) {
 		r->settings.fetch_negotiation_algorithm = FETCH_NEGOTIATION_SKIPPING;
-		r->settings.gc_cruft_packs = 1;
+		r->settings.pack_use_bitmap_boundary_traversal = 1;
 	}
 	if (manyfiles) {
 		r->settings.index_version = 4;
+		r->settings.index_skip_hash = 1;
 		r->settings.core_untracked_cache = UNTRACKED_CACHE_WRITE;
 	}
 
@@ -61,6 +62,12 @@ void prepare_repo_settings(struct repository *r)
 	repo_cfg_bool(r, "pack.usesparse", &r->settings.pack_use_sparse, 1);
 	repo_cfg_bool(r, "core.multipackindex", &r->settings.core_multi_pack_index, 1);
 	repo_cfg_bool(r, "index.sparse", &r->settings.sparse_index, 0);
+	repo_cfg_bool(r, "index.skiphash", &r->settings.index_skip_hash, r->settings.index_skip_hash);
+	repo_cfg_bool(r, "pack.readreverseindex", &r->settings.pack_read_reverse_index, 1);
+	repo_cfg_bool(r, "pack.usebitmapboundarytraversal",
+		      &r->settings.pack_use_bitmap_boundary_traversal,
+		      r->settings.pack_use_bitmap_boundary_traversal);
+	repo_cfg_bool(r, "core.usereplacerefs", &r->settings.read_replace_refs, 1);
 
 	/*
 	 * The GIT_TEST_MULTI_PACK_INDEX variable is special in that

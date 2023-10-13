@@ -7,21 +7,35 @@
  *
  */
 
-#include "cache.h"
+#include "git-compat-util.h"
+#include "abspath.h"
+#include "base85.h"
 #include "config.h"
-#include "object-store.h"
+#include "object-store-ll.h"
 #include "blob.h"
 #include "delta.h"
 #include "diff.h"
 #include "dir.h"
+#include "environment.h"
+#include "gettext.h"
+#include "hex.h"
 #include "xdiff-interface.h"
-#include "ll-merge.h"
+#include "merge-ll.h"
 #include "lockfile.h"
+#include "name-hash.h"
+#include "object-name.h"
+#include "object-file.h"
 #include "parse-options.h"
+#include "path.h"
 #include "quote.h"
+#include "read-cache.h"
 #include "rerere.h"
 #include "apply.h"
 #include "entry.h"
+#include "setup.h"
+#include "symlinks.h"
+#include "wildmatch.h"
+#include "ws.h"
 
 struct gitdiff_data {
 	struct strbuf *root;
@@ -398,9 +412,10 @@ static void say_patch_name(FILE *output, const char *fmt, struct patch *patch)
 
 static int read_patch_file(struct strbuf *sb, int fd)
 {
-	if (strbuf_read(sb, fd, 0) < 0 || sb->len >= MAX_APPLY_SIZE)
-		return error_errno("git apply: failed to read");
-
+	if (strbuf_read(sb, fd, 0) < 0)
+		return error_errno(_("failed to read patch"));
+	else if (sb->len >= MAX_APPLY_SIZE)
+		return error(_("patch too large"));
 	/*
 	 * Make sure that we have some slop in the buffer
 	 * so that we can do speculative "memcmp" etc, and
@@ -2913,7 +2928,7 @@ static int apply_one_fragment(struct apply_state *state,
 			break;
 		case ' ':
 			if (plen && (ws_rule & WS_BLANK_AT_EOF) &&
-			    ws_blank_line(patch + 1, plen, ws_rule))
+			    ws_blank_line(patch + 1, plen))
 				is_blank_context = 1;
 			/* fallthrough */
 		case '-':
@@ -2942,7 +2957,7 @@ static int apply_one_fragment(struct apply_state *state,
 				      (first == '+' ? 0 : LINE_COMMON));
 			if (first == '+' &&
 			    (ws_rule & WS_BLANK_AT_EOF) &&
-			    ws_blank_line(patch + 1, plen, ws_rule))
+			    ws_blank_line(patch + 1, plen))
 				added_blank_line = 1;
 			break;
 		case '@': case '\\':
@@ -3201,7 +3216,8 @@ static int apply_binary(struct apply_state *state,
 		unsigned long size;
 		char *result;
 
-		result = read_object_file(&oid, &type, &size);
+		result = repo_read_object_file(the_repository, &oid, &type,
+					       &size);
 		if (!result)
 			return error(_("the necessary postimage %s for "
 				       "'%s' cannot be read"),
@@ -3264,7 +3280,8 @@ static int read_blob_object(struct strbuf *buf, const struct object_id *oid, uns
 		unsigned long sz;
 		char *result;
 
-		result = read_object_file(oid, &type, &sz);
+		result = repo_read_object_file(the_repository, oid, &type,
+					       &sz);
 		if (!result)
 			return -1;
 		/* XXX read_sha1_file NUL-terminates */
@@ -3492,7 +3509,8 @@ static int resolve_to(struct image *image, const struct object_id *result_id)
 
 	clear_image(image);
 
-	image->buf = read_object_file(result_id, &type, &size);
+	image->buf = repo_read_object_file(the_repository, result_id, &type,
+					   &size);
 	if (!image->buf || type != OBJ_BLOB)
 		die("unable to read blob object %s", oid_to_hex(result_id));
 	image->len = size;
@@ -3610,7 +3628,7 @@ static int try_threeway(struct apply_state *state,
 	/* Preimage the patch was prepared for */
 	if (patch->is_new)
 		write_object_file("", 0, OBJ_BLOB, &pre_oid);
-	else if (get_oid(patch->old_oid_prefix, &pre_oid) ||
+	else if (repo_get_oid(the_repository, patch->old_oid_prefix, &pre_oid) ||
 		 read_blob_object(&buf, &pre_oid, patch->old_mode))
 		return error(_("repository lacks the necessary blob to perform 3-way merge."));
 
@@ -4105,7 +4123,7 @@ static int preimage_oid_in_gitlink_patch(struct patch *p, struct object_id *oid)
 static int build_fake_ancestor(struct apply_state *state, struct patch *list)
 {
 	struct patch *patch;
-	struct index_state result = { NULL };
+	struct index_state result = INDEX_STATE_INIT(state->repo);
 	struct lock_file lock = LOCK_INIT;
 	int res;
 
@@ -4127,7 +4145,7 @@ static int build_fake_ancestor(struct apply_state *state, struct patch *list)
 			else
 				return error(_("sha1 information is lacking or "
 					       "useless for submodule %s"), name);
-		} else if (!get_oid_blob(patch->old_oid_prefix, &oid)) {
+		} else if (!repo_get_oid_blob(the_repository, patch->old_oid_prefix, &oid)) {
 			; /* ok */
 		} else if (!patch->lines_added && !patch->lines_deleted) {
 			/* mode-only change: update the current */
@@ -4418,6 +4436,33 @@ static int create_one_file(struct apply_state *state,
 	if (state->cached)
 		return 0;
 
+	/*
+	 * We already try to detect whether files are beyond a symlink in our
+	 * up-front checks. But in the case where symlinks are created by any
+	 * of the intermediate hunks it can happen that our up-front checks
+	 * didn't yet see the symlink, but at the point of arriving here there
+	 * in fact is one. We thus repeat the check for symlinks here.
+	 *
+	 * Note that this does not make the up-front check obsolete as the
+	 * failure mode is different:
+	 *
+	 * - The up-front checks cause us to abort before we have written
+	 *   anything into the working directory. So when we exit this way the
+	 *   working directory remains clean.
+	 *
+	 * - The checks here happen in the middle of the action where we have
+	 *   already started to apply the patch. The end result will be a dirty
+	 *   working directory.
+	 *
+	 * Ideally, we should update the up-front checks to catch what would
+	 * happen when we apply the patch before we damage the working tree.
+	 * We have all the information necessary to do so.  But for now, as a
+	 * part of embargoed security work, having this check would serve as a
+	 * reasonable first step.
+	 */
+	if (path_is_beyond_symlink(state, path))
+		return error(_("affected file '%s' is beyond a symbolic link"), path);
+
 	res = try_create_file(state, path, mode, buf, size);
 	if (res < 0)
 		return -1;
@@ -4549,7 +4594,7 @@ static int write_out_one_reject(struct apply_state *state, struct patch *patch)
 	FILE *rej;
 	char namebuf[PATH_MAX];
 	struct fragment *frag;
-	int cnt = 0;
+	int fd, cnt = 0;
 	struct strbuf sb = STRBUF_INIT;
 
 	for (cnt = 0, frag = patch->fragments; frag; frag = frag->next) {
@@ -4589,7 +4634,17 @@ static int write_out_one_reject(struct apply_state *state, struct patch *patch)
 	memcpy(namebuf, patch->new_name, cnt);
 	memcpy(namebuf + cnt, ".rej", 5);
 
-	rej = fopen(namebuf, "w");
+	fd = open(namebuf, O_CREAT | O_EXCL | O_WRONLY, 0666);
+	if (fd < 0) {
+		if (errno != EEXIST)
+			return error_errno(_("cannot open %s"), namebuf);
+		if (unlink(namebuf))
+			return error_errno(_("cannot unlink '%s'"), namebuf);
+		fd = open(namebuf, O_CREAT | O_EXCL | O_WRONLY, 0666);
+		if (fd < 0)
+			return error_errno(_("cannot open %s"), namebuf);
+	}
+	rej = fdopen(fd, "w");
 	if (!rej)
 		return error_errno(_("cannot open %s"), namebuf);
 

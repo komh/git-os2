@@ -1,24 +1,31 @@
 #define USE_THE_INDEX_VARIABLE
-#include "cache.h"
+#include "builtin.h"
 #include "config.h"
+#include "environment.h"
+#include "gettext.h"
+#include "hex.h"
 #include "lockfile.h"
 #include "commit.h"
 #include "tag.h"
 #include "blob.h"
 #include "refs.h"
-#include "builtin.h"
 #include "exec-cmd.h"
+#include "object-name.h"
 #include "parse-options.h"
+#include "read-cache-ll.h"
 #include "revision.h"
 #include "diff.h"
 #include "hashmap.h"
+#include "setup.h"
 #include "strvec.h"
 #include "run-command.h"
-#include "object-store.h"
+#include "object-store-ll.h"
 #include "list-objects.h"
 #include "commit-slab.h"
+#include "wildmatch.h"
 
 #define MAX_TAGS	(FLAG_BITS - 1)
+#define DEFAULT_CANDIDATES 10
 
 define_commit_slab(commit_names, struct commit_name *);
 
@@ -35,7 +42,7 @@ static int tags;	/* Allow lightweight tags */
 static int longformat;
 static int first_parent;
 static int abbrev = -1; /* unspecified */
-static int max_candidates = 10;
+static int max_candidates = DEFAULT_CANDIDATES;
 static struct hashmap names;
 static int have_util;
 static struct string_list patterns = STRING_LIST_INIT_NODUP;
@@ -261,7 +268,7 @@ static unsigned long finish_depth_computation(
 			best->depth++;
 		while (parents) {
 			struct commit *p = parents->item;
-			parse_commit(p);
+			repo_parse_commit(the_repository, p);
 			if (!(p->object.flags & SEEN))
 				commit_list_insert_by_date(p, list);
 			p->object.flags |= c->object.flags;
@@ -298,7 +305,8 @@ static void append_name(struct commit_name *n, struct strbuf *dst)
 
 static void append_suffix(int depth, const struct object_id *oid, struct strbuf *dst)
 {
-	strbuf_addf(dst, "-%d-g%s", depth, find_unique_abbrev(oid, abbrev));
+	strbuf_addf(dst, "-%d-g%s", depth,
+		    repo_find_unique_abbrev(the_repository, oid, abbrev));
 }
 
 static void describe_commit(struct object_id *oid, struct strbuf *dst)
@@ -403,7 +411,7 @@ static void describe_commit(struct object_id *oid, struct strbuf *dst)
 		}
 		while (parents) {
 			struct commit *p = parents->item;
-			parse_commit(p);
+			repo_parse_commit(the_repository, p);
 			if (!(p->object.flags & SEEN))
 				commit_list_insert_by_date(p, &list);
 			p->object.flags |= c->object.flags;
@@ -531,7 +539,7 @@ static void describe(const char *arg, int last_one)
 	if (debug)
 		fprintf(stderr, _("describe %s\n"), arg);
 
-	if (get_oid(arg, &oid))
+	if (repo_get_oid(the_repository, arg, &oid))
 		die(_("Not a valid object name %s"), arg);
 	cmit = lookup_commit_reference_gently(the_repository, &oid, 1);
 
@@ -550,6 +558,15 @@ static void describe(const char *arg, int last_one)
 	strbuf_release(&sb);
 }
 
+static int option_parse_exact_match(const struct option *opt, const char *arg,
+				    int unset)
+{
+	BUG_ON_OPT_ARG(arg);
+
+	max_candidates = unset ? DEFAULT_CANDIDATES : 0;
+	return 0;
+}
+
 int cmd_describe(int argc, const char **argv, const char *prefix)
 {
 	int contains = 0;
@@ -561,8 +578,9 @@ int cmd_describe(int argc, const char **argv, const char *prefix)
 		OPT_BOOL(0, "long",       &longformat, N_("always use long format")),
 		OPT_BOOL(0, "first-parent", &first_parent, N_("only follow first parent")),
 		OPT__ABBREV(&abbrev),
-		OPT_SET_INT(0, "exact-match", &max_candidates,
-			    N_("only output exact matches"), 0),
+		OPT_CALLBACK_F(0, "exact-match", NULL, NULL,
+			       N_("only output exact matches"),
+			       PARSE_OPT_NOARG, option_parse_exact_match),
 		OPT_INTEGER(0, "candidates", &max_candidates,
 			    N_("consider <n> most recent tags (default: 10)")),
 		OPT_STRING_LIST(0, "match", &patterns, N_("pattern"),
@@ -653,6 +671,8 @@ int cmd_describe(int argc, const char **argv, const char *prefix)
 			int fd, result;
 
 			setup_work_tree();
+			prepare_repo_settings(the_repository);
+			the_repository->settings.command_requires_full_index = 0;
 			repo_read_index(the_repository);
 			refresh_index(&the_index, REFRESH_QUIET|REFRESH_UNMERGED,
 				      NULL, NULL, NULL);

@@ -1,7 +1,6 @@
 #ifndef PKTLINE_H
 #define PKTLINE_H
 
-#include "git-compat-util.h"
 #include "strbuf.h"
 #include "sideband.h"
 
@@ -95,7 +94,7 @@ int packet_read(int fd, char *buffer, unsigned size, int options);
  * If lenbuf_hex contains non-hex characters, return -1. Otherwise, return the
  * numeric value of the length header.
  */
-int packet_length(const char lenbuf_hex[4]);
+int packet_length(const char lenbuf_hex[4], size_t size);
 
 /*
  * Read a packetized line into a buffer like the 'packet_read()' function but
@@ -246,5 +245,7 @@ __attribute__((format (printf, 2, 3)))
 void packet_writer_error(struct packet_writer *writer, const char *fmt, ...);
 void packet_writer_delim(struct packet_writer *writer);
 void packet_writer_flush(struct packet_writer *writer);
+
+void packet_trace_identity(const char *prog);
 
 #endif

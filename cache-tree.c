@@ -1,13 +1,19 @@
-#include "cache.h"
+#include "git-compat-util.h"
+#include "environment.h"
+#include "hex.h"
 #include "lockfile.h"
 #include "tree.h"
 #include "tree-walk.h"
 #include "cache-tree.h"
 #include "bulk-checkin.h"
-#include "object-store.h"
+#include "object-file.h"
+#include "object-store-ll.h"
+#include "read-cache-ll.h"
 #include "replace-object.h"
 #include "promisor-remote.h"
 #include "sparse-index.h"
+#include "trace.h"
+#include "trace2.h"
 
 #ifndef DEBUG_CACHE_TREE
 #define DEBUG_CACHE_TREE 0
@@ -229,7 +235,7 @@ int cache_tree_fully_valid(struct cache_tree *it)
 	int i;
 	if (!it)
 		return 0;
-	if (it->entry_count < 0 || !has_object_file(&it->oid))
+	if (it->entry_count < 0 || !repo_has_object_file(the_repository, &it->oid))
 		return 0;
 	for (i = 0; i < it->subtree_nr; i++) {
 		if (!cache_tree_fully_valid(it->down[i]->cache_tree))
@@ -240,7 +246,7 @@ int cache_tree_fully_valid(struct cache_tree *it)
 
 static int must_check_existence(const struct cache_entry *ce)
 {
-	return !(has_promisor_remote() && ce_skip_worktree(ce));
+	return !(repo_has_promisor_remote(the_repository) && ce_skip_worktree(ce));
 }
 
 static int update_one(struct cache_tree *it,
@@ -280,7 +286,7 @@ static int update_one(struct cache_tree *it,
 		}
 	}
 
-	if (0 <= it->entry_count && has_object_file(&it->oid))
+	if (0 <= it->entry_count && repo_has_object_file(the_repository, &it->oid))
 		return it->entry_count;
 
 	/*
@@ -386,7 +392,7 @@ static int update_one(struct cache_tree *it,
 		ce_missing_ok = mode == S_IFGITLINK || missing_ok ||
 			!must_check_existence(ce);
 		if (is_null_oid(oid) ||
-		    (!ce_missing_ok && !has_object_file(oid))) {
+		    (!ce_missing_ok && !repo_has_object_file(the_repository, oid))) {
 			strbuf_release(&buffer);
 			if (expected_missing)
 				return -1;
@@ -405,7 +411,7 @@ static int update_one(struct cache_tree *it,
 		}
 
 		/*
-		 * CE_INTENT_TO_ADD entries exist on on-disk index but
+		 * CE_INTENT_TO_ADD entries exist in on-disk index but
 		 * they are not part of generated trees. Invalidate up
 		 * to root to force cache-tree users to read elsewhere.
 		 */
@@ -434,7 +440,7 @@ static int update_one(struct cache_tree *it,
 		struct object_id oid;
 		hash_object_file(the_hash_algo, buffer.buf, buffer.len,
 				 OBJ_TREE, &oid);
-		if (has_object_file_with_flags(&oid, OBJECT_INFO_SKIP_FETCH_OBJECT))
+		if (repo_has_object_file_with_flags(the_repository, &oid, OBJECT_INFO_SKIP_FETCH_OBJECT))
 			oidcpy(&it->oid, &oid);
 		else
 			to_invalidate = 1;
@@ -470,7 +476,7 @@ int cache_tree_update(struct index_state *istate, int flags)
 	if (!istate->cache_tree)
 		istate->cache_tree = cache_tree();
 
-	if (!(flags & WRITE_TREE_MISSING_OK) && has_promisor_remote())
+	if (!(flags & WRITE_TREE_MISSING_OK) && repo_has_promisor_remote(the_repository))
 		prefetch_cache_entries(istate, must_check_existence);
 
 	trace_performance_enter();
@@ -760,7 +766,7 @@ static void prime_cache_tree_rec(struct repository *r,
 	struct tree_desc desc;
 	struct name_entry entry;
 	int cnt;
-	int base_path_len = tree_path->len;
+	size_t base_path_len = tree_path->len;
 
 	oidcpy(&it->oid, &tree->object.oid);
 
@@ -785,7 +791,6 @@ static void prime_cache_tree_rec(struct repository *r,
 			 */
 			if (r->index->sparse_index) {
 				strbuf_setlen(tree_path, base_path_len);
-				strbuf_grow(tree_path, base_path_len + entry.pathlen + 1);
 				strbuf_add(tree_path, entry.path, entry.pathlen);
 				strbuf_addch(tree_path, '/');
 			}
@@ -815,14 +820,14 @@ void prime_cache_tree(struct repository *r,
 {
 	struct strbuf tree_path = STRBUF_INIT;
 
-	trace2_region_enter("cache-tree", "prime_cache_tree", the_repository);
+	trace2_region_enter("cache-tree", "prime_cache_tree", r);
 	cache_tree_free(&istate->cache_tree);
 	istate->cache_tree = cache_tree();
 
 	prime_cache_tree_rec(r, istate->cache_tree, tree, &tree_path);
 	strbuf_release(&tree_path);
 	istate->cache_changed |= CACHE_TREE_CHANGED;
-	trace2_region_leave("cache-tree", "prime_cache_tree", the_repository);
+	trace2_region_leave("cache-tree", "prime_cache_tree", r);
 }
 
 /*

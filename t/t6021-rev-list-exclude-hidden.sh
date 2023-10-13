@@ -2,6 +2,7 @@
 
 test_description='git rev-list --exclude-hidden test'
 
+TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 test_expect_success 'setup' '
@@ -21,7 +22,7 @@ test_expect_success 'invalid section' '
 	test_cmp expected err
 '
 
-for section in receive uploadpack
+for section in fetch receive uploadpack
 do
 	test_expect_success "$section: passed multiple times" '
 		echo "fatal: --exclude-hidden= passed more than once" >expected &&

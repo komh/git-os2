@@ -1,11 +1,11 @@
 #ifndef REMOTE_H
 #define REMOTE_H
 
-#include "cache.h"
-#include "parse-options.h"
+#include "hash-ll.h"
 #include "hashmap.h"
 #include "refspec.h"
 
+struct option;
 struct transport_ls_refs_options;
 
 /**
@@ -234,6 +234,11 @@ struct ref **get_remote_refs(int fd_out, struct packet_reader *reader,
 			     const struct string_list *server_options,
 			     int stateless_rpc);
 
+/* Used for protocol v2 in order to retrieve refs from a remote */
+struct bundle_list;
+int get_remote_bundle_uri(int fd_out, struct packet_reader *reader,
+			  struct bundle_list *bundles, int stateless_rpc);
+
 int resolve_remote_symref(struct ref *ref, struct ref *list);
 
 /*
@@ -375,7 +380,8 @@ int stat_tracking_info(struct branch *branch, int *num_ours, int *num_theirs,
 		       const char **upstream_name, int for_push,
 		       enum ahead_behind_flags abf);
 int format_tracking_info(struct branch *branch, struct strbuf *sb,
-			 enum ahead_behind_flags abf);
+			 enum ahead_behind_flags abf,
+			 int show_divergence_advice);
 
 struct ref *get_local_heads(void);
 /*

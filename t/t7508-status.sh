@@ -5,6 +5,7 @@
 
 test_description='git status'
 
+TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 . "$TEST_DIRECTORY"/lib-terminal.sh
 
@@ -91,7 +92,7 @@ test_expect_success 'status --column' '
 # On branch main
 # Your branch and '\''upstream'\'' have diverged,
 # and have 1 and 2 different commits each, respectively.
-#   (use "git pull" to merge the remote branch into yours)
+#   (use "git pull" if you want to integrate the remote branch with yours)
 #
 # Changes to be committed:
 #   (use "git restore --staged <file>..." to unstage)
@@ -122,7 +123,7 @@ cat >expect <<\EOF
 # On branch main
 # Your branch and 'upstream' have diverged,
 # and have 1 and 2 different commits each, respectively.
-#   (use "git pull" to merge the remote branch into yours)
+#   (use "git pull" if you want to integrate the remote branch with yours)
 #
 # Changes to be committed:
 #   (use "git restore --staged <file>..." to unstage)
@@ -269,7 +270,7 @@ test_expect_success 'status with gitignore' '
 On branch main
 Your branch and '\''upstream'\'' have diverged,
 and have 1 and 2 different commits each, respectively.
-  (use "git pull" to merge the remote branch into yours)
+  (use "git pull" if you want to integrate the remote branch with yours)
 
 Changes to be committed:
   (use "git restore --staged <file>..." to unstage)
@@ -334,7 +335,7 @@ test_expect_success 'status with gitignore (nothing untracked)' '
 On branch main
 Your branch and '\''upstream'\'' have diverged,
 and have 1 and 2 different commits each, respectively.
-  (use "git pull" to merge the remote branch into yours)
+  (use "git pull" if you want to integrate the remote branch with yours)
 
 Changes to be committed:
   (use "git restore --staged <file>..." to unstage)
@@ -404,7 +405,7 @@ test_expect_success 'status -uno' '
 On branch main
 Your branch and '\''upstream'\'' have diverged,
 and have 1 and 2 different commits each, respectively.
-  (use "git pull" to merge the remote branch into yours)
+  (use "git pull" if you want to integrate the remote branch with yours)
 
 Changes to be committed:
   (use "git restore --staged <file>..." to unstage)
@@ -466,7 +467,7 @@ test_expect_success 'status -unormal' '
 On branch main
 Your branch and '\''upstream'\'' have diverged,
 and have 1 and 2 different commits each, respectively.
-  (use "git pull" to merge the remote branch into yours)
+  (use "git pull" if you want to integrate the remote branch with yours)
 
 Changes to be committed:
   (use "git restore --staged <file>..." to unstage)
@@ -521,7 +522,7 @@ test_expect_success 'status -uall' '
 On branch main
 Your branch and '\''upstream'\'' have diverged,
 and have 1 and 2 different commits each, respectively.
-  (use "git pull" to merge the remote branch into yours)
+  (use "git pull" if you want to integrate the remote branch with yours)
 
 Changes to be committed:
   (use "git restore --staged <file>..." to unstage)
@@ -581,7 +582,7 @@ test_expect_success 'status with relative paths' '
 On branch main
 Your branch and '\''upstream'\'' have diverged,
 and have 1 and 2 different commits each, respectively.
-  (use "git pull" to merge the remote branch into yours)
+  (use "git pull" if you want to integrate the remote branch with yours)
 
 Changes to be committed:
   (use "git restore --staged <file>..." to unstage)
@@ -649,7 +650,7 @@ test_expect_success TTY 'status with color.ui' '
 On branch <GREEN>main<RESET>
 Your branch and '\''upstream'\'' have diverged,
 and have 1 and 2 different commits each, respectively.
-  (use "git pull" to merge the remote branch into yours)
+  (use "git pull" if you want to integrate the remote branch with yours)
 
 Changes to be committed:
   (use "git restore --staged <file>..." to unstage)
@@ -772,7 +773,7 @@ test_expect_success 'status without relative paths' '
 On branch main
 Your branch and '\''upstream'\'' have diverged,
 and have 1 and 2 different commits each, respectively.
-  (use "git pull" to merge the remote branch into yours)
+  (use "git pull" if you want to integrate the remote branch with yours)
 
 Changes to be committed:
   (use "git restore --staged <file>..." to unstage)
@@ -846,7 +847,6 @@ test_expect_success 'dry-run of partial commit excluding new file in index' '
 On branch main
 Your branch and '\''upstream'\'' have diverged,
 and have 1 and 2 different commits each, respectively.
-  (use "git pull" to merge the remote branch into yours)
 
 Changes to be committed:
   (use "git restore --staged <file>..." to unstage)
@@ -900,7 +900,7 @@ test_expect_success 'status submodule summary is disabled by default' '
 On branch main
 Your branch and '\''upstream'\'' have diverged,
 and have 1 and 2 different commits each, respectively.
-  (use "git pull" to merge the remote branch into yours)
+  (use "git pull" if you want to integrate the remote branch with yours)
 
 Changes to be committed:
   (use "git restore --staged <file>..." to unstage)
@@ -957,7 +957,7 @@ test_expect_success 'status submodule summary' '
 On branch main
 Your branch and '\''upstream'\'' have diverged,
 and have 1 and 2 different commits each, respectively.
-  (use "git pull" to merge the remote branch into yours)
+  (use "git pull" if you want to integrate the remote branch with yours)
 
 Changes to be committed:
   (use "git restore --staged <file>..." to unstage)
@@ -1012,11 +1012,11 @@ test_expect_success 'status -s submodule summary' '
 '
 
 test_expect_success 'status submodule summary (clean submodule): commit' '
-	cat >expect <<EOF &&
+	cat >expect-status <<EOF &&
 On branch main
 Your branch and '\''upstream'\'' have diverged,
 and have 2 and 2 different commits each, respectively.
-  (use "git pull" to merge the remote branch into yours)
+  (use "git pull" if you want to integrate the remote branch with yours)
 
 Changes not staged for commit:
   (use "git add <file>..." to update what will be committed)
@@ -1032,12 +1032,13 @@ Untracked files:
 
 no changes added to commit (use "git add" and/or "git commit -a")
 EOF
+	sed "/git pull/d" expect-status > expect-commit &&
 	git commit -m "commit submodule" &&
 	git config status.submodulesummary 10 &&
 	test_must_fail git commit --dry-run >output &&
-	test_cmp expect output &&
+	test_cmp expect-commit output &&
 	git status >output &&
-	test_cmp expect output
+	test_cmp expect-status output
 '
 
 cat >expect <<EOF
@@ -1064,7 +1065,6 @@ test_expect_success 'commit --dry-run submodule summary (--amend)' '
 On branch main
 Your branch and '\''upstream'\'' have diverged,
 and have 2 and 2 different commits each, respectively.
-  (use "git pull" to merge the remote branch into yours)
 
 Changes to be committed:
   (use "git restore --source=HEAD^1 --staged <file>..." to unstage)
@@ -1116,7 +1116,7 @@ test_expect_success '--ignore-submodules=untracked suppresses submodules with un
 On branch main
 Your branch and '\''upstream'\'' have diverged,
 and have 2 and 2 different commits each, respectively.
-  (use "git pull" to merge the remote branch into yours)
+  (use "git pull" if you want to integrate the remote branch with yours)
 
 Changes to be committed:
   (use "git restore --staged <file>..." to unstage)
@@ -1225,7 +1225,7 @@ test_expect_success "--ignore-submodules=untracked doesn't suppress submodules w
 On branch main
 Your branch and '\''upstream'\'' have diverged,
 and have 2 and 2 different commits each, respectively.
-  (use "git pull" to merge the remote branch into yours)
+  (use "git pull" if you want to integrate the remote branch with yours)
 
 Changes to be committed:
   (use "git restore --staged <file>..." to unstage)
@@ -1282,7 +1282,7 @@ test_expect_success "--ignore-submodules=untracked doesn't suppress submodule su
 On branch main
 Your branch and '\''upstream'\'' have diverged,
 and have 2 and 2 different commits each, respectively.
-  (use "git pull" to merge the remote branch into yours)
+  (use "git pull" if you want to integrate the remote branch with yours)
 
 Changes to be committed:
   (use "git restore --staged <file>..." to unstage)
@@ -1363,7 +1363,7 @@ cat > expect << EOF
 ; On branch main
 ; Your branch and 'upstream' have diverged,
 ; and have 2 and 2 different commits each, respectively.
-;   (use "git pull" to merge the remote branch into yours)
+;   (use "git pull" if you want to integrate the remote branch with yours)
 ;
 ; Changes to be committed:
 ;   (use "git restore --staged <file>..." to unstage)
@@ -1411,7 +1411,7 @@ test_expect_success "--ignore-submodules=all suppresses submodule summary" '
 On branch main
 Your branch and '\''upstream'\'' have diverged,
 and have 2 and 2 different commits each, respectively.
-  (use "git pull" to merge the remote branch into yours)
+  (use "git pull" if you want to integrate the remote branch with yours)
 
 Changes not staged for commit:
   (use "git add <file>..." to update what will be committed)
@@ -1437,7 +1437,7 @@ test_expect_success '.gitmodules ignore=all suppresses unstaged submodule summar
 On branch main
 Your branch and '\''upstream'\'' have diverged,
 and have 2 and 2 different commits each, respectively.
-  (use "git pull" to merge the remote branch into yours)
+  (use "git pull" if you want to integrate the remote branch with yours)
 
 Changes to be committed:
   (use "git restore --staged <file>..." to unstage)
@@ -1519,8 +1519,8 @@ test_expect_success '"status.branch=true" weaker than "--no-branch"' '
 '
 
 test_expect_success '"status.branch=true" weaker than "--porcelain"' '
-       git -c status.branch=true status --porcelain >actual &&
-       test_cmp expected_nobranch actual
+	git -c status.branch=true status --porcelain >actual &&
+	test_cmp expected_nobranch actual
 '
 
 test_expect_success '"status.branch=false" same as "--no-branch"' '
@@ -1557,7 +1557,6 @@ test_expect_success 'git commit --dry-run will show a staged but ignored submodu
 On branch main
 Your branch and '\''upstream'\'' have diverged,
 and have 2 and 2 different commits each, respectively.
-  (use "git pull" to merge the remote branch into yours)
 
 Changes to be committed:
   (use "git restore --staged <file>..." to unstage)
@@ -1674,6 +1673,76 @@ test_expect_success 'racy timestamps will be fixed for dirty worktree' '
 	test_set_magic_mtime .git/index &&
 	git status &&
 	! test_is_magic_mtime .git/index
+'
+
+test_expect_success 'setup slow status advice' '
+	GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main git init slowstatus &&
+	(
+		cd slowstatus &&
+		cat >.gitignore <<-\EOF &&
+		/actual
+		/expected
+		/out
+		EOF
+		git add .gitignore &&
+		git commit -m "Add .gitignore" &&
+		git config advice.statusuoption true
+	)
+'
+
+test_expect_success 'slow status advice when core.untrackedCache and fsmonitor are unset' '
+	(
+		cd slowstatus &&
+		git config core.untrackedCache false &&
+		git config core.fsmonitor false &&
+		GIT_TEST_UF_DELAY_WARNING=1 git status >actual &&
+		cat >expected <<-\EOF &&
+		On branch main
+
+		It took 3.25 seconds to enumerate untracked files.
+		See '\''git help status'\'' for information on how to improve this.
+
+		nothing to commit, working tree clean
+		EOF
+		test_cmp expected actual
+	)
+'
+
+test_expect_success 'slow status advice when core.untrackedCache true, but not fsmonitor' '
+	(
+		cd slowstatus &&
+		git config core.untrackedCache true &&
+		git config core.fsmonitor false &&
+		GIT_TEST_UF_DELAY_WARNING=1 git status >actual &&
+		cat >expected <<-\EOF &&
+		On branch main
+
+		It took 3.25 seconds to enumerate untracked files.
+		See '\''git help status'\'' for information on how to improve this.
+
+		nothing to commit, working tree clean
+		EOF
+		test_cmp expected actual
+	)
+'
+
+test_expect_success 'slow status advice when core.untrackedCache true, and fsmonitor' '
+	(
+		cd slowstatus &&
+		git config core.untrackedCache true &&
+		git config core.fsmonitor true &&
+		GIT_TEST_UF_DELAY_WARNING=1 git status >actual &&
+		cat >expected <<-\EOF &&
+		On branch main
+
+		It took 3.25 seconds to enumerate untracked files,
+		but the results were cached, and subsequent runs may be faster.
+		See '\''git help status'\'' for information on how to improve this.
+
+		nothing to commit, working tree clean
+		EOF
+		test_cmp expected actual
+	)
 '
 
 test_done

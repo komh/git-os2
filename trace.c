@@ -21,8 +21,12 @@
  *  along with this program; if not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "cache.h"
+#include "git-compat-util.h"
+#include "abspath.h"
+#include "environment.h"
 #include "quote.h"
+#include "setup.h"
+#include "trace.h"
 
 struct trace_key trace_default_key = { "GIT_TRACE", 0, 0, 0 };
 struct trace_key trace_perf_key = TRACE_KEY_INIT(PERFORMANCE);
@@ -291,10 +295,9 @@ static const char *quote_crnl(const char *path)
 	return new_path.buf;
 }
 
-/* FIXME: move prefix to startup_info struct and get rid of this arg */
-void trace_repo_setup(const char *prefix)
+void trace_repo_setup(void)
 {
-	const char *git_work_tree;
+	const char *git_work_tree, *prefix = startup_info->prefix;
 	char *cwd;
 
 	if (!trace_want(&trace_setup_key))
@@ -305,7 +308,7 @@ void trace_repo_setup(const char *prefix)
 	if (!(git_work_tree = get_git_work_tree()))
 		git_work_tree = "(null)";
 
-	if (!prefix)
+	if (!startup_info->prefix)
 		prefix = "(null)";
 
 	trace_printf_key(&trace_setup_key, "setup: git_dir: %s\n", quote_crnl(get_git_dir()));

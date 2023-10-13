@@ -25,14 +25,30 @@ attr_check_quote () {
 	git check-attr test -- "$path" >actual &&
 	echo "\"$quoted_path\": test: $expect" >expect &&
 	test_cmp expect actual
+}
 
+attr_check_source () {
+	path="$1" expect="$2" source="$3" git_opts="$4" &&
+
+	echo "$path: test: $expect" >expect &&
+
+	git $git_opts check-attr --source $source test -- "$path" >actual 2>err &&
+	test_cmp expect actual &&
+	test_must_be_empty err &&
+
+	git $git_opts --attr-source="$source" check-attr test -- "$path" >actual 2>err &&
+	test_cmp expect actual &&
+	test_must_be_empty err
+
+	GIT_ATTR_SOURCE="$source" git $git_opts check-attr test -- "$path" >actual 2>err &&
+	test_cmp expect actual &&
+	test_must_be_empty err
 }
 
 test_expect_success 'open-quoted pathname' '
 	echo "\"a test=a" >.gitattributes &&
 	attr_check a unspecified
 '
-
 
 test_expect_success 'setup' '
 	mkdir -p a/b/d a/c b &&
@@ -80,12 +96,23 @@ test_expect_success 'setup' '
 	EOF
 '
 
+test_expect_success 'setup branches' '
+	mkdir -p foo/bar &&
+	test_commit --printf "add .gitattributes" foo/bar/.gitattributes \
+		"f test=f\na/i test=n\n" tag-1 &&
+	test_commit --printf "add .gitattributes" foo/bar/.gitattributes \
+		"g test=g\na/i test=m\n" tag-2 &&
+	rm foo/bar/.gitattributes
+'
+
 test_expect_success 'command line checks' '
 	test_must_fail git check-attr &&
 	test_must_fail git check-attr -- &&
 	test_must_fail git check-attr test &&
 	test_must_fail git check-attr test -- &&
 	test_must_fail git check-attr -- f &&
+	test_must_fail git check-attr --source &&
+	test_must_fail git check-attr --source not-a-valid-ref &&
 	echo "f" | test_must_fail git check-attr --stdin &&
 	echo "f" | test_must_fail git check-attr --stdin -- f &&
 	echo "f" | test_must_fail git check-attr --stdin test -- f &&
@@ -203,9 +230,12 @@ test_expect_success 'attribute test: read paths from stdin' '
 	test_cmp expect actual
 '
 
-test_expect_success 'attribute test: --all option' '
+test_expect_success 'setup --all option' '
 	grep -v unspecified <expect-all | sort >specified-all &&
-	sed -e "s/:.*//" <expect-all | uniq >stdin-all &&
+	sed -e "s/:.*//" <expect-all | uniq >stdin-all
+'
+
+test_expect_success 'attribute test: --all option' '
 	git check-attr --stdin --all <stdin-all >tmp &&
 	sort tmp >actual &&
 	test_cmp specified-all actual
@@ -284,6 +314,15 @@ test_expect_success 'using --git-dir and --work-tree' '
 	)
 '
 
+test_expect_success 'using --source' '
+	attr_check_source foo/bar/f f tag-1 &&
+	attr_check_source foo/bar/a/i n tag-1 &&
+	attr_check_source foo/bar/f unspecified tag-2 &&
+	attr_check_source foo/bar/a/i m tag-2 &&
+	attr_check_source foo/bar/g g tag-2 &&
+	attr_check_source foo/bar/g unspecified tag-1
+'
+
 test_expect_success 'setup bare' '
 	git clone --template= --bare . bare.git
 '
@@ -300,6 +339,18 @@ test_expect_success 'bare repository: check that .gitattribute is ignored' '
 		attr_check a/c/f unspecified &&
 		attr_check a/i unspecified &&
 		attr_check subdir/a/i unspecified
+	)
+'
+
+test_expect_success 'bare repository: with --source' '
+	(
+		cd bare.git &&
+		attr_check_source foo/bar/f f tag-1 &&
+		attr_check_source foo/bar/a/i n tag-1 &&
+		attr_check_source foo/bar/f unspecified tag-2 &&
+		attr_check_source foo/bar/a/i m tag-2 &&
+		attr_check_source foo/bar/g g tag-2 &&
+		attr_check_source foo/bar/g unspecified tag-1
 	)
 '
 
@@ -400,7 +451,7 @@ test_expect_success 'large attributes line ignores trailing content in tree' '
 
 test_expect_success EXPENSIVE 'large attributes file ignored in tree' '
 	test_when_finished "rm .gitattributes" &&
-	dd if=/dev/zero of=.gitattributes bs=101M count=1 2>/dev/null &&
+	dd if=/dev/zero of=.gitattributes bs=1048576 count=101 2>/dev/null &&
 	git check-attr --all path >/dev/null 2>err &&
 	echo "warning: ignoring overly large gitattributes file ${SQ}.gitattributes${SQ}" >expect &&
 	test_cmp expect err
@@ -428,7 +479,7 @@ test_expect_success 'large attributes line ignores trailing content in index' '
 
 test_expect_success EXPENSIVE 'large attributes file ignored in index' '
 	test_when_finished "git update-index --remove .gitattributes" &&
-	blob=$(dd if=/dev/zero bs=101M count=1 2>/dev/null | git hash-object -w --stdin) &&
+	blob=$(dd if=/dev/zero bs=1048576 count=101 2>/dev/null | git hash-object -w --stdin) &&
 	git update-index --add --cacheinfo 100644,$blob,.gitattributes &&
 	git check-attr --cached --all path >/dev/null 2>err &&
 	echo "warning: ignoring overly large gitattributes blob ${SQ}.gitattributes${SQ}" >expect &&

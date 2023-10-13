@@ -119,6 +119,22 @@ test_expect_success 'show branch --remotes' '
 	test_must_be_empty actual.out
 '
 
+test_expect_success 'show-branch --sparse' '
+	test_when_finished "git checkout branch10 && git branch -D branchA" &&
+	git checkout -b branchA branch10 &&
+	git merge -s ours -m "merge 1 and 10 to make A" branch1 &&
+	git commit --allow-empty -m "another" &&
+
+	git show-branch --sparse >out &&
+	grep "merge 1 and 10 to make A" out &&
+
+	git show-branch >out &&
+	! grep "merge 1 and 10 to make A" out &&
+
+	git show-branch --no-sparse >out &&
+	! grep "merge 1 and 10 to make A" out
+'
+
 test_expect_success 'setup show branch --list' '
 	sed "s/^> //" >expect <<-\EOF
 	>   [branch1] branch1
@@ -197,6 +213,15 @@ done <<\EOF
 --reflog --current
 EOF
 
+# unnegatable options
+for opt in topo-order date-order reflog
+do
+	test_expect_success "show-branch --no-$opt (should fail)" '
+		test_must_fail git show-branch --no-$opt 2>err &&
+		grep "unknown option .no-$opt." err
+	'
+done
+
 test_expect_success 'error descriptions on non-existent branch' '
 	cat >expect <<-EOF &&
 	error: No branch named '\''non-existent'\'.'
@@ -219,6 +244,24 @@ test_expect_success 'fatal descriptions on non-existent branch' '
 	test_cmp expect actual &&
 	test_must_fail git branch -m non-existent new-branch 2>actual &&
 	test_cmp expect actual
+'
+
+test_expect_success 'error descriptions on orphan branch' '
+	test_when_finished git worktree remove -f wt &&
+	git worktree add wt --detach &&
+	git -C wt checkout --orphan orphan-branch &&
+	test_branch_op_in_wt() {
+		test_orphan_error() {
+			test_must_fail git $* 2>actual &&
+			test_i18ngrep "No commit on branch .orphan-branch. yet.$" actual
+		} &&
+		test_orphan_error -C wt branch $1 $2 &&                # implicit branch
+		test_orphan_error -C wt branch $1 orphan-branch $2 &&  # explicit branch
+		test_orphan_error branch $1 orphan-branch $2           # different worktree
+	} &&
+	test_branch_op_in_wt --edit-description &&
+	test_branch_op_in_wt --set-upstream-to=ne &&
+	test_branch_op_in_wt -c new-branch
 '
 
 test_done

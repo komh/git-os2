@@ -1,9 +1,15 @@
-#include "cache.h"
+#include "git-compat-util.h"
 #include "blob.h"
-#include "object-store.h"
+#include "object-store-ll.h"
 #include "dir.h"
+#include "environment.h"
+#include "gettext.h"
+#include "hex.h"
+#include "name-hash.h"
+#include "sparse-index.h"
 #include "streaming.h"
 #include "submodule.h"
+#include "symlinks.h"
 #include "progress.h"
 #include "fsmonitor.h"
 #include "entry.h"
@@ -86,7 +92,8 @@ void *read_blob_entry(const struct cache_entry *ce, size_t *size)
 {
 	enum object_type type;
 	unsigned long ul;
-	void *blob_data = read_object_file(&ce->oid, &type, &ul);
+	void *blob_data = repo_read_object_file(the_repository, &ce->oid,
+						&type, &ul);
 
 	*size = ul;
 	if (blob_data) {
@@ -383,7 +390,7 @@ static int write_entry(struct cache_entry *ce, char *path, struct conv_attrs *ca
 			return error("cannot create submodule directory %s", path);
 		sub = submodule_from_ce(ce);
 		if (sub)
-			return submodule_move_head(ce->name,
+			return submodule_move_head(ce->name, state->super_prefix,
 				NULL, oid_to_hex(&ce->oid),
 				state->force ? SUBMODULE_MOVE_HEAD_FORCE : 0);
 		break;
@@ -476,7 +483,7 @@ int checkout_entry_ca(struct cache_entry *ce, struct conv_attrs *ca,
 			 * no pathname to return.
 			 */
 			BUG("Can't remove entry to a path");
-		unlink_entry(ce);
+		unlink_entry(ce, state->super_prefix);
 		return 0;
 	}
 
@@ -510,10 +517,10 @@ int checkout_entry_ca(struct cache_entry *ce, struct conv_attrs *ca,
 				if (!(st.st_mode & S_IFDIR))
 					unlink_or_warn(ce->name);
 
-				return submodule_move_head(ce->name,
+				return submodule_move_head(ce->name, state->super_prefix,
 					NULL, oid_to_hex(&ce->oid), 0);
 			} else
-				return submodule_move_head(ce->name,
+				return submodule_move_head(ce->name, state->super_prefix,
 					"HEAD", oid_to_hex(&ce->oid),
 					state->force ? SUBMODULE_MOVE_HEAD_FORCE : 0);
 		}
@@ -560,12 +567,12 @@ int checkout_entry_ca(struct cache_entry *ce, struct conv_attrs *ca,
 	return write_entry(ce, path.buf, ca, state, 0, nr_checkouts);
 }
 
-void unlink_entry(const struct cache_entry *ce)
+void unlink_entry(const struct cache_entry *ce, const char *super_prefix)
 {
 	const struct submodule *sub = submodule_from_ce(ce);
 	if (sub) {
 		/* state.force is set at the caller. */
-		submodule_move_head(ce->name, "HEAD", NULL,
+		submodule_move_head(ce->name, super_prefix, "HEAD", NULL,
 				    SUBMODULE_MOVE_HEAD_FORCE);
 	}
 	if (check_leading_path(ce->name, ce_namelen(ce), 1) >= 0)

@@ -2,6 +2,7 @@
 
 test_description='for-each-ref errors for broken refs'
 
+TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 ZEROS=$ZERO_OID
@@ -51,6 +52,20 @@ test_expect_success 'Missing objects are reported correctly' '
 	git for-each-ref --format="%(objectname) %(refname)" >brief-out 2>brief-err &&
 	test_cmp missing-brief-expected brief-out &&
 	test_must_be_empty brief-err
+'
+
+test_expect_success 'ahead-behind requires an argument' '
+	test_must_fail git for-each-ref \
+		--format="%(ahead-behind)" 2>err &&
+	echo "fatal: expected format: %(ahead-behind:<committish>)" >expect &&
+	test_cmp expect err
+'
+
+test_expect_success 'missing ahead-behind base' '
+	test_must_fail git for-each-ref \
+		--format="%(ahead-behind:refs/heads/missing)" 2>err &&
+	echo "fatal: failed to find '\''refs/heads/missing'\''" >expect &&
+	test_cmp expect err
 '
 
 test_done

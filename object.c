@@ -1,8 +1,12 @@
-#include "cache.h"
+#include "git-compat-util.h"
+#include "gettext.h"
+#include "hex.h"
 #include "object.h"
 #include "replace-object.h"
+#include "object-file.h"
 #include "object-store.h"
 #include "blob.h"
+#include "statinfo.h"
 #include "tree.h"
 #include "commit.h"
 #include "tag.h"
@@ -212,8 +216,7 @@ struct object *parse_object_buffer(struct repository *r, const struct object_id 
 	if (type == OBJ_BLOB) {
 		struct blob *blob = lookup_blob(r, oid);
 		if (blob) {
-			if (parse_blob_buffer(blob, buffer, size))
-				return NULL;
+			parse_blob_buffer(blob);
 			obj = &blob->object;
 		}
 	} else if (type == OBJ_TREE) {
@@ -292,7 +295,7 @@ struct object *parse_object_with_flags(struct repository *r,
 			error(_("hash mismatch %s"), oid_to_hex(oid));
 			return NULL;
 		}
-		parse_blob_buffer(lookup_blob(r, oid), NULL, 0);
+		parse_blob_buffer(lookup_blob(r, oid));
 		return lookup_object(r, oid);
 	}
 
@@ -353,6 +356,12 @@ void object_list_free(struct object_list **list)
  * initialized without requiring a malloc/free.
  */
 static char object_array_slopbuf[1];
+
+void object_array_init(struct object_array *array)
+{
+	struct object_array blank = OBJECT_ARRAY_INIT;
+	memcpy(array, &blank, sizeof(*array));
+}
 
 void add_object_array_with_path(struct object *obj, const char *name,
 				struct object_array *array,

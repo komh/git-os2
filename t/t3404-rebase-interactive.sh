@@ -1449,14 +1449,15 @@ test_expect_success 'rebase --edit-todo respects rebase.missingCommitsCheck = ig
 
 test_expect_success 'rebase --edit-todo respects rebase.missingCommitsCheck = warn' '
 	cat >expect <<-EOF &&
-	error: invalid line 1: badcmd $(git rev-list --pretty=oneline --abbrev-commit -1 primary~4)
+	error: invalid command '\''pickled'\''
+	error: invalid line 1: pickled $(git rev-list --pretty=oneline --abbrev-commit -1 primary~4)
 	Warning: some commits may have been dropped accidentally.
 	Dropped commits (newer to older):
 	 - $(git rev-list --pretty=oneline --abbrev-commit -1 primary)
 	 - $(git rev-list --pretty=oneline --abbrev-commit -1 primary~4)
 	To avoid this message, use "drop" to explicitly remove a commit.
 	EOF
-	head -n4 expect >expect.2 &&
+	head -n5 expect >expect.2 &&
 	tail -n1 expect >>expect.2 &&
 	tail -n4 expect.2 >expect.3 &&
 	test_config rebase.missingCommitsCheck warn &&
@@ -1467,7 +1468,7 @@ test_expect_success 'rebase --edit-todo respects rebase.missingCommitsCheck = wa
 			git rebase -i --root &&
 		cp .git/rebase-merge/git-rebase-todo.backup orig &&
 		FAKE_LINES="2 3 4" git rebase --edit-todo 2>actual.2 &&
-		head -n6 actual.2 >actual &&
+		head -n7 actual.2 >actual &&
 		test_cmp expect actual &&
 		cp orig .git/rebase-merge/git-rebase-todo &&
 		FAKE_LINES="1 2 3 4" git rebase --edit-todo 2>actual.2 &&
@@ -1483,7 +1484,8 @@ test_expect_success 'rebase --edit-todo respects rebase.missingCommitsCheck = wa
 
 test_expect_success 'rebase --edit-todo respects rebase.missingCommitsCheck = error' '
 	cat >expect <<-EOF &&
-	error: invalid line 1: badcmd $(git rev-list --pretty=oneline --abbrev-commit -1 primary~4)
+	error: invalid command '\''pickled'\''
+	error: invalid line 1: pickled $(git rev-list --pretty=oneline --abbrev-commit -1 primary~4)
 	Warning: some commits may have been dropped accidentally.
 	Dropped commits (newer to older):
 	 - $(git rev-list --pretty=oneline --abbrev-commit -1 primary)
@@ -1583,7 +1585,7 @@ test_expect_success 'static check of bad command' '
 		set_fake_editor &&
 		test_must_fail env FAKE_LINES="1 2 3 bad 4 5" \
 		git rebase -i --root 2>actual &&
-		test_i18ngrep "badcmd $(git rev-list --oneline -1 primary~1)" \
+		test_i18ngrep "pickled $(git rev-list --oneline -1 primary~1)" \
 				actual &&
 		test_i18ngrep "You can fix this with .git rebase --edit-todo.." \
 				actual &&
@@ -1592,6 +1594,32 @@ test_expect_success 'static check of bad command' '
 	git rebase --continue &&
 	test E = $(git cat-file commit HEAD | sed -ne \$p) &&
 	test C = $(git cat-file commit HEAD^ | sed -ne \$p)
+'
+
+test_expect_success 'the first command cannot be a fixup' '
+	rebase_setup_and_clean fixup-first &&
+
+	cat >orig <<-EOF &&
+	fixup $(git log -1 --format="%h %s" B)
+	pick $(git log -1 --format="%h %s" C)
+	EOF
+
+	(
+		set_replace_editor orig &&
+		test_must_fail git rebase -i A 2>actual
+	) &&
+	grep "cannot .fixup. without a previous commit" actual &&
+	grep "You can fix this with .git rebase --edit-todo.." actual &&
+	# verify that the todo list has not been truncated
+	grep -v "^#" .git/rebase-merge/git-rebase-todo >actual &&
+	test_cmp orig actual &&
+
+	test_must_fail git rebase --edit-todo 2>actual &&
+	grep "cannot .fixup. without a previous commit" actual &&
+	grep "You can fix this with .git rebase --edit-todo.." actual &&
+	# verify that the todo list has not been truncated
+	grep -v "^#" .git/rebase-merge/git-rebase-todo >actual &&
+	test_cmp orig actual
 '
 
 test_expect_success 'tabs and spaces are accepted in the todolist' '
@@ -2072,6 +2100,7 @@ test_expect_success '--update-refs: --edit-todo with no update-ref lines' '
 '
 
 test_expect_success '--update-refs: check failed ref update' '
+	test_when_finished "test_might_fail git rebase --abort" &&
 	git checkout -B update-refs-error no-conflict-branch &&
 	git branch -f base HEAD~4 &&
 	git branch -f first HEAD~3 &&
@@ -2121,6 +2150,28 @@ test_expect_success '--update-refs: check failed ref update' '
 	sed -e "s/Rebasing.*Successfully/Successfully/g" -e "s/^\t//g" \
 		<err.last >err.trimmed &&
 	test_cmp expect err.trimmed
+'
+
+test_expect_success 'bad labels and refs rejected when parsing todo list' '
+	test_when_finished "test_might_fail git rebase --abort" &&
+	cat >todo <<-\EOF &&
+	exec >execed
+	label #
+	label :invalid
+	update-ref :bad
+	update-ref topic
+	EOF
+	rm -f execed &&
+	(
+		set_replace_editor todo &&
+		test_must_fail git rebase -i HEAD 2>err
+	) &&
+	grep "'\''#'\'' is not a valid label" err &&
+	grep "'\'':invalid'\'' is not a valid label" err &&
+	grep "'\'':bad'\'' is not a valid refname" err &&
+	grep "update-ref requires a fully qualified refname e.g. refs/heads/topic" \
+		err &&
+	test_path_is_missing execed
 '
 
 # This must be the last test in this file

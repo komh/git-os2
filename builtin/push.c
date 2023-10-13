@@ -1,19 +1,24 @@
 /*
  * "git push"
  */
-#include "cache.h"
+#include "builtin.h"
+#include "advice.h"
 #include "branch.h"
 #include "config.h"
+#include "environment.h"
+#include "gettext.h"
 #include "refs.h"
 #include "refspec.h"
 #include "run-command.h"
-#include "builtin.h"
 #include "remote.h"
 #include "transport.h"
 #include "parse-options.h"
+#include "pkt-line.h"
+#include "repository.h"
 #include "submodule.h"
 #include "submodule-config.h"
 #include "send-pack.h"
+#include "trace2.h"
 #include "color.h"
 
 static const char * const push_usage[] = {
@@ -63,16 +68,9 @@ static struct refspec rs = REFSPEC_INIT_PUSH;
 static struct string_list push_options_config = STRING_LIST_INIT_DUP;
 
 static void refspec_append_mapped(struct refspec *refspec, const char *ref,
-				  struct remote *remote, struct ref *local_refs)
+				  struct remote *remote, struct ref *matched)
 {
 	const char *branch_name;
-	struct ref *matched = NULL;
-
-	/* Does "ref" uniquely name our ref? */
-	if (count_refspec_match(ref, local_refs, &matched) != 1) {
-		refspec_append(refspec, ref);
-		return;
-	}
 
 	if (remote->push.nr) {
 		struct refspec_item query;
@@ -120,15 +118,28 @@ static void set_refspecs(const char **refs, int nr, const char *repo)
 				die(_("--delete only accepts plain target ref names"));
 			refspec_appendf(&rs, ":%s", ref);
 		} else if (!strchr(ref, ':')) {
-			if (!remote) {
-				/* lazily grab remote and local_refs */
-				remote = remote_get(repo);
+			struct ref *matched = NULL;
+
+			/* lazily grab local_refs */
+			if (!local_refs)
 				local_refs = get_local_heads();
+
+			/* Does "ref" uniquely name our ref? */
+			if (count_refspec_match(ref, local_refs, &matched) != 1) {
+				refspec_append(&rs, ref);
+			} else {
+				/* lazily grab remote */
+				if (!remote)
+					remote = remote_get(repo);
+				if (!remote)
+					BUG("must get a remote for repo '%s'", repo);
+
+				refspec_append_mapped(&rs, ref, remote, matched);
 			}
-			refspec_append_mapped(&rs, ref, remote, local_refs);
 		} else
 			refspec_append(&rs, ref);
 	}
+	free_refs(local_refs);
 }
 
 static int push_url_of_remote(struct remote *remote, const char ***url_p)
@@ -290,21 +301,21 @@ static void setup_default_push_refspecs(int *flags, struct remote *remote)
 
 static const char message_advice_pull_before_push[] =
 	N_("Updates were rejected because the tip of your current branch is behind\n"
-	   "its remote counterpart. Integrate the remote changes (e.g.\n"
-	   "'git pull ...') before pushing again.\n"
+	   "its remote counterpart. If you want to integrate the remote changes,\n"
+	   "use 'git pull' before pushing again.\n"
 	   "See the 'Note about fast-forwards' in 'git push --help' for details.");
 
 static const char message_advice_checkout_pull_push[] =
 	N_("Updates were rejected because a pushed branch tip is behind its remote\n"
-	   "counterpart. Check out this branch and integrate the remote changes\n"
-	   "(e.g. 'git pull ...') before pushing again.\n"
+	   "counterpart. If you want to integrate the remote changes, use 'git pull'\n"
+	   "before pushing again.\n"
 	   "See the 'Note about fast-forwards' in 'git push --help' for details.");
 
 static const char message_advice_ref_fetch_first[] =
-	N_("Updates were rejected because the remote contains work that you do\n"
-	   "not have locally. This is usually caused by another repository pushing\n"
-	   "to the same ref. You may want to first integrate the remote changes\n"
-	   "(e.g., 'git pull ...') before pushing again.\n"
+	N_("Updates were rejected because the remote contains work that you do not\n"
+	   "have locally. This is usually caused by another repository pushing to\n"
+	   "the same ref. If you want to integrate the remote changes, use\n"
+	   "'git pull' before pushing again.\n"
 	   "See the 'Note about fast-forwards' in 'git push --help' for details.");
 
 static const char message_advice_ref_already_exists[] =
@@ -316,10 +327,10 @@ static const char message_advice_ref_needs_force[] =
 	   "without using the '--force' option.\n");
 
 static const char message_advice_ref_needs_update[] =
-	N_("Updates were rejected because the tip of the remote-tracking\n"
-	   "branch has been updated since the last checkout. You may want\n"
-	   "to integrate those changes locally (e.g., 'git pull ...')\n"
-	   "before forcing an update.\n");
+	N_("Updates were rejected because the tip of the remote-tracking branch has\n"
+	   "been updated since the last checkout. If you want to integrate the\n"
+	   "remote changes, use 'git pull' before pushing again.\n"
+	   "See the 'Note about fast-forwards' in 'git push --help' for details.");
 
 static void advise_pull_before_push(void)
 {
@@ -498,15 +509,11 @@ static void set_push_cert_flags(int *flags, int v)
 }
 
 
-static int git_push_config(const char *k, const char *v, void *cb)
+static int git_push_config(const char *k, const char *v,
+			   const struct config_context *ctx, void *cb)
 {
 	const char *slot_name;
 	int *flags = cb;
-	int status;
-
-	status = git_gpg_config(k, v, NULL);
-	if (status)
-		return status;
 
 	if (!strcmp(k, "push.followtags")) {
 		if (git_config_bool(k, v))
@@ -570,7 +577,7 @@ static int git_push_config(const char *k, const char *v, void *cb)
 		return 0;
 	}
 
-	return git_default_config(k, v, NULL);
+	return git_default_config(k, v, ctx, NULL);
 }
 
 int cmd_push(int argc, const char **argv, const char *prefix)
@@ -588,11 +595,12 @@ int cmd_push(int argc, const char **argv, const char *prefix)
 	struct option options[] = {
 		OPT__VERBOSITY(&verbosity),
 		OPT_STRING( 0 , "repo", &repo, N_("repository"), N_("repository")),
-		OPT_BIT( 0 , "all", &flags, N_("push all refs"), TRANSPORT_PUSH_ALL),
+		OPT_BIT( 0 , "all", &flags, N_("push all branches"), TRANSPORT_PUSH_ALL),
+		OPT_ALIAS( 0 , "branches", "all"),
 		OPT_BIT( 0 , "mirror", &flags, N_("mirror all refs"),
 			    (TRANSPORT_PUSH_MIRROR|TRANSPORT_PUSH_FORCE)),
 		OPT_BOOL('d', "delete", &deleterefs, N_("delete refs")),
-		OPT_BOOL( 0 , "tags", &tags, N_("push tags (can't be used with --all or --mirror)")),
+		OPT_BOOL( 0 , "tags", &tags, N_("push tags (can't be used with --all or --branches or --mirror)")),
 		OPT_BIT('n' , "dry-run", &flags, N_("dry run"), TRANSPORT_PUSH_DRY_RUN),
 		OPT_BIT( 0,  "porcelain", &flags, N_("machine-readable output"), TRANSPORT_PUSH_PORCELAIN),
 		OPT_BIT('f', "force", &flags, N_("force updates"), TRANSPORT_PUSH_FORCE),
@@ -619,10 +627,7 @@ int cmd_push(int argc, const char **argv, const char *prefix)
 				PARSE_OPT_OPTARG, option_parse_push_signed),
 		OPT_BIT(0, "atomic", &flags, N_("request atomic transaction on remote side"), TRANSPORT_PUSH_ATOMIC),
 		OPT_STRING_LIST('o', "push-option", &push_options_cmdline, N_("server-specific"), N_("option to transmit")),
-		OPT_SET_INT('4', "ipv4", &family, N_("use IPv4 addresses only"),
-				TRANSPORT_FAMILY_IPV4),
-		OPT_SET_INT('6', "ipv6", &family, N_("use IPv6 addresses only"),
-				TRANSPORT_FAMILY_IPV6),
+		OPT_IPVERSION(&family),
 		OPT_END()
 	};
 
@@ -635,7 +640,7 @@ int cmd_push(int argc, const char **argv, const char *prefix)
 	set_push_cert_flags(&flags, push_cert);
 
 	if (deleterefs && (tags || (flags & (TRANSPORT_PUSH_ALL | TRANSPORT_PUSH_MIRROR))))
-		die(_("options '%s' and '%s' cannot be used together"), "--delete", "--all/--mirror/--tags");
+		die(_("options '%s' and '%s' cannot be used together"), "--delete", "--all/--branches/--mirror/--tags");
 	if (deleterefs && argc < 2)
 		die(_("--delete doesn't make sense without any refs"));
 

@@ -1,8 +1,10 @@
-#include "cache.h"
+#include "git-compat-util.h"
 #include "attr.h"
 #include "object.h"
 #include "blob.h"
 #include "commit.h"
+#include "gettext.h"
+#include "hex.h"
 #include "tag.h"
 #include "tree.h"
 #include "delta.h"
@@ -338,7 +340,9 @@ static void free_remote_islands(kh_str_t *remote_islands)
 	kh_destroy_str(remote_islands);
 }
 
-static int island_config_callback(const char *k, const char *v, void *cb)
+static int island_config_callback(const char *k, const char *v,
+				  const struct config_context *ctx UNUSED,
+				  void *cb)
 {
 	struct island_load_data *ild = cb;
 
@@ -506,11 +510,28 @@ void propagate_island_marks(struct commit *commit)
 		struct commit_list *p;
 		struct island_bitmap *root_marks = kh_value(island_marks, pos);
 
-		parse_commit(commit);
-		set_island_marks(&get_commit_tree(commit)->object, root_marks);
+		repo_parse_commit(the_repository, commit);
+		set_island_marks(&repo_get_commit_tree(the_repository, commit)->object,
+				 root_marks);
 		for (p = commit->parents; p; p = p->next)
 			set_island_marks(&p->item->object, root_marks);
 	}
+}
+
+void free_island_marks(void)
+{
+	struct island_bitmap *bitmap;
+
+	if (island_marks) {
+		kh_foreach_value(island_marks, bitmap, {
+			if (!--bitmap->refcount)
+				free(bitmap);
+		});
+		kh_destroy_oid_map(island_marks);
+	}
+
+	/* detect use-after-free with a an address which is never valid: */
+	island_marks = (void *)-1;
 }
 
 int compute_pack_layers(struct packing_data *to_pack)

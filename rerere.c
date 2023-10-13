@@ -1,15 +1,22 @@
-#include "cache.h"
+#include "git-compat-util.h"
+#include "abspath.h"
 #include "config.h"
+#include "copy.h"
+#include "gettext.h"
+#include "hex.h"
 #include "lockfile.h"
 #include "string-list.h"
+#include "read-cache-ll.h"
 #include "rerere.h"
 #include "xdiff-interface.h"
 #include "dir.h"
 #include "resolve-undo.h"
-#include "ll-merge.h"
+#include "merge-ll.h"
 #include "attr.h"
+#include "path.h"
 #include "pathspec.h"
-#include "object-store.h"
+#include "object-file.h"
+#include "object-store-ll.h"
 #include "hash-lookup.h"
 #include "strmap.h"
 
@@ -197,7 +204,7 @@ static void read_rr(struct repository *r, struct string_list *rr)
 		const unsigned hexsz = the_hash_algo->hexsz;
 
 		/* There has to be the hash, tab, path and then NUL */
-		if (buf.len < hexsz + 2 || get_sha1_hex(buf.buf, hash))
+		if (buf.len < hexsz + 2 || get_hash_hex(buf.buf, hash))
 			die(_("corrupt MERGE_RR"));
 
 		if (buf.buf[hexsz] != '.') {
@@ -965,8 +972,9 @@ static int handle_cache(struct index_state *istate,
 			break;
 		i = ce_stage(ce) - 1;
 		if (!mmfile[i].ptr) {
-			mmfile[i].ptr = read_object_file(&ce->oid, &type,
-							 &size);
+			mmfile[i].ptr = repo_read_object_file(the_repository,
+							      &ce->oid, &type,
+							      &size);
 			mmfile[i].size = size;
 		}
 	}

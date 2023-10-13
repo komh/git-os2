@@ -1,4 +1,6 @@
-#include "cache.h"
+#include "git-compat-util.h"
+#include "hash.h"
+#include "hex.h"
 
 const signed char hexval_table[256] = {
 	 -1, -1, -1, -1, -1, -1, -1, -1,		/* 00-07 */
@@ -61,7 +63,7 @@ static int get_hash_hex_algop(const char *hex, unsigned char *hash,
 	return 0;
 }
 
-int get_sha1_hex(const char *hex, unsigned char *sha1)
+int get_hash_hex(const char *hex, unsigned char *sha1)
 {
 	return get_hash_hex_algop(hex, sha1, the_hash_algo);
 }

@@ -1,5 +1,6 @@
 #include "git-compat-util.h"
 #include "git-curl-compat.h"
+#include "hex.h"
 #include "http.h"
 #include "config.h"
 #include "pack.h"
@@ -11,11 +12,13 @@
 #include "version.h"
 #include "pkt-line.h"
 #include "gettext.h"
+#include "trace.h"
 #include "transport.h"
 #include "packfile.h"
 #include "protocol.h"
 #include "string-list.h"
-#include "object-store.h"
+#include "object-file.h"
+#include "object-store-ll.h"
 
 static struct trace_key trace_curl = TRACE_KEY_INIT(CURL);
 static int trace_curl_data = 1;
@@ -39,6 +42,7 @@ static int curl_ssl_verify = -1;
 static int curl_ssl_try;
 static const char *curl_http_version = NULL;
 static const char *ssl_cert;
+static const char *ssl_cert_type;
 static const char *ssl_cipherlist;
 static const char *ssl_version;
 static struct {
@@ -58,6 +62,7 @@ static struct {
 #endif
 };
 static const char *ssl_key;
+static const char *ssl_key_type;
 static const char *ssl_capath;
 static const char *curl_no_proxy;
 #ifdef GIT_CURL_HAVE_CURLOPT_PINNEDPUBLICKEY
@@ -157,21 +162,19 @@ size_t fread_buffer(char *ptr, size_t eltsize, size_t nmemb, void *buffer_)
 	return size / eltsize;
 }
 
-curlioerr ioctl_buffer(CURL *handle, int cmd, void *clientp)
+int seek_buffer(void *clientp, curl_off_t offset, int origin)
 {
 	struct buffer *buffer = clientp;
 
-	switch (cmd) {
-	case CURLIOCMD_NOP:
-		return CURLIOE_OK;
-
-	case CURLIOCMD_RESTARTREAD:
-		buffer->posn = 0;
-		return CURLIOE_OK;
-
-	default:
-		return CURLIOE_UNKNOWNCMD;
+	if (origin != SEEK_SET)
+		BUG("seek_buffer only handles SEEK_SET");
+	if (offset < 0 || offset >= buffer->buf.len) {
+		error("curl seek would be outside of buffer");
+		return CURL_SEEKFUNC_FAIL;
 	}
+
+	buffer->posn = offset;
+	return CURL_SEEKFUNC_OK;
 }
 
 size_t fwrite_buffer(char *ptr, size_t eltsize, size_t nmemb, void *buffer_)
@@ -183,7 +186,117 @@ size_t fwrite_buffer(char *ptr, size_t eltsize, size_t nmemb, void *buffer_)
 	return nmemb;
 }
 
-size_t fwrite_null(char *ptr, size_t eltsize, size_t nmemb, void *strbuf)
+/*
+ * A folded header continuation line starts with any number of spaces or
+ * horizontal tab characters (SP or HTAB) as per RFC 7230 section 3.2.
+ * It is not a continuation line if the line starts with any other character.
+ */
+static inline int is_hdr_continuation(const char *ptr, const size_t size)
+{
+	return size && (*ptr == ' ' || *ptr == '\t');
+}
+
+static size_t fwrite_wwwauth(char *ptr, size_t eltsize, size_t nmemb, void *p UNUSED)
+{
+	size_t size = eltsize * nmemb;
+	struct strvec *values = &http_auth.wwwauth_headers;
+	struct strbuf buf = STRBUF_INIT;
+	const char *val;
+	size_t val_len;
+
+	/*
+	 * Header lines may not come NULL-terminated from libcurl so we must
+	 * limit all scans to the maximum length of the header line, or leverage
+	 * strbufs for all operations.
+	 *
+	 * In addition, it is possible that header values can be split over
+	 * multiple lines as per RFC 7230. 'Line folding' has been deprecated
+	 * but older servers may still emit them. A continuation header field
+	 * value is identified as starting with a space or horizontal tab.
+	 *
+	 * The formal definition of a header field as given in RFC 7230 is:
+	 *
+	 * header-field   = field-name ":" OWS field-value OWS
+	 *
+	 * field-name     = token
+	 * field-value    = *( field-content / obs-fold )
+	 * field-content  = field-vchar [ 1*( SP / HTAB ) field-vchar ]
+	 * field-vchar    = VCHAR / obs-text
+	 *
+	 * obs-fold       = CRLF 1*( SP / HTAB )
+	 *                ; obsolete line folding
+	 *                ; see Section 3.2.4
+	 */
+
+	/* Start of a new WWW-Authenticate header */
+	if (skip_iprefix_mem(ptr, size, "www-authenticate:", &val, &val_len)) {
+		strbuf_add(&buf, val, val_len);
+
+		/*
+		 * Strip the CRLF that should be present at the end of each
+		 * field as well as any trailing or leading whitespace from the
+		 * value.
+		 */
+		strbuf_trim(&buf);
+
+		strvec_push(values, buf.buf);
+		http_auth.header_is_last_match = 1;
+		goto exit;
+	}
+
+	/*
+	 * This line could be a continuation of the previously matched header
+	 * field. If this is the case then we should append this value to the
+	 * end of the previously consumed value.
+	 */
+	if (http_auth.header_is_last_match && is_hdr_continuation(ptr, size)) {
+		/*
+		 * Trim the CRLF and any leading or trailing from this line.
+		 */
+		strbuf_add(&buf, ptr, size);
+		strbuf_trim(&buf);
+
+		/*
+		 * At this point we should always have at least one existing
+		 * value, even if it is empty. Do not bother appending the new
+		 * value if this continuation header is itself empty.
+		 */
+		if (!values->nr) {
+			BUG("should have at least one existing header value");
+		} else if (buf.len) {
+			char *prev = xstrdup(values->v[values->nr - 1]);
+
+			/* Join two non-empty values with a single space. */
+			const char *const sp = *prev ? " " : "";
+
+			strvec_pop(values);
+			strvec_pushf(values, "%s%s%s", prev, sp, buf.buf);
+			free(prev);
+		}
+
+		goto exit;
+	}
+
+	/* Not a continuation of a previously matched auth header line. */
+	http_auth.header_is_last_match = 0;
+
+	/*
+	 * If this is a HTTP status line and not a header field, this signals
+	 * a different HTTP response. libcurl writes all the output of all
+	 * response headers of all responses, including redirects.
+	 * We only care about the last HTTP request response's headers so clear
+	 * the existing array.
+	 */
+	if (skip_iprefix_mem(ptr, size, "http/", &val, &val_len))
+		strvec_clear(values);
+
+exit:
+	strbuf_release(&buf);
+	return size;
+}
+
+size_t fwrite_null(char *ptr UNUSED, size_t eltsize UNUSED, size_t nmemb,
+		   void *data UNUSED)
 {
 	return nmemb;
 }
@@ -251,7 +364,8 @@ static void process_curl_messages(void)
 	}
 }
 
-static int http_options(const char *var, const char *value, void *cb)
+static int http_options(const char *var, const char *value,
+			const struct config_context *ctx, void *data)
 {
 	if (!strcmp("http.version", var)) {
 		return git_config_string(&curl_http_version, var, value);
@@ -266,8 +380,12 @@ static int http_options(const char *var, const char *value, void *cb)
 		return git_config_string(&ssl_version, var, value);
 	if (!strcmp("http.sslcert", var))
 		return git_config_pathname(&ssl_cert, var, value);
+	if (!strcmp("http.sslcerttype", var))
+		return git_config_string(&ssl_cert_type, var, value);
 	if (!strcmp("http.sslkey", var))
 		return git_config_pathname(&ssl_key, var, value);
+	if (!strcmp("http.sslkeytype", var))
+		return git_config_string(&ssl_key_type, var, value);
 	if (!strcmp("http.sslcapath", var))
 		return git_config_pathname(&ssl_capath, var, value);
 	if (!strcmp("http.sslcainfo", var))
@@ -297,21 +415,21 @@ static int http_options(const char *var, const char *value, void *cb)
 	}
 
 	if (!strcmp("http.minsessions", var)) {
-		min_curl_sessions = git_config_int(var, value);
+		min_curl_sessions = git_config_int(var, value, ctx->kvi);
 		if (min_curl_sessions > 1)
 			min_curl_sessions = 1;
 		return 0;
 	}
 	if (!strcmp("http.maxrequests", var)) {
-		max_requests = git_config_int(var, value);
+		max_requests = git_config_int(var, value, ctx->kvi);
 		return 0;
 	}
 	if (!strcmp("http.lowspeedlimit", var)) {
-		curl_low_speed_limit = (long)git_config_int(var, value);
+		curl_low_speed_limit = (long)git_config_int(var, value, ctx->kvi);
 		return 0;
 	}
 	if (!strcmp("http.lowspeedtime", var)) {
-		curl_low_speed_time = (long)git_config_int(var, value);
+		curl_low_speed_time = (long)git_config_int(var, value, ctx->kvi);
 		return 0;
 	}
 
@@ -347,7 +465,7 @@ static int http_options(const char *var, const char *value, void *cb)
 	}
 
 	if (!strcmp("http.postbuffer", var)) {
-		http_post_buffer = git_config_ssize_t(var, value);
+		http_post_buffer = git_config_ssize_t(var, value, ctx->kvi);
 		if (http_post_buffer < 0)
 			warning(_("negative value for http.postBuffer; defaulting to %d"), LARGE_PACKET_MAX);
 		if (http_post_buffer < LARGE_PACKET_MAX)
@@ -418,7 +536,7 @@ static int http_options(const char *var, const char *value, void *cb)
 	}
 
 	/* Fall back on the default ones */
-	return git_default_config(var, value, cb);
+	return git_default_config(var, value, ctx, data);
 }
 
 static int curl_empty_auth_enabled(void)
@@ -630,7 +748,8 @@ static void redact_sensitive_info_header(struct strbuf *header)
 	 *   h2h3 [<header-name>: <header-val>]
 	 */
 	if (trace_curl_redact &&
-	    skip_iprefix(header->buf, "h2h3 [", &sensitive_header)) {
+	    (skip_iprefix(header->buf, "h2h3 [", &sensitive_header) ||
+	     skip_iprefix(header->buf, "h2 [", &sensitive_header))) {
 		if (redact_sensitive_header(header, sensitive_header - header->buf)) {
 			/* redaction ate our closing bracket */
 			strbuf_addch(header, ']');
@@ -703,7 +822,9 @@ static void curl_dump_info(char *data, size_t size)
 	strbuf_release(&buf);
 }
 
-static int curl_trace(CURL *handle, curl_infotype type, char *data, size_t size, void *userp)
+static int curl_trace(CURL *handle UNUSED, curl_infotype type,
+		      char *data, size_t size,
+		      void *userp UNUSED)
 {
 	const char *text;
 	enum { NO_FILTER = 0, DO_FILTER = 1 };
@@ -766,20 +887,37 @@ void setup_curl_trace(CURL *handle)
 	curl_easy_setopt(handle, CURLOPT_DEBUGDATA, NULL);
 }
 
-static long get_curl_allowed_protocols(int from_user)
+static void proto_list_append(struct strbuf *list, const char *proto)
 {
-	long allowed_protocols = 0;
+	if (!list)
+		return;
+	if (list->len)
+		strbuf_addch(list, ',');
+	strbuf_addstr(list, proto);
+}
 
-	if (is_transport_allowed("http", from_user))
-		allowed_protocols |= CURLPROTO_HTTP;
-	if (is_transport_allowed("https", from_user))
-		allowed_protocols |= CURLPROTO_HTTPS;
-	if (is_transport_allowed("ftp", from_user))
-		allowed_protocols |= CURLPROTO_FTP;
-	if (is_transport_allowed("ftps", from_user))
-		allowed_protocols |= CURLPROTO_FTPS;
+static long get_curl_allowed_protocols(int from_user, struct strbuf *list)
+{
+	long bits = 0;
 
-	return allowed_protocols;
+	if (is_transport_allowed("http", from_user)) {
+		bits |= CURLPROTO_HTTP;
+		proto_list_append(list, "http");
+	}
+	if (is_transport_allowed("https", from_user)) {
+		bits |= CURLPROTO_HTTPS;
+		proto_list_append(list, "https");
+	}
+	if (is_transport_allowed("ftp", from_user)) {
+		bits |= CURLPROTO_FTP;
+		proto_list_append(list, "ftp");
+	}
+	if (is_transport_allowed("ftps", from_user)) {
+		bits |= CURLPROTO_FTPS;
+		proto_list_append(list, "ftps");
+	}
+
+	return bits;
 }
 
 #ifdef GIT_CURL_HAVE_CURL_HTTP_VERSION_2
@@ -889,10 +1027,14 @@ static CURL *get_curl_handle(void)
 
 	if (ssl_cert)
 		curl_easy_setopt(result, CURLOPT_SSLCERT, ssl_cert);
+	if (ssl_cert_type)
+		curl_easy_setopt(result, CURLOPT_SSLCERTTYPE, ssl_cert_type);
 	if (has_cert_password())
 		curl_easy_setopt(result, CURLOPT_KEYPASSWD, cert_auth.password);
 	if (ssl_key)
 		curl_easy_setopt(result, CURLOPT_SSLKEY, ssl_key);
+	if (ssl_key_type)
+		curl_easy_setopt(result, CURLOPT_SSLKEYTYPE, ssl_key_type);
 	if (ssl_capath)
 		curl_easy_setopt(result, CURLOPT_CAPATH, ssl_capath);
 #ifdef GIT_CURL_HAVE_CURLOPT_PINNEDPUBLICKEY
@@ -923,10 +1065,26 @@ static CURL *get_curl_handle(void)
 
 	curl_easy_setopt(result, CURLOPT_MAXREDIRS, 20);
 	curl_easy_setopt(result, CURLOPT_POSTREDIR, CURL_REDIR_POST_ALL);
+
+#ifdef GIT_CURL_HAVE_CURLOPT_PROTOCOLS_STR
+	{
+		struct strbuf buf = STRBUF_INIT;
+
+		get_curl_allowed_protocols(0, &buf);
+		curl_easy_setopt(result, CURLOPT_REDIR_PROTOCOLS_STR, buf.buf);
+		strbuf_reset(&buf);
+
+		get_curl_allowed_protocols(-1, &buf);
+		curl_easy_setopt(result, CURLOPT_PROTOCOLS_STR, buf.buf);
+		strbuf_release(&buf);
+	}
+#else
 	curl_easy_setopt(result, CURLOPT_REDIR_PROTOCOLS,
-			 get_curl_allowed_protocols(0));
+			 get_curl_allowed_protocols(0, NULL));
 	curl_easy_setopt(result, CURLOPT_PROTOCOLS,
-			 get_curl_allowed_protocols(-1));
+			 get_curl_allowed_protocols(-1, NULL));
+#endif
+
 	if (getenv("GIT_CURL_VERBOSE"))
 		http_trace_curl_no_data();
 	setup_curl_trace(result);
@@ -1111,7 +1269,9 @@ void http_init(struct remote *remote, const char *url, int proactive_auth)
 		curl_ssl_verify = 0;
 
 	set_from_env(&ssl_cert, "GIT_SSL_CERT");
+	set_from_env(&ssl_cert_type, "GIT_SSL_CERT_TYPE");
 	set_from_env(&ssl_key, "GIT_SSL_KEY");
+	set_from_env(&ssl_key_type, "GIT_SSL_KEY_TYPE");
 	set_from_env(&ssl_capath, "GIT_SSL_CAPATH");
 	set_from_env(&ssl_cainfo, "GIT_SSL_CAINFO");
 
@@ -1868,6 +2028,8 @@ static int http_request(const char *url,
 			curl_easy_setopt(slot->curl, CURLOPT_WRITEFUNCTION,
 					 fwrite_buffer);
 	}
+
+	curl_easy_setopt(slot->curl, CURLOPT_HEADERFUNCTION, fwrite_wwwauth);
 
 	accept_language = http_get_accept_language_header();
 
