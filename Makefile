@@ -207,10 +207,6 @@ include shared.mak
 # Define NO_ST_BLOCKS_IN_STRUCT_STAT if your platform does not have st_blocks
 # field that counts the on-disk footprint in 512-byte blocks.
 #
-# Define GNU_ROFF if your target system uses GNU groff.  This forces
-# apostrophes to be ASCII so that cut&pasting examples to the shell
-# will work.
-#
 # Define USE_ASCIIDOCTOR to use Asciidoctor instead of AsciiDoc to build the
 # documentation.
 #
@@ -288,6 +284,10 @@ include shared.mak
 #
 # Define NO_REGEX if your C library lacks regex support with REG_STARTEND
 # feature.
+#
+# Define USE_ENHANCED_BASIC_REGULAR_EXPRESSIONS if your C library provides
+# the flag REG_ENHANCED and you'd like to use it to enable enhanced basic
+# regular expressions.
 #
 # Define HAVE_DEV_TTY if your system can open /dev/tty to interact with the
 # user.
@@ -511,10 +511,8 @@ include shared.mak
 # Define BLK_SHA1 to make use of optimized C SHA-1 routines bundled
 # with git (in the block-sha1/ directory).
 #
-# Define NO_APPLE_COMMON_CRYPTO on OSX to opt-out of using the
-# "APPLE_COMMON_CRYPTO" backend for SHA-1, which is currently the
-# default on that OS. On macOS 01.4 (Tiger) or older,
-# NO_APPLE_COMMON_CRYPTO is defined by default.
+# Define APPLE_COMMON_CRYPTO_SHA1 to use Apple's CommonCrypto for
+# SHA-1.
 #
 # If don't enable any of the *_SHA1 settings in this section, Git will
 # default to its built-in sha1collisiondetection library, which is a
@@ -691,7 +689,6 @@ THIRD_PARTY_SOURCES =
 # interactive shell sessions without exporting it.
 unexport CDPATH
 
-SCRIPT_SH += git-bisect.sh
 SCRIPT_SH += git-difftool--helper.sh
 SCRIPT_SH += git-filter-branch.sh
 SCRIPT_SH += git-merge-octopus.sh
@@ -707,7 +704,6 @@ SCRIPT_LIB += git-mergetool--lib
 SCRIPT_LIB += git-sh-i18n
 SCRIPT_LIB += git-sh-setup
 
-SCRIPT_PERL += git-add--interactive.perl
 SCRIPT_PERL += git-archimport.perl
 SCRIPT_PERL += git-cvsexportcommit.perl
 SCRIPT_PERL += git-cvsimport.perl
@@ -801,6 +797,7 @@ TEST_BUILTINS_OBJS += test-dump-cache-tree.o
 TEST_BUILTINS_OBJS += test-dump-fsmonitor.o
 TEST_BUILTINS_OBJS += test-dump-split-index.o
 TEST_BUILTINS_OBJS += test-dump-untracked-cache.o
+TEST_BUILTINS_OBJS += test-env-helper.o
 TEST_BUILTINS_OBJS += test-example-decorate.o
 TEST_BUILTINS_OBJS += test-fast-rebase.o
 TEST_BUILTINS_OBJS += test-fsmonitor-client.o
@@ -1035,6 +1032,7 @@ LIB_OBJS += fsmonitor.o
 LIB_OBJS += fsmonitor-ipc.o
 LIB_OBJS += fsmonitor-settings.o
 LIB_OBJS += gettext.o
+LIB_OBJS += git-zlib.o
 LIB_OBJS += gpg-interface.o
 LIB_OBJS += graph.o
 LIB_OBJS += grep.o
@@ -1053,7 +1051,6 @@ LIB_OBJS += linear-assignment.o
 LIB_OBJS += list-objects-filter-options.o
 LIB_OBJS += list-objects-filter.o
 LIB_OBJS += list-objects.o
-LIB_OBJS += ll-merge.o
 LIB_OBJS += lockfile.o
 LIB_OBJS += log-tree.o
 LIB_OBJS += ls-refs.o
@@ -1062,6 +1059,7 @@ LIB_OBJS += mailmap.o
 LIB_OBJS += match-trees.o
 LIB_OBJS += mem-pool.o
 LIB_OBJS += merge-blobs.o
+LIB_OBJS += merge-ll.o
 LIB_OBJS += merge-ort.o
 LIB_OBJS += merge-ort-wrappers.o
 LIB_OBJS += merge-recursive.o
@@ -1144,6 +1142,7 @@ LIB_OBJS += sigchain.o
 LIB_OBJS += sparse-index.o
 LIB_OBJS += split-index.o
 LIB_OBJS += stable-qsort.o
+LIB_OBJS += statinfo.o
 LIB_OBJS += strbuf.o
 LIB_OBJS += streaming.o
 LIB_OBJS += string-list.o
@@ -1195,14 +1194,13 @@ LIB_OBJS += write-or-die.o
 LIB_OBJS += ws.o
 LIB_OBJS += wt-status.o
 LIB_OBJS += xdiff-interface.o
-LIB_OBJS += zlib.o
 
 BUILTIN_OBJS += builtin/add.o
 BUILTIN_OBJS += builtin/am.o
 BUILTIN_OBJS += builtin/annotate.o
 BUILTIN_OBJS += builtin/apply.o
 BUILTIN_OBJS += builtin/archive.o
-BUILTIN_OBJS += builtin/bisect--helper.o
+BUILTIN_OBJS += builtin/bisect.o
 BUILTIN_OBJS += builtin/blame.o
 BUILTIN_OBJS += builtin/branch.o
 BUILTIN_OBJS += builtin/bugreport.o
@@ -1234,7 +1232,6 @@ BUILTIN_OBJS += builtin/diff-index.o
 BUILTIN_OBJS += builtin/diff-tree.o
 BUILTIN_OBJS += builtin/diff.o
 BUILTIN_OBJS += builtin/difftool.o
-BUILTIN_OBJS += builtin/env--helper.o
 BUILTIN_OBJS += builtin/fast-export.o
 BUILTIN_OBJS += builtin/fast-import.o
 BUILTIN_OBJS += builtin/fetch-pack.o
@@ -1912,7 +1909,7 @@ ifdef NO_POSIX_GOODIES
 	BASIC_CFLAGS += -DNO_POSIX_GOODIES
 endif
 
-ifdef APPLE_COMMON_CRYPTO
+ifdef APPLE_COMMON_CRYPTO_SHA1
 	# Apple CommonCrypto requires chunking
 	SHA1_MAX_BLOCK_SIZE = 1024L*1024L*1024L
 endif
@@ -1929,7 +1926,7 @@ ifdef BLK_SHA1
 	LIB_OBJS += block-sha1/sha1.o
 	BASIC_CFLAGS += -DSHA1_BLK
 else
-ifdef APPLE_COMMON_CRYPTO
+ifdef APPLE_COMMON_CRYPTO_SHA1
 	COMPAT_CFLAGS += -DCOMMON_DIGEST_FOR_OPENSSL
 	BASIC_CFLAGS += -DSHA1_APPLE
 else
@@ -1955,7 +1952,7 @@ endif
 	BASIC_CFLAGS += \
 		-DSHA1DC_NO_STANDARD_INCLUDES \
 		-DSHA1DC_INIT_SAFE_HASH_DEFAULT=0 \
-		-DSHA1DC_CUSTOM_INCLUDE_SHA1_C="\"cache.h\"" \
+		-DSHA1DC_CUSTOM_INCLUDE_SHA1_C="\"git-compat-util.h\"" \
 		-DSHA1DC_CUSTOM_INCLUDE_UBC_CHECK_C="\"git-compat-util.h\""
 endif
 endif
@@ -2040,6 +2037,11 @@ endif
 ifdef NO_REGEX
 	COMPAT_CFLAGS += -Icompat/regex
 	COMPAT_OBJS += compat/regex/regex.o
+else
+ifdef USE_ENHANCED_BASIC_REGULAR_EXPRESSIONS
+	COMPAT_CFLAGS += -DUSE_ENHANCED_BASIC_REGULAR_EXPRESSIONS
+	COMPAT_OBJS += compat/regcomp_enhanced.o
+endif
 endif
 ifdef NATIVE_CRLF
 	BASIC_CFLAGS += -DNATIVE_CRLF
@@ -2741,8 +2743,8 @@ exec-cmd.sp exec-cmd.s exec-cmd.o: EXTRA_CPPFLAGS = \
 	'-DBINDIR="$(bindir_relative_SQ)"' \
 	'-DFALLBACK_RUNTIME_PREFIX="$(prefix_SQ)"'
 
-builtin/init-db.sp builtin/init-db.s builtin/init-db.o: GIT-PREFIX
-builtin/init-db.sp builtin/init-db.s builtin/init-db.o: EXTRA_CPPFLAGS = \
+setup.sp setup.s setup.o: GIT-PREFIX
+setup.sp setup.s setup.o: EXTRA_CPPFLAGS = \
 	-DDEFAULT_GIT_TEMPLATE_DIR='"$(template_dir_SQ)"'
 
 config.sp config.s config.o: GIT-PREFIX
@@ -2776,6 +2778,13 @@ compat/nedmalloc/nedmalloc.sp compat/nedmalloc/nedmalloc.o: EXTRA_CPPFLAGS = \
 	-DNDEBUG -DREPLACE_SYSTEM_ALLOCATOR
 compat/nedmalloc/nedmalloc.sp: SP_EXTRA_FLAGS += -Wno-non-pointer-null
 endif
+
+headless-git.o: compat/win32/headless.c GIT-CFLAGS
+	$(QUIET_CC)$(CC) $(ALL_CFLAGS) $(COMPAT_CFLAGS) \
+		-fno-stack-protector -o $@ -c -Wall -Wwrite-strings $<
+
+headless-git$X: headless-git.o git.res GIT-LDFLAGS
+	$(QUIET_LINK)$(CC) $(ALL_CFLAGS) $(ALL_LDFLAGS) -mwindows -o $@ $< git.res
 
 git-%$X: %.o GIT-LDFLAGS $(GITLIBS)
 	$(QUIET_LINK)$(CC) $(ALL_CFLAGS) -o $@ $(ALL_LDFLAGS) $(filter %.o,$^) $(LIBS)
@@ -3214,6 +3223,12 @@ $(SP_OBJ): %.sp: %.c %.o
 sparse: $(SP_OBJ)
 
 EXCEPT_HDRS := $(GENERATED_H) unicode-width.h compat/% xdiff/%
+ifndef OPENSSL_SHA1
+	EXCEPT_HDRS += sha1/openssl.h
+endif
+ifndef OPENSSL_SHA256
+	EXCEPT_HDRS += sha256/openssl.h
+endif
 ifndef NETTLE_SHA256
 	EXCEPT_HDRS += sha256/nettle.h
 endif
@@ -3650,6 +3665,7 @@ clean: profile-clean coverage-clean cocciclean
 	$(RM) po/git.pot po/git-core.pot
 	$(RM) git.res
 	$(RM) $(OBJECTS)
+	$(RM) headless-git.o
 	$(RM) $(LIB_FILE) $(XDIFF_LIB) $(REFTABLE_LIB) $(REFTABLE_TEST_LIB)
 	$(RM) $(ALL_PROGRAMS) $(SCRIPT_LIB) $(BUILT_INS) $(OTHER_PROGRAMS)
 	$(RM) $(TEST_PROGRAMS)
@@ -3678,6 +3694,7 @@ endif
 	$(RM) GIT-SCRIPT-DEFINES GIT-PERL-DEFINES GIT-PERL-HEADER GIT-PYTHON-VARS
 ifdef MSVC
 	$(RM) $(patsubst %.o,%.o.pdb,$(OBJECTS))
+	$(RM) headless-git.o.pdb
 	$(RM) $(patsubst %.exe,%.pdb,$(OTHER_PROGRAMS))
 	$(RM) $(patsubst %.exe,%.iobj,$(OTHER_PROGRAMS))
 	$(RM) $(patsubst %.exe,%.ipdb,$(OTHER_PROGRAMS))

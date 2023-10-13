@@ -1,6 +1,6 @@
 #include "test-tool.h"
-#include "cache.h"
 #include "parse-options.h"
+#include "strbuf.h"
 #include "string-list.h"
 #include "trace2.h"
 
@@ -133,6 +133,8 @@ int cmd__parse_options(int argc, const char **argv)
 		OPT_STRING(0, "st", &string, "st", "get another string (pervert ordering)"),
 		OPT_STRING('o', NULL, &string, "str", "get another string"),
 		OPT_NOOP_NOARG(0, "obsolete"),
+		OPT_SET_INT_F(0, "longhelp", &integer, "help text of this entry\n"
+			      "spans multiple lines", 0, PARSE_OPT_NONEG),
 		OPT_STRING_LIST(0, "list", &list, "str", "add str to list"),
 		OPT_GROUP("Magic arguments"),
 		OPT_NUMBER_CALLBACK(&integer, "set integer to NUM",
@@ -263,14 +265,14 @@ int cmd__parse_options_flags(int argc, const char **argv)
 	return parse_options_flags__cmd(argc, argv, test_flags);
 }
 
-static int subcmd_one(int argc, const char **argv, const char *prefix)
+static int subcmd_one(int argc, const char **argv, const char *prefix UNUSED)
 {
 	printf("fn: subcmd_one\n");
 	print_args(argc, argv);
 	return 0;
 }
 
-static int subcmd_two(int argc, const char **argv, const char *prefix)
+static int subcmd_two(int argc, const char **argv, const char *prefix UNUSED)
 {
 	printf("fn: subcmd_two\n");
 	print_args(argc, argv);

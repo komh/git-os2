@@ -4,15 +4,23 @@
  * Copyright (C) Linus Torvalds, 2005
  */
 #define USE_THE_INDEX_VARIABLE
-#include "cache.h"
+#include "builtin.h"
+#include "abspath.h"
 #include "config.h"
 #include "commit.h"
+#include "environment.h"
+#include "gettext.h"
+#include "hash.h"
+#include "hex.h"
 #include "refs.h"
 #include "quote.h"
-#include "builtin.h"
+#include "object-name.h"
 #include "parse-options.h"
+#include "path.h"
 #include "diff.h"
+#include "read-cache-ll.h"
 #include "revision.h"
+#include "setup.h"
 #include "split-index.h"
 #include "submodule.h"
 #include "commit-reach.h"
@@ -136,7 +144,9 @@ static void show_rev(int type, const struct object_id *oid, const char *name)
 			struct object_id discard;
 			char *full;
 
-			switch (dwim_ref(name, strlen(name), &discard, &full, 0)) {
+			switch (repo_dwim_ref(the_repository, name,
+					      strlen(name), &discard, &full,
+					      0)) {
 			case 0:
 				/*
 				 * Not found -- not a ref.  We could
@@ -147,9 +157,12 @@ static void show_rev(int type, const struct object_id *oid, const char *name)
 				 */
 				break;
 			case 1: /* happy */
-				if (abbrev_ref)
+				if (abbrev_ref) {
+					char *old = full;
 					full = shorten_unambiguous_ref(full,
 						abbrev_ref_strict);
+					free(old);
+				}
 				show_with_type(type, full);
 				break;
 			default: /* ambiguous */
@@ -162,7 +175,8 @@ static void show_rev(int type, const struct object_id *oid, const char *name)
 		}
 	}
 	else if (abbrev)
-		show_with_type(type, find_unique_abbrev(oid, abbrev));
+		show_with_type(type,
+			       repo_find_unique_abbrev(the_repository, oid, abbrev));
 	else
 		show_with_type(type, oid_to_hex(oid));
 }
@@ -187,7 +201,7 @@ static int show_default(void)
 		struct object_id oid;
 
 		def = NULL;
-		if (!get_oid(s, &oid)) {
+		if (!repo_get_oid(the_repository, s, &oid)) {
 			show_rev(NORMAL, &oid, s);
 			return 1;
 		}
@@ -211,7 +225,7 @@ static int anti_reference(const char *refname, const struct object_id *oid,
 	return 0;
 }
 
-static int show_abbrev(const struct object_id *oid, void *cb_data)
+static int show_abbrev(const struct object_id *oid, void *cb_data UNUSED)
 {
 	show_rev(NORMAL, oid, NULL);
 	return 0;
@@ -279,7 +293,7 @@ static int try_difference(const char *arg)
 		return 0;
 	}
 
-	if (!get_oid_committish(start, &start_oid) && !get_oid_committish(end, &end_oid)) {
+	if (!repo_get_oid_committish(the_repository, start, &start_oid) && !repo_get_oid_committish(the_repository, end, &end_oid)) {
 		show_rev(NORMAL, &end_oid, end);
 		show_rev(symmetric ? NORMAL : REVERSED, &start_oid, start);
 		if (symmetric) {
@@ -291,7 +305,7 @@ static int try_difference(const char *arg)
 				*dotdot = '.';
 				return 0;
 			}
-			exclude = get_merge_bases(a, b);
+			exclude = repo_get_merge_bases(the_repository, a, b);
 			while (exclude) {
 				struct commit *commit = pop_commit(&exclude);
 				show_rev(REVERSED, &commit->object.oid, NULL);
@@ -337,7 +351,7 @@ static int try_parent_shorthands(const char *arg)
 		return 0;
 
 	*dotdot = 0;
-	if (get_oid_committish(arg, &oid) ||
+	if (repo_get_oid_committish(the_repository, arg, &oid) ||
 	    !(commit = lookup_commit_reference(the_repository, &oid))) {
 		*dotdot = '^';
 		return 0;
@@ -530,6 +544,7 @@ static int cmd_parseopt(int argc, const char **argv, const char *prefix)
 	strbuf_addstr(&parsed, " --");
 	sq_quote_argv(&parsed, argv);
 	puts(parsed.buf);
+	strbuf_release(&parsed);
 	return 0;
 }
 
@@ -867,7 +882,8 @@ int cmd_rev_parse(int argc, const char **argv, const char *prefix)
 				continue;
 			}
 			if (skip_prefix(arg, "--disambiguate=", &arg)) {
-				for_each_abbrev(arg, show_abbrev, NULL);
+				repo_for_each_abbrev(the_repository, arg,
+						     show_abbrev, NULL);
 				continue;
 			}
 			if (!strcmp(arg, "--bisect")) {

@@ -19,7 +19,6 @@
 #include "git-compat-util.h"
 #include "ewok.h"
 #include "ewok_rlw.h"
-#include "cache.h"
 
 static inline size_t min_size(size_t a, size_t b)
 {

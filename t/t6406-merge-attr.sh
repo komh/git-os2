@@ -8,6 +8,7 @@ test_description='per path merge controlled by merge attribute'
 GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
 export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
 
+TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 test_expect_success setup '
@@ -55,6 +56,12 @@ test_expect_success setup '
 	) >"$ours+"
 	cat "$ours+" >"$ours"
 	rm -f "$ours+"
+
+	if test -f ./please-abort
+	then
+		echo >>./please-abort killing myself
+		kill -9 $$
+	fi
 	exit "$exit"
 	EOF
 	chmod +x ./custom-merge
@@ -159,6 +166,23 @@ test_expect_success 'custom merge backend' '
 	echo "path is text" >expect &&
 	cmp expect check-3 &&
 	rm -f $o $a $b
+'
+
+test_expect_success !WINDOWS 'custom merge driver that is killed with a signal' '
+	test_when_finished "rm -f output please-abort" &&
+
+	git reset --hard anchor &&
+	git config --replace-all \
+	merge.custom.driver "./custom-merge %O %A %B 0 %P" &&
+	git config --replace-all \
+	merge.custom.name "custom merge driver for testing" &&
+
+	>./please-abort &&
+	echo "* merge=custom" >.gitattributes &&
+	test_must_fail git merge main &&
+	git ls-files -u >output &&
+	git diff --name-only HEAD >>output &&
+	test_must_be_empty output
 '
 
 test_expect_success 'up-to-date merge without common ancestor' '

@@ -85,6 +85,7 @@ check_describe e-1-gHASH --tags HEAD^^
 check_describe c-2-gHASH --tags HEAD^^2
 check_describe B --tags HEAD^^2^
 check_describe e --tags HEAD^^^
+check_describe e --tags --exact-match HEAD^^^
 
 check_describe heads/main --all HEAD
 check_describe tags/c-6-gHASH --all HEAD^
@@ -95,6 +96,13 @@ check_describe A-3-gHASH --long HEAD^^2
 
 check_describe c-7-gHASH --tags
 check_describe e-3-gHASH --first-parent --tags
+
+check_describe c-7-gHASH --tags --no-exact-match HEAD
+check_describe e-3-gHASH --first-parent --tags --no-exact-match HEAD
+
+test_expect_success '--exact-match failure' '
+	test_must_fail git describe --exact-match HEAD 2>err
+'
 
 test_expect_success 'describe --contains defaults to HEAD without commit-ish' '
 	echo "A^0" >expect &&
@@ -656,5 +664,11 @@ test_expect_success 'setup: describe commits with disjoint bases 2' '
 '
 
 check_describe -C disjoint2 "B-3-gHASH" HEAD
+
+test_expect_success 'setup misleading taggerdates' '
+	GIT_COMMITTER_DATE="2006-12-12 12:31" git tag -a -m "another tag" newer-tag-older-commit unique-file~1
+'
+
+check_describe newer-tag-older-commit~1 --contains unique-file~2
 
 test_done

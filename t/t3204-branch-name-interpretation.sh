@@ -9,6 +9,7 @@ This script aims to check the behavior of those corner cases.
 GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
 export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
 
+TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 expect_branch() {
@@ -55,6 +56,16 @@ test_expect_success 'disallow updating branch via remote @{upstream}' '
 test_expect_success 'create branch with pseudo-qualified name' '
 	git branch refs/heads/qualified two &&
 	expect_branch refs/heads/refs/heads/qualified two
+'
+
+test_expect_success 'force-copy a branch to itself via @{-1} is no-op' '
+	git branch -t copiable main &&
+	git checkout copiable &&
+	git checkout - &&
+	git branch -C @{-1} copiable &&
+	git config --get-all branch.copiable.merge >actual &&
+	echo refs/heads/main >expect &&
+	test_cmp expect actual
 '
 
 test_expect_success 'delete branch via @{-1}' '

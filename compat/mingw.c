@@ -6,10 +6,16 @@
 #include <wchar.h>
 #include "../strbuf.h"
 #include "../run-command.h"
-#include "../cache.h"
+#include "../abspath.h"
+#include "../alloc.h"
 #include "win32/lazyload.h"
 #include "../config.h"
+#include "../environment.h"
+#include "../trace2.h"
+#include "../symlinks.h"
+#include "../wrapper.h"
 #include "dir.h"
+#include "gettext.h"
 #define SECURITY_WIN32
 #include <sspi.h>
 
@@ -237,7 +243,8 @@ static int core_restrict_inherited_handles = -1;
 static enum hide_dotfiles_type hide_dotfiles = HIDE_DOTFILES_DOTGITONLY;
 static char *unset_environment_variables;
 
-int mingw_core_config(const char *var, const char *value, void *cb)
+int mingw_core_config(const char *var, const char *value,
+		      const struct config_context *ctx, void *cb)
 {
 	if (!strcmp(var, "core.hidedotfiles")) {
 		if (value && !strcasecmp(value, "dotgitonly"))
@@ -1340,6 +1347,11 @@ static char *path_lookup(const char *cmd, int exe_only)
 	return prog;
 }
 
+char *mingw_locate_in_PATH(const char *cmd)
+{
+	return path_lookup(cmd, 0);
+}
+
 static const wchar_t *wcschrnul(const wchar_t *s, wchar_t c)
 {
 	while (*s && *s != c)
@@ -1396,8 +1408,7 @@ static wchar_t *make_environment_block(char **deltaenv)
 			p += s;
 		}
 
-		ALLOC_ARRAY(result, size);
-		COPY_ARRAY(result, wenv, size);
+		DUP_ARRAY(result, wenv, size);
 		FreeEnvironmentStringsW(wenv);
 		return result;
 	}
@@ -1839,16 +1850,13 @@ static int try_shell_exec(const char *cmd, char *const *argv)
 	if (prog) {
 		int exec_id;
 		int argc = 0;
-#ifndef _MSC_VER
-		const
-#endif
 		char **argv2;
 		while (argv[argc]) argc++;
 		ALLOC_ARRAY(argv2, argc + 1);
 		argv2[0] = (char *)cmd;	/* full path to the script file */
 		COPY_ARRAY(&argv2[1], &argv[1], argc);
-		exec_id = trace2_exec(prog, argv2);
-		pid = mingw_spawnv(prog, argv2, 1);
+		exec_id = trace2_exec(prog, (const char **)argv2);
+		pid = mingw_spawnv(prog, (const char **)argv2, 1);
 		if (pid >= 0) {
 			int status;
 			if (waitpid(pid, &status, 0) < 0)
@@ -2752,7 +2760,7 @@ int is_path_owned_by_current_sid(const char *path, struct strbuf *report)
 			/*
 			 * On FAT32 volumes, ownership is not actually recorded.
 			 */
-			strbuf_addf(report, "'%s' is on a file system that does"
+			strbuf_addf(report, "'%s' is on a file system that does "
 				    "not record ownership\n", path);
 		} else if (report) {
 			LPSTR str1, str2, to_free1 = NULL, to_free2 = NULL;

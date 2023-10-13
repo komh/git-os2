@@ -3,15 +3,24 @@
  *
  * Copyright (C) 2006 Johannes Schindelin
  */
-#define USE_THE_INDEX_COMPATIBILITY_MACROS
+#define USE_THE_INDEX_VARIABLE
 #include "builtin.h"
+#include "abspath.h"
+#include "advice.h"
 #include "config.h"
+#include "environment.h"
+#include "gettext.h"
+#include "name-hash.h"
+#include "object-file.h"
 #include "pathspec.h"
 #include "lockfile.h"
 #include "dir.h"
 #include "cache-tree.h"
 #include "string-list.h"
 #include "parse-options.h"
+#include "read-cache-ll.h"
+#include "repository.h"
+#include "setup.h"
 #include "submodule.h"
 #include "entry.h"
 
@@ -175,7 +184,7 @@ int cmd_mv(int argc, const char **argv, const char *prefix)
 	int src_dir_nr = 0, src_dir_alloc = 0;
 	struct strbuf a_src_dir = STRBUF_INIT;
 	enum update_mode *modes, dst_mode = 0;
-	struct stat st;
+	struct stat st, dest_st;
 	struct string_list src_for_dst = STRING_LIST_INIT_NODUP;
 	struct lock_file lock_file = LOCK_INIT;
 	struct cache_entry *ce;
@@ -295,7 +304,7 @@ int cmd_mv(int argc, const char **argv, const char *prefix)
 			goto act_on_entry;
 		}
 		if (S_ISDIR(st.st_mode)
-		    && lstat(dst, &st) == 0) {
+		    && lstat(dst, &dest_st) == 0) {
 			bad = _("cannot move directory over file");
 			goto act_on_entry;
 		}
@@ -489,7 +498,8 @@ remove_entry:
 			if ((mode & SPARSE) &&
 			    path_in_sparse_checkout(dst, &the_index)) {
 				/* from out-of-cone to in-cone */
-				int dst_pos = cache_name_pos(dst, strlen(dst));
+				int dst_pos = index_name_pos(&the_index, dst,
+							     strlen(dst));
 				struct cache_entry *dst_ce = the_index.cache[dst_pos];
 
 				dst_ce->ce_flags &= ~CE_SKIP_WORKTREE;
@@ -500,7 +510,8 @@ remove_entry:
 				   !(mode & SPARSE) &&
 				   !path_in_sparse_checkout(dst, &the_index)) {
 				/* from in-cone to out-of-cone */
-				int dst_pos = cache_name_pos(dst, strlen(dst));
+				int dst_pos = index_name_pos(&the_index, dst,
+							     strlen(dst));
 				struct cache_entry *dst_ce = the_index.cache[dst_pos];
 
 				/*

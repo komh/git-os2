@@ -258,8 +258,7 @@ macos-*)
 		MAKEFLAGS="$MAKEFLAGS PYTHON_PATH=$(which python3)"
 	else
 		MAKEFLAGS="$MAKEFLAGS PYTHON_PATH=$(which python2)"
-		MAKEFLAGS="$MAKEFLAGS NO_APPLE_COMMON_CRYPTO=NoThanks"
-		MAKEFLAGS="$MAKEFLAGS NO_OPENSSL=NoThanks"
+		MAKEFLAGS="$MAKEFLAGS APPLE_COMMON_CRYPTO_SHA1=Yes"
 	fi
 	;;
 esac
@@ -279,11 +278,8 @@ linux-leaks)
 	export GIT_TEST_PASSING_SANITIZE_LEAK=true
 	export GIT_TEST_SANITIZE_LEAK_LOG=true
 	;;
-linux-asan)
-	export SANITIZE=address
-	;;
-linux-ubsan)
-	export SANITIZE=undefined
+linux-asan-ubsan)
+	export SANITIZE=address,undefined
 	;;
 esac
 

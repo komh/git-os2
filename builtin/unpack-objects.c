@@ -1,13 +1,18 @@
 #include "builtin.h"
-#include "cache.h"
 #include "bulk-checkin.h"
 #include "config.h"
-#include "object-store.h"
+#include "environment.h"
+#include "gettext.h"
+#include "git-zlib.h"
+#include "hex.h"
+#include "object-store-ll.h"
 #include "object.h"
 #include "delta.h"
 #include "pack.h"
 #include "blob.h"
 #include "commit.h"
+#include "replace-object.h"
+#include "strbuf.h"
 #include "tag.h"
 #include "tree.h"
 #include "tree-walk.h"
@@ -210,7 +215,8 @@ static void write_cached_object(struct object *obj, struct obj_buffer *obj_buf)
  * Verify its reachability and validity recursively and write it out.
  */
 static int check_object(struct object *obj, enum object_type type,
-			void *data, struct fsck_options *options)
+			void *data UNUSED,
+			struct fsck_options *options UNUSED)
 {
 	struct obj_buffer *obj_buf;
 
@@ -442,7 +448,7 @@ static void unpack_delta_entry(enum object_type type, unsigned long delta_size,
 		delta_data = get_data(delta_size);
 		if (!delta_data)
 			return;
-		if (has_object_file(&base_oid))
+		if (repo_has_object_file(the_repository, &base_oid))
 			; /* Ok we have this one */
 		else if (resolve_against_held(nr, &base_oid,
 					      delta_data, delta_size))
@@ -508,7 +514,8 @@ static void unpack_delta_entry(enum object_type type, unsigned long delta_size,
 	if (resolve_against_held(nr, &base_oid, delta_data, delta_size))
 		return;
 
-	base = read_object_file(&base_oid, &type, &base_size);
+	base = repo_read_object_file(the_repository, &base_oid, &type,
+				     &base_size);
 	if (!base) {
 		error("failed to read delta-pack base object %s",
 		      oid_to_hex(&base_oid));
@@ -598,12 +605,12 @@ static void unpack_all(void)
 		die("unresolved deltas left after unpacking");
 }
 
-int cmd_unpack_objects(int argc, const char **argv, const char *prefix)
+int cmd_unpack_objects(int argc, const char **argv, const char *prefix UNUSED)
 {
 	int i;
 	struct object_id oid;
 
-	read_replace_refs = 0;
+	disable_replace_refs();
 
 	git_config(git_default_config, NULL);
 

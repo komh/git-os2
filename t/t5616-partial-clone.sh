@@ -257,8 +257,8 @@ test_expect_success 'partial clone with transfer.fsckobjects=1 works with submod
 	test_commit -C submodule mycommit &&
 
 	test_create_repo src_with_sub &&
-	test_config -C src_with_sub uploadpack.allowfilter 1 &&
-	test_config -C src_with_sub uploadpack.allowanysha1inwant 1 &&
+	git -C src_with_sub config uploadpack.allowfilter 1 &&
+	git -C src_with_sub config uploadpack.allowanysha1inwant 1 &&
 
 	test_config_global protocol.file.allow always &&
 
@@ -267,6 +267,12 @@ test_expect_success 'partial clone with transfer.fsckobjects=1 works with submod
 
 	git -c transfer.fsckobjects=1 \
 		clone --filter="blob:none" "file://$(pwd)/src_with_sub" dst &&
+	test_when_finished rm -rf dst
+'
+
+test_expect_success 'lazily fetched .gitmodules works' '
+	git clone --filter="blob:none" --no-checkout "file://$(pwd)/src_with_sub" dst &&
+	git -C dst fetch &&
 	test_when_finished rm -rf dst
 '
 
@@ -642,6 +648,49 @@ test_expect_success 'repack does not loosen promisor objects' '
 	test_when_finished "rm -rf client trace" &&
 	GIT_TRACE2_PERF="$(pwd)/trace" git -C client repack -A -d &&
 	grep "loosen_unused_packed_objects/loosened:0" trace
+'
+
+test_expect_success 'lazy-fetch in submodule succeeds' '
+	# setup
+	test_config_global protocol.file.allow always &&
+
+	test_when_finished "rm -rf src-sub" &&
+	git init src-sub &&
+	git -C src-sub config uploadpack.allowfilter 1 &&
+	git -C src-sub config uploadpack.allowanysha1inwant 1 &&
+
+	# This blob must be missing in the subsequent commit.
+	echo foo >src-sub/file &&
+	git -C src-sub add file &&
+	git -C src-sub commit -m "submodule one" &&
+	SUB_ONE=$(git -C src-sub rev-parse HEAD) &&
+
+	echo bar >src-sub/file &&
+	git -C src-sub add file &&
+	git -C src-sub commit -m "submodule two" &&
+	SUB_TWO=$(git -C src-sub rev-parse HEAD) &&
+
+	test_when_finished "rm -rf src-super" &&
+	git init src-super &&
+	git -C src-super config uploadpack.allowfilter 1 &&
+	git -C src-super config uploadpack.allowanysha1inwant 1 &&
+	git -C src-super submodule add ../src-sub src-sub &&
+
+	git -C src-super/src-sub checkout $SUB_ONE &&
+	git -C src-super add src-sub &&
+	git -C src-super commit -m "superproject one" &&
+
+	git -C src-super/src-sub checkout $SUB_TWO &&
+	git -C src-super add src-sub &&
+	git -C src-super commit -m "superproject two" &&
+
+	# the fetch
+	test_when_finished "rm -rf client" &&
+	git clone --filter=blob:none --also-filter-submodules \
+		--recurse-submodules "file://$(pwd)/src-super" client &&
+
+	# Trigger lazy-fetch from the superproject
+	git -C client restore --recurse-submodules --source=HEAD^ :/
 '
 
 . "$TEST_DIRECTORY"/lib-httpd.sh

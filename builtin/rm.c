@@ -3,16 +3,23 @@
  *
  * Copyright (C) Linus Torvalds 2006
  */
-#define USE_THE_INDEX_COMPATIBILITY_MACROS
+#define USE_THE_INDEX_VARIABLE
 #include "builtin.h"
 #include "advice.h"
 #include "config.h"
 #include "lockfile.h"
 #include "dir.h"
 #include "cache-tree.h"
+#include "gettext.h"
+#include "hash.h"
 #include "tree-walk.h"
+#include "object-name.h"
 #include "parse-options.h"
+#include "read-cache.h"
+#include "repository.h"
 #include "string-list.h"
+#include "setup.h"
+#include "sparse-index.h"
 #include "submodule.h"
 #include "pathspec.h"
 
@@ -86,7 +93,7 @@ static void submodules_absorb_gitdir_if_needed(void)
 			continue;
 
 		if (!submodule_uses_gitfile(name))
-			absorb_git_dir_into_superproject(name);
+			absorb_git_dir_into_superproject(name, NULL);
 	}
 }
 
@@ -370,7 +377,7 @@ int cmd_rm(int argc, const char **argv, const char *prefix)
 	 */
 	if (!force) {
 		struct object_id oid;
-		if (get_oid("HEAD", &oid))
+		if (repo_get_oid(the_repository, "HEAD", &oid))
 			oidclr(&oid);
 		if (check_local_mod(&oid, index_only))
 			exit(1);

@@ -14,14 +14,12 @@
 /bin-wrappers/
 /git
 /git-add
-/git-add--interactive
 /git-am
 /git-annotate
 /git-apply
 /git-archimport
 /git-archive
 /git-bisect
-/git-bisect--helper
 /git-blame
 /git-branch
 /git-bugreport
@@ -60,7 +58,6 @@
 /git-difftool
 /git-difftool--helper
 /git-describe
-/git-env--helper
 /git-fast-export
 /git-fast-import
 /git-fetch
@@ -225,6 +222,7 @@
 /TAGS
 /cscope*
 /compile_commands.json
+/.cache/
 *.hcc
 *.obj
 *.lib

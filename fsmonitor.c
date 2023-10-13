@@ -1,11 +1,13 @@
-#include "cache.h"
+#include "git-compat-util.h"
 #include "config.h"
 #include "dir.h"
+#include "environment.h"
 #include "ewah/ewok.h"
 #include "fsmonitor.h"
 #include "fsmonitor-ipc.h"
 #include "run-command.h"
 #include "strbuf.h"
+#include "trace2.h"
 
 #define INDEX_EXTENSION_VERSION1	(1)
 #define INDEX_EXTENSION_VERSION2	(2)
@@ -304,7 +306,7 @@ void refresh_fsmonitor(struct index_state *istate)
 	char *buf;
 	unsigned int i;
 	int is_trivial = 0;
-	struct repository *r = istate->repo ? istate->repo : the_repository;
+	struct repository *r = istate->repo;
 	enum fsmonitor_mode fsm_mode = fsm_settings__get_mode(r);
 	enum fsmonitor_reason reason = fsm_settings__get_reason(r);
 

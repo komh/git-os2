@@ -1,5 +1,10 @@
-#include "cache.h"
+#include "git-compat-util.h"
+#include "gettext.h"
+#include "hash.h"
+#include "mem-pool.h"
+#include "read-cache-ll.h"
 #include "split-index.h"
+#include "strbuf.h"
 #include "ewah/ewok.h"
 
 struct split_index *init_split_index(struct index_state *istate)
@@ -90,7 +95,8 @@ void move_cache_to_base_index(struct index_state *istate)
 		mem_pool_combine(istate->ce_mem_pool, istate->split_index->base->ce_mem_pool);
 	}
 
-	CALLOC_ARRAY(si->base, 1);
+	ALLOC_ARRAY(si->base, 1);
+	index_state_init(si->base, istate->repo);
 	si->base->version = istate->version;
 	/* zero timestamp disables racy test in ce_write_index() */
 	si->base->timestamp = istate->timestamp;

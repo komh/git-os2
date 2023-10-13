@@ -11,6 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       enabled: ${{ steps.check-ref.outputs.enabled }}${{ steps.skip-if-redundant.outputs.enabled }}
+      skip_concurrent: ${{ steps.check-ref.outputs.skip_concurrent }}
     steps:
       - name: try to clone ci-config branch
         run: |
@@ -34,7 +35,15 @@ jobs:
           then
             enabled=no
           fi
+
+          skip_concurrent=yes
+          if test -x config-repo/ci/config/skip-concurrent &&
+             ! config-repo/ci/config/skip-concurrent '${{ github.ref }}'
+          then
+            skip_concurrent=no
+          fi
           echo "enabled=$enabled" >>$GITHUB_OUTPUT
+          echo "skip_concurrent=$skip_concurrent" >>$GITHUB_OUTPUT
       - name: skip if the commit or tree was already tested
         id: skip-if-redundant
         uses: actions/github-script@v6
@@ -82,6 +91,9 @@ jobs:
     needs: ci-config
     if: needs.ci-config.outputs.enabled == 'yes'
     runs-on: windows-latest
+    concurrency:
+      group: windows-build-${{ github.ref }}
+      cancel-in-progress: ${{ needs.ci-config.outputs.skip_concurrent == 'yes' }}
     steps:
     - uses: actions/checkout@v3
     - uses: git-for-windows/setup-git-for-windows-sdk@v1
@@ -101,11 +113,14 @@ jobs:
   windows-test:
     name: win test
     runs-on: windows-latest
-    needs: [windows-build]
+    needs: [ci-config, windows-build]
     strategy:
       fail-fast: false
       matrix:
         nr: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    concurrency:
+      group: windows-test-${{ matrix.nr }}-${{ github.ref }}
+      cancel-in-progress: ${{ needs.ci-config.outputs.skip_concurrent == 'yes' }}
     steps:
     - name: download tracked files and build artifacts
       uses: actions/download-artifact@v3
@@ -132,11 +147,14 @@ jobs:
   vs-build:
     name: win+VS build
     needs: ci-config
-    if: needs.ci-config.outputs.enabled == 'yes'
+    if: github.event.repository.owner.login == 'git-for-windows' && needs.ci-config.outputs.enabled == 'yes'
     env:
       NO_PERL: 1
       GIT_CONFIG_PARAMETERS: "'user.name=CI' 'user.email=ci@git'"
     runs-on: windows-latest
+    concurrency:
+      group: vs-build-${{ github.ref }}
+      cancel-in-progress: ${{ needs.ci-config.outputs.skip_concurrent == 'yes' }}
     steps:
     - uses: actions/checkout@v3
     - uses: git-for-windows/setup-git-for-windows-sdk@v1
@@ -184,11 +202,14 @@ jobs:
   vs-test:
     name: win+VS test
     runs-on: windows-latest
-    needs: vs-build
+    needs: [ci-config, vs-build]
     strategy:
       fail-fast: false
       matrix:
         nr: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    concurrency:
+      group: vs-test-${{ matrix.nr }}-${{ github.ref }}
+      cancel-in-progress: ${{ needs.ci-config.outputs.skip_concurrent == 'yes' }}
     steps:
     - uses: git-for-windows/setup-git-for-windows-sdk@v1
     - name: download tracked files and build artifacts
@@ -218,13 +239,13 @@ jobs:
     name: ${{matrix.vector.jobname}} (${{matrix.vector.pool}})
     needs: ci-config
     if: needs.ci-config.outputs.enabled == 'yes'
+    concurrency:
+      group: ${{ matrix.vector.jobname }}-${{ matrix.vector.pool }}-${{ github.ref }}
+      cancel-in-progress: ${{ needs.ci-config.outputs.skip_concurrent == 'yes' }}
     strategy:
       fail-fast: false
       matrix:
         vector:
-          - jobname: linux-clang
-            cc: clang
-            pool: ubuntu-latest
           - jobname: linux-sha256
             cc: clang
             pool: ubuntu-latest
@@ -249,11 +270,8 @@ jobs:
           - jobname: linux-leaks
             cc: gcc
             pool: ubuntu-latest
-          - jobname: linux-asan
-            cc: gcc
-            pool: ubuntu-latest
-          - jobname: linux-ubsan
-            cc: gcc
+          - jobname: linux-asan-ubsan
+            cc: clang
             pool: ubuntu-latest
     env:
       CC: ${{matrix.vector.cc}}
@@ -265,8 +283,9 @@ jobs:
     - uses: actions/checkout@v3
     - run: ci/install-dependencies.sh
     - run: ci/run-build-and-tests.sh
-    - run: ci/print-test-failures.sh
+    - name: print test failures
       if: failure() && env.FAILED_TEST_ARTIFACTS != ''
+      run: ci/print-test-failures.sh
     - name: Upload failed tests' directories
       if: failure() && env.FAILED_TEST_ARTIFACTS != ''
       uses: actions/upload-artifact@v3
@@ -277,6 +296,9 @@ jobs:
     name: ${{matrix.vector.jobname}} (${{matrix.vector.image}})
     needs: ci-config
     if: needs.ci-config.outputs.enabled == 'yes'
+    concurrency:
+      group: dockerized-${{ matrix.vector.jobname }}-${{ matrix.vector.image }}-${{ github.ref }}
+      cancel-in-progress: ${{ needs.ci-config.outputs.skip_concurrent == 'yes' }}
     strategy:
       fail-fast: false
       matrix:
@@ -298,8 +320,9 @@ jobs:
       if: matrix.vector.jobname == 'linux32'
     - run: ci/install-docker-dependencies.sh
     - run: ci/run-build-and-tests.sh
-    - run: ci/print-test-failures.sh
+    - name: print test failures
       if: failure() && env.FAILED_TEST_ARTIFACTS != ''
+      run: ci/print-test-failures.sh
     - name: Upload failed tests' directories
       if: failure() && env.FAILED_TEST_ARTIFACTS != '' && matrix.vector.jobname != 'linux32'
       uses: actions/upload-artifact@v3
@@ -318,6 +341,9 @@ jobs:
     env:
       jobname: StaticAnalysis
     runs-on: ubuntu-22.04
+    concurrency:
+      group: static-analysis-${{ github.ref }}
+      cancel-in-progress: ${{ needs.ci-config.outputs.skip_concurrent == 'yes' }}
     steps:
     - uses: actions/checkout@v3
     - run: ci/install-dependencies.sh
@@ -329,6 +355,9 @@ jobs:
     env:
       jobname: sparse
     runs-on: ubuntu-20.04
+    concurrency:
+      group: sparse-${{ github.ref }}
+      cancel-in-progress: ${{ needs.ci-config.outputs.skip_concurrent == 'yes' }}
     steps:
     - name: Download a current `sparse` package
       # Ubuntu's `sparse` version is too old for us
@@ -347,6 +376,9 @@ jobs:
     name: documentation
     needs: ci-config
     if: needs.ci-config.outputs.enabled == 'yes'
+    concurrency:
+      group: documentation-${{ github.ref }}
+      cancel-in-progress: ${{ needs.ci-config.outputs.skip_concurrent == 'yes' }}
     env:
       jobname: Documentation
     runs-on: ubuntu-latest

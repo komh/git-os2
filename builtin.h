@@ -2,9 +2,6 @@
 #define BUILTIN_H
 
 #include "git-compat-util.h"
-#include "strbuf.h"
-#include "cache.h"
-#include "commit.h"
 
 /*
  * builtin API
@@ -50,10 +47,6 @@
  *	Make sure there is a work tree, i.e. the command cannot act
  *	on bare repositories.
  *	This only makes sense when `RUN_SETUP` is also set.
- *
- * `SUPPORT_SUPER_PREFIX`:
- *
- *	The built-in supports `--super-prefix`.
  *
  * `DELAY_PAGER_CONFIG`:
  *
@@ -111,12 +104,22 @@ void setup_auto_pager(const char *cmd, int def);
 
 int is_builtin(const char *s);
 
+/*
+ * Builtins which do not use RUN_SETUP should never see
+ * a prefix that is not empty; use this to protect downstream
+ * code which is not prepared to call prefix_filename(), etc.
+ */
+#define BUG_ON_NON_EMPTY_PREFIX(prefix) do { \
+	if ((prefix)) \
+		BUG("unexpected prefix in builtin: %s", (prefix)); \
+} while (0)
+
 int cmd_add(int argc, const char **argv, const char *prefix);
 int cmd_am(int argc, const char **argv, const char *prefix);
 int cmd_annotate(int argc, const char **argv, const char *prefix);
 int cmd_apply(int argc, const char **argv, const char *prefix);
 int cmd_archive(int argc, const char **argv, const char *prefix);
-int cmd_bisect__helper(int argc, const char **argv, const char *prefix);
+int cmd_bisect(int argc, const char **argv, const char *prefix);
 int cmd_blame(int argc, const char **argv, const char *prefix);
 int cmd_branch(int argc, const char **argv, const char *prefix);
 int cmd_bugreport(int argc, const char **argv, const char *prefix);

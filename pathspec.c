@@ -1,10 +1,18 @@
-#include "cache.h"
+#include "git-compat-util.h"
+#include "abspath.h"
 #include "config.h"
 #include "dir.h"
+#include "environment.h"
+#include "gettext.h"
 #include "pathspec.h"
 #include "attr.h"
+#include "read-cache.h"
+#include "repository.h"
+#include "setup.h"
 #include "strvec.h"
+#include "symlinks.h"
 #include "quote.h"
+#include "wildmatch.h"
 
 /*
  * Finds which of the given pathspecs match items in the index.
@@ -525,27 +533,32 @@ static int pathspec_item_cmp(const void *a_, const void *b_)
 	return strcmp(a->match, b->match);
 }
 
-static void NORETURN unsupported_magic(const char *pattern,
-				       unsigned magic)
+void pathspec_magic_names(unsigned magic, struct strbuf *out)
 {
-	struct strbuf sb = STRBUF_INIT;
 	int i;
 	for (i = 0; i < ARRAY_SIZE(pathspec_magic); i++) {
 		const struct pathspec_magic *m = pathspec_magic + i;
 		if (!(magic & m->bit))
 			continue;
-		if (sb.len)
-			strbuf_addstr(&sb, ", ");
+		if (out->len)
+			strbuf_addstr(out, ", ");
 
 		if (m->mnemonic)
-			strbuf_addf(&sb, _("'%s' (mnemonic: '%c')"),
+			strbuf_addf(out, _("'%s' (mnemonic: '%c')"),
 				    m->name, m->mnemonic);
 		else
-			strbuf_addf(&sb, "'%s'", m->name);
+			strbuf_addf(out, "'%s'", m->name);
 	}
+}
+
+static void NORETURN unsupported_magic(const char *pattern,
+				       unsigned magic)
+{
+	struct strbuf sb = STRBUF_INIT;
+	pathspec_magic_names(magic, &sb);
 	/*
 	 * We may want to substitute "this command" with a command
-	 * name. E.g. when add--interactive dies when running
+	 * name. E.g. when "git add -p" or "git add -i" dies when running
 	 * "checkout -p"
 	 */
 	die(_("%s: pathspec magic not supported by this command: %s"),
@@ -681,8 +694,7 @@ void copy_pathspec(struct pathspec *dst, const struct pathspec *src)
 	int i, j;
 
 	*dst = *src;
-	ALLOC_ARRAY(dst->items, dst->nr);
-	COPY_ARRAY(dst->items, src->items, dst->nr);
+	DUP_ARRAY(dst->items, src->items, dst->nr);
 
 	for (i = 0; i < dst->nr; i++) {
 		struct pathspec_item *d = &dst->items[i];
@@ -691,8 +703,7 @@ void copy_pathspec(struct pathspec *dst, const struct pathspec *src)
 		d->match = xstrdup(s->match);
 		d->original = xstrdup(s->original);
 
-		ALLOC_ARRAY(d->attr_match, d->attr_match_nr);
-		COPY_ARRAY(d->attr_match, s->attr_match, d->attr_match_nr);
+		DUP_ARRAY(d->attr_match, s->attr_match, d->attr_match_nr);
 		for (j = 0; j < d->attr_match_nr; j++) {
 			const char *value = s->attr_match[j].value;
 			d->attr_match[j].value = xstrdup_or_null(value);

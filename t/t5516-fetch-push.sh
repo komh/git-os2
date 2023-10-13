@@ -120,6 +120,17 @@ test_expect_success setup '
 
 '
 
+for cmd in push fetch
+do
+	for opt in ipv4 ipv6
+	do
+		test_expect_success "reject 'git $cmd --no-$opt'" '
+			test_must_fail git $cmd --no-$opt 2>err &&
+			grep "unknown option .no-$opt" err
+		'
+	done
+done
+
 test_expect_success 'fetch without wildcard' '
 	mk_empty testrepo &&
 	(
@@ -399,6 +410,11 @@ test_expect_success 'push with ambiguity' '
 	test_must_fail git push testrepo main:frotz &&
 	check_push_result testrepo $the_first_commit heads/frotz tags/frotz
 
+'
+
+test_expect_success 'push with onelevel ref' '
+	mk_test testrepo heads/main &&
+	test_must_fail git push testrepo HEAD:refs/onelevel
 '
 
 test_expect_success 'push with colon-less refspec (1)' '
@@ -896,6 +912,13 @@ test_expect_success 'push --delete refuses src:dest refspecs' '
 test_expect_success 'push --delete refuses empty string' '
 	mk_test testrepo heads/master &&
 	test_must_fail git push testrepo --delete ""
+'
+
+test_expect_success 'push --delete onelevel refspecs' '
+	mk_test testrepo heads/main &&
+	git -C testrepo update-ref refs/onelevel refs/heads/main &&
+	git push testrepo --delete refs/onelevel &&
+	test_must_fail git -C testrepo rev-parse --verify refs/onelevel
 '
 
 test_expect_success 'warn on push to HEAD of non-bare repository' '

@@ -1,7 +1,10 @@
-#include "cache.h"
+#include "git-compat-util.h"
 #include "lockfile.h"
 #include "bundle.h"
-#include "object-store.h"
+#include "environment.h"
+#include "gettext.h"
+#include "hex.h"
+#include "object-store-ll.h"
 #include "repository.h"
 #include "object.h"
 #include "commit.h"
@@ -12,6 +15,8 @@
 #include "refs.h"
 #include "strvec.h"
 #include "list-objects-filter-options.h"
+#include "connected.h"
+#include "write-or-die.h"
 
 static const char v2_bundle_signature[] = "# v2 git bundle\n";
 static const char v3_bundle_signature[] = "# v3 git bundle\n";
@@ -187,6 +192,21 @@ static int list_refs(struct string_list *r, int argc, const char **argv)
 /* Remember to update object flag allocation in object.h */
 #define PREREQ_MARK (1u<<16)
 
+struct string_list_iterator {
+	struct string_list *list;
+	size_t cur;
+};
+
+static const struct object_id *iterate_ref_map(void *cb_data)
+{
+	struct string_list_iterator *iter = cb_data;
+
+	if (iter->cur >= iter->list->nr)
+		return NULL;
+
+	return iter->list->items[iter->cur++].util;
+}
+
 int verify_bundle(struct repository *r,
 		  struct bundle_header *header,
 		  enum verify_bundle_flags flags)
@@ -196,26 +216,25 @@ int verify_bundle(struct repository *r,
 	 * to be verbose about the errors
 	 */
 	struct string_list *p = &header->prerequisites;
-	struct rev_info revs = REV_INFO_INIT;
-	const char *argv[] = {NULL, "--all", NULL};
-	struct commit *commit;
-	int i, ret = 0, req_nr;
+	int i, ret = 0;
 	const char *message = _("Repository lacks these prerequisite commits:");
+	struct string_list_iterator iter = {
+		.list = p,
+	};
+	struct check_connected_options opts = {
+		.quiet = 1,
+	};
 
 	if (!r || !r->objects || !r->objects->odb)
 		return error(_("need a repository to verify a bundle"));
 
-	repo_init_revisions(r, &revs, NULL);
 	for (i = 0; i < p->nr; i++) {
 		struct string_list_item *e = p->items + i;
 		const char *name = e->string;
 		struct object_id *oid = e->util;
 		struct object *o = parse_object(r, oid);
-		if (o) {
-			o->flags |= PREREQ_MARK;
-			add_pending_object(&revs, o, name);
+		if (o)
 			continue;
-		}
 		ret++;
 		if (flags & VERIFY_BUNDLE_QUIET)
 			continue;
@@ -223,37 +242,14 @@ int verify_bundle(struct repository *r,
 			error("%s", message);
 		error("%s %s", oid_to_hex(oid), name);
 	}
-	if (revs.pending.nr != p->nr)
+	if (ret)
 		goto cleanup;
-	req_nr = revs.pending.nr;
-	setup_revisions(2, argv, &revs, NULL);
 
-	list_objects_filter_copy(&revs.filter, &header->filter);
+	if ((ret = check_connected(iterate_ref_map, &iter, &opts)))
+		error(_("some prerequisite commits exist in the object store, "
+			"but are not connected to the repository's history"));
 
-	if (prepare_revision_walk(&revs))
-		die(_("revision walk setup failed"));
-
-	i = req_nr;
-	while (i && (commit = get_revision(&revs)))
-		if (commit->object.flags & PREREQ_MARK)
-			i--;
-
-	for (i = 0; i < p->nr; i++) {
-		struct string_list_item *e = p->items + i;
-		const char *name = e->string;
-		const struct object_id *oid = e->util;
-		struct object *o = parse_object(r, oid);
-		assert(o); /* otherwise we'd have returned early */
-		if (o->flags & SHOWN)
-			continue;
-		ret++;
-		if (flags & VERIFY_BUNDLE_QUIET)
-			continue;
-		if (ret == 1)
-			error("%s", message);
-		error("%s %s", oid_to_hex(oid), name);
-	}
-
+	/* TODO: preserve this verbose language. */
 	if (flags & VERIFY_BUNDLE_VERBOSE) {
 		struct string_list *r;
 
@@ -275,22 +271,13 @@ int verify_bundle(struct repository *r,
 			list_refs(r, 0, NULL);
 		}
 
-		printf_ln("The bundle uses this hash algorithm: %s",
+		printf_ln(_("The bundle uses this hash algorithm: %s"),
 			  header->hash_algo->name);
 		if (header->filter.choice)
-			printf_ln("The bundle uses this filter: %s",
+			printf_ln(_("The bundle uses this filter: %s"),
 				  list_objects_filter_spec(&header->filter));
 	}
 cleanup:
-	/* Clean up objects used, as they will be reused. */
-	for (i = 0; i < p->nr; i++) {
-		struct string_list_item *e = p->items + i;
-		struct object_id *oid = e->util;
-		commit = lookup_commit_reference_gently(r, oid, 1);
-		if (commit)
-			clear_commit_marks(commit, ALL_REV_FLAGS | PREREQ_MARK);
-	}
-	release_revisions(&revs);
 	return ret;
 }
 
@@ -310,7 +297,7 @@ static int is_tag_in_date_range(struct object *tag, struct rev_info *revs)
 	if (revs->max_age == -1 && revs->min_age == -1)
 		goto out;
 
-	buf = read_object_file(&tag->oid, &type, &size);
+	buf = repo_read_object_file(the_repository, &tag->oid, &type, &size);
 	if (!buf)
 		goto out;
 	line = memmem(buf, size, "\ntagger ", 8);
@@ -399,7 +386,8 @@ static int write_bundle_refs(int bundle_fd, struct rev_info *revs)
 
 		if (e->item->flags & UNINTERESTING)
 			continue;
-		if (dwim_ref(e->name, strlen(e->name), &oid, &ref, 0) != 1)
+		if (repo_dwim_ref(the_repository, e->name, strlen(e->name),
+				  &oid, &ref, 0) != 1)
 			goto skip_write_ref;
 		if (read_ref_full(e->name, RESOLVE_REF_READING, &oid, &flag))
 			flag = 0;
@@ -627,6 +615,10 @@ int unbundle(struct repository *r, struct bundle_header *header,
 	     enum verify_bundle_flags flags)
 {
 	struct child_process ip = CHILD_PROCESS_INIT;
+
+	if (verify_bundle(r, header, flags))
+		return -1;
+
 	strvec_pushl(&ip.args, "index-pack", "--fix-thin", "--stdin", NULL);
 
 	/* If there is a filter, then we need to create the promisor pack. */
@@ -638,8 +630,6 @@ int unbundle(struct repository *r, struct bundle_header *header,
 		strvec_clear(extra_index_pack_args);
 	}
 
-	if (verify_bundle(r, header, flags))
-		return -1;
 	ip.in = bundle_fd;
 	ip.no_stdout = 1;
 	ip.git_cmd = 1;

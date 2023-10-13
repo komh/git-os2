@@ -6,14 +6,23 @@
  * an insanely large number of attributes.
  */
 
-#include "cache.h"
+#include "git-compat-util.h"
 #include "config.h"
+#include "environment.h"
 #include "exec-cmd.h"
 #include "attr.h"
 #include "dir.h"
+#include "gettext.h"
+#include "path.h"
 #include "utf8.h"
 #include "quote.h"
+#include "read-cache-ll.h"
+#include "revision.h"
+#include "object-store-ll.h"
+#include "setup.h"
 #include "thread-utils.h"
+#include "tree-walk.h"
+#include "object-name.h"
 
 const char git_attr__true[] = "(builtin)true";
 const char git_attr__false[] = "\0(builtin)false";
@@ -603,8 +612,7 @@ struct attr_check *attr_check_dup(const struct attr_check *check)
 
 	ret->nr = check->nr;
 	ret->alloc = check->alloc;
-	ALLOC_ARRAY(ret->items, ret->nr);
-	COPY_ARRAY(ret->items, check->items, ret->nr);
+	DUP_ARRAY(ret->items, check->items, ret->nr);
 
 	return ret;
 }
@@ -745,14 +753,62 @@ static struct attr_stack *read_attr_from_file(const char *path, unsigned flags)
 	return res;
 }
 
-static struct attr_stack *read_attr_from_index(struct index_state *istate,
-					       const char *path,
-					       unsigned flags)
+static struct attr_stack *read_attr_from_buf(char *buf, const char *path,
+					     unsigned flags)
 {
 	struct attr_stack *res;
-	char *buf, *sp;
+	char *sp;
 	int lineno = 0;
-	size_t size;
+
+	if (!buf)
+		return NULL;
+
+	CALLOC_ARRAY(res, 1);
+	for (sp = buf; *sp;) {
+		char *ep;
+		int more;
+
+		ep = strchrnul(sp, '\n');
+		more = (*ep == '\n');
+		*ep = '\0';
+		handle_attr_line(res, sp, path, ++lineno, flags);
+		sp = ep + more;
+	}
+	free(buf);
+
+	return res;
+}
+
+static struct attr_stack *read_attr_from_blob(struct index_state *istate,
+					      const struct object_id *tree_oid,
+					      const char *path, unsigned flags)
+{
+	struct object_id oid;
+	unsigned long sz;
+	enum object_type type;
+	void *buf;
+	unsigned short mode;
+
+	if (!tree_oid)
+		return NULL;
+
+	if (get_tree_entry(istate->repo, tree_oid, path, &oid, &mode))
+		return NULL;
+
+	buf = repo_read_object_file(istate->repo, &oid, &type, &sz);
+	if (!buf || type != OBJ_BLOB) {
+		free(buf);
+		return NULL;
+	}
+
+	return read_attr_from_buf(buf, path, flags);
+}
+
+static struct attr_stack *read_attr_from_index(struct index_state *istate,
+					       const char *path, unsigned flags)
+{
+	char *buf;
+	unsigned long size;
 
 	if (!istate)
 		return NULL;
@@ -779,28 +835,19 @@ static struct attr_stack *read_attr_from_index(struct index_state *istate,
 		return NULL;
 	}
 
-	CALLOC_ARRAY(res, 1);
-	for (sp = buf; *sp; ) {
-		char *ep;
-		int more;
-
-		ep = strchrnul(sp, '\n');
-		more = (*ep == '\n');
-		*ep = '\0';
-		handle_attr_line(res, sp, path, ++lineno, flags);
-		sp = ep + more;
-	}
-	free(buf);
-	return res;
+	return read_attr_from_buf(buf, path, flags);
 }
 
 static struct attr_stack *read_attr(struct index_state *istate,
+				    const struct object_id *tree_oid,
 				    const char *path, unsigned flags)
 {
 	struct attr_stack *res = NULL;
 
 	if (direction == GIT_ATTR_INDEX) {
 		res = read_attr_from_index(istate, path, flags);
+	} else if (tree_oid) {
+		res = read_attr_from_blob(istate, tree_oid, path, flags);
 	} else if (!is_bare_repository()) {
 		if (direction == GIT_ATTR_CHECKOUT) {
 			res = read_attr_from_index(istate, path, flags);
@@ -824,7 +871,7 @@ static struct attr_stack *read_attr(struct index_state *istate,
 	return res;
 }
 
-static const char *git_etc_gitattributes(void)
+const char *git_attr_system_file(void)
 {
 	static const char *system_wide;
 	if (!system_wide)
@@ -832,7 +879,7 @@ static const char *git_etc_gitattributes(void)
 	return system_wide;
 }
 
-static const char *get_home_gitattributes(void)
+const char *git_attr_global_file(void)
 {
 	if (!git_attributes_file)
 		git_attributes_file = xdg_config_home("attributes");
@@ -840,7 +887,7 @@ static const char *get_home_gitattributes(void)
 	return git_attributes_file;
 }
 
-static int git_attr_system(void)
+int git_attr_system_is_enabled(void)
 {
 	return !git_env_bool("GIT_ATTR_NOSYSTEM", 0);
 }
@@ -860,6 +907,7 @@ static void push_stack(struct attr_stack **attr_stack_p,
 }
 
 static void bootstrap_attr_stack(struct index_state *istate,
+				 const struct object_id *tree_oid,
 				 struct attr_stack **stack)
 {
 	struct attr_stack *e;
@@ -873,19 +921,19 @@ static void bootstrap_attr_stack(struct index_state *istate,
 	push_stack(stack, e, NULL, 0);
 
 	/* system-wide frame */
-	if (git_attr_system()) {
-		e = read_attr_from_file(git_etc_gitattributes(), flags);
+	if (git_attr_system_is_enabled()) {
+		e = read_attr_from_file(git_attr_system_file(), flags);
 		push_stack(stack, e, NULL, 0);
 	}
 
 	/* home directory */
-	if (get_home_gitattributes()) {
-		e = read_attr_from_file(get_home_gitattributes(), flags);
+	if (git_attr_global_file()) {
+		e = read_attr_from_file(git_attr_global_file(), flags);
 		push_stack(stack, e, NULL, 0);
 	}
 
 	/* root directory */
-	e = read_attr(istate, GITATTRIBUTES_FILE, flags | READ_ATTR_NOFOLLOW);
+	e = read_attr(istate, tree_oid, GITATTRIBUTES_FILE, flags | READ_ATTR_NOFOLLOW);
 	push_stack(stack, e, xstrdup(""), 0);
 
 	/* info frame */
@@ -899,6 +947,7 @@ static void bootstrap_attr_stack(struct index_state *istate,
 }
 
 static void prepare_attr_stack(struct index_state *istate,
+			       const struct object_id *tree_oid,
 			       const char *path, int dirlen,
 			       struct attr_stack **stack)
 {
@@ -920,7 +969,7 @@ static void prepare_attr_stack(struct index_state *istate,
 	 * .gitattributes in deeper directories to shallower ones,
 	 * and finally use the built-in set as the default.
 	 */
-	bootstrap_attr_stack(istate, stack);
+	bootstrap_attr_stack(istate, tree_oid, stack);
 
 	/*
 	 * Pop the "info" one that is always at the top of the stack.
@@ -975,7 +1024,7 @@ static void prepare_attr_stack(struct index_state *istate,
 		strbuf_add(&pathbuf, path + pathbuf.len, (len - pathbuf.len));
 		strbuf_addf(&pathbuf, "/%s", GITATTRIBUTES_FILE);
 
-		next = read_attr(istate, pathbuf.buf, READ_ATTR_NOFOLLOW);
+		next = read_attr(istate, tree_oid, pathbuf.buf, READ_ATTR_NOFOLLOW);
 
 		/* reset the pathbuf to not include "/.gitattributes" */
 		strbuf_setlen(&pathbuf, len);
@@ -1095,8 +1144,8 @@ static void determine_macros(struct all_attrs_item *all_attrs,
  * Otherwise all attributes are collected.
  */
 static void collect_some_attrs(struct index_state *istate,
-			       const char *path,
-			       struct attr_check *check)
+			       const struct object_id *tree_oid,
+			       const char *path, struct attr_check *check)
 {
 	int pathlen, rem, dirlen;
 	const char *cp, *last_slash = NULL;
@@ -1115,7 +1164,7 @@ static void collect_some_attrs(struct index_state *istate,
 		dirlen = 0;
 	}
 
-	prepare_attr_stack(istate, path, dirlen, &check->stack);
+	prepare_attr_stack(istate, tree_oid, path, dirlen, &check->stack);
 	all_attrs_init(&g_attr_hashmap, check);
 	determine_macros(check->all_attrs, check->stack);
 
@@ -1123,13 +1172,44 @@ static void collect_some_attrs(struct index_state *istate,
 	fill(path, pathlen, basename_offset, check->stack, check->all_attrs, rem);
 }
 
+static const char *default_attr_source_tree_object_name;
+
+void set_git_attr_source(const char *tree_object_name)
+{
+	default_attr_source_tree_object_name = xstrdup(tree_object_name);
+}
+
+static void compute_default_attr_source(struct object_id *attr_source)
+{
+	if (!default_attr_source_tree_object_name)
+		default_attr_source_tree_object_name = getenv(GIT_ATTR_SOURCE_ENVIRONMENT);
+
+	if (!default_attr_source_tree_object_name || !is_null_oid(attr_source))
+		return;
+
+	if (repo_get_oid_treeish(the_repository, default_attr_source_tree_object_name, attr_source))
+		die(_("bad --attr-source or GIT_ATTR_SOURCE"));
+}
+
+static struct object_id *default_attr_source(void)
+{
+	static struct object_id attr_source;
+
+	if (is_null_oid(&attr_source))
+		compute_default_attr_source(&attr_source);
+	if (is_null_oid(&attr_source))
+		return NULL;
+	return &attr_source;
+}
+
 void git_check_attr(struct index_state *istate,
 		    const char *path,
 		    struct attr_check *check)
 {
 	int i;
+	const struct object_id *tree_oid = default_attr_source();
 
-	collect_some_attrs(istate, path, check);
+	collect_some_attrs(istate, tree_oid, path, check);
 
 	for (i = 0; i < check->nr; i++) {
 		unsigned int n = check->items[i].attr->attr_nr;
@@ -1144,9 +1224,10 @@ void git_all_attrs(struct index_state *istate,
 		   const char *path, struct attr_check *check)
 {
 	int i;
+	const struct object_id *tree_oid = default_attr_source();
 
 	attr_check_reset(check);
-	collect_some_attrs(istate, path, check);
+	collect_some_attrs(istate, tree_oid, path, check);
 
 	for (i = 0; i < check->all_attrs_nr; i++) {
 		const char *name = check->all_attrs[i].attr->name;
