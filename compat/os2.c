@@ -28,7 +28,10 @@
 #include <InnoTekLIBC/errno.h>
 
 #define BUILDING_COMPAT_OS2
-#include "../cache.h"
+#include "../git-compat-util.h"
+#include "../environment.h"
+#include "../string-list.h"
+#include "../strbuf.h"
 
 
 #ifndef PREFIX
