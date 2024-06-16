@@ -52,6 +52,11 @@ static void print_entry(struct credential *c)
 {
 	printf("username=%s\n", c->username);
 	printf("password=%s\n", c->password);
+	/*
+	 * OS/2 kLIBC requires to flush a stream explicitly when it is a socket.
+	 * Otherwise, buffered outputs are lost.
+	 */
+	fflush(stdout);
 }
 
 static void print_line(struct strbuf *buf)
