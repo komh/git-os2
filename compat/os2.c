@@ -1729,6 +1729,15 @@ static char *toutf8dup(const char *in)
 	return realloc(out, strlen(out) + 1);
 }
 
+static void flush( void )
+{
+  /*
+   * OS/2 kLIBC requires to flush a stream explicitly when it is a socket.
+   * Otherwise, buffered outputs are lost.
+   */
+  fflush(NULL);
+}
+
 int git_os2_main_prepare (int * p_argc, char ** * p_argv)
 {
   _control87(MCW_EM, MCW_EM); /* mask all FPEs */
@@ -1807,6 +1816,12 @@ int git_os2_main_prepare (int * p_argc, char ** * p_argv)
    * CRLF conversion of perl.
    */
    putenv("PERLIO=perlio");
+
+  /*
+   * Flush all streams at exit. This prevents buffered outputs from being lost,
+   * especially in case of a stream fdopen()ed from a socket.
+   */
+  atexit(flush);
 
 #ifdef i_need_debug_output
   {

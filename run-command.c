@@ -983,22 +983,6 @@ end_of_spawn:
 	else if (cmd->in)
 		close(cmd->in);
 
-#ifdef __OS2__
-	/*
-	 * When socketpair() is used as a back-end for pipe(), reading from
-	 * cmd->out does not wait for it to be filled even if it is in
-	 * blocking-mode if fdout[1] is closed. So, wait here instead before
-	 * closing fdout[1].
-	 */
-	if (need_out && cmd->git_cmd) {
-		struct pollfd pollfd;
-
-		pollfd.fd = cmd->out;
-		pollfd.events = POLLIN;
-		poll(&pollfd, 1, 1500); /* up to 1.5s at most */
-	}
-#endif
-
 	if (need_out)
 		close(fdout[1]);
 	else if (cmd->out)
