@@ -14,7 +14,7 @@ opts="
     --with-openssl
     --with-expat
     --without-tcltk
-    LDFLAGS='-Zomf -Zbin-files -Zhigh-mem'
+    LDFLAGS='-Zomf -Zbin-files -Zhigh-mem -Zstack 8192'
 "
 
 eval "$d/$n" $opts "$@" 2>&1 | tee "$n.log"
