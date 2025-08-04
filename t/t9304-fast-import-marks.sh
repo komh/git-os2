@@ -1,6 +1,7 @@
 #!/bin/sh
 
 test_description='test exotic situations with marks'
+
 . ./test-lib.sh
 
 test_expect_success 'setup dump of basic history' '

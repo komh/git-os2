@@ -5,7 +5,6 @@ test_description='git rebase with its hook(s)'
 GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
 export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
 
-TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 test_expect_success setup '
@@ -110,7 +109,9 @@ test_expect_success 'pre-rebase hook stops rebase (1)' '
 	git reset --hard side &&
 	test_must_fail git rebase main &&
 	test "z$(git symbolic-ref HEAD)" = zrefs/heads/test &&
-	test 0 = $(git rev-list HEAD...side | wc -l)
+	test 0 = $(git rev-list HEAD...side | wc -l) &&
+	test_must_fail git rebase --quit 2>err &&
+	test_grep "no rebase in progress" err
 '
 
 test_expect_success 'pre-rebase hook stops rebase (2)' '

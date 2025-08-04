@@ -2,10 +2,13 @@
  *
  * Copyright (C) 2005 Junio C Hamano
  */
+
+#define USE_THE_REPOSITORY_VARIABLE
+
 #include "git-compat-util.h"
 #include "diff.h"
 #include "diffcore.h"
-#include "object-store-ll.h"
+#include "object-file.h"
 #include "hashmap.h"
 #include "mem-pool.h"
 #include "oid-array.h"
@@ -30,7 +33,7 @@ static struct diff_rename_dst *locate_rename_dst(struct diff_filepair *p)
 {
 	/* Lookup by p->ONE->path */
 	int idx = break_idx ? strintmap_get(break_idx, p->one->path) : -1;
-	return (idx == -1) ? NULL : &rename_dst[idx];
+	return (idx == -1 || idx == rename_dst_nr) ? NULL : &rename_dst[idx];
 }
 
 /*
@@ -406,7 +409,7 @@ static const char *get_highest_rename_path(struct strintmap *counts)
 	return highest_destination_dir;
 }
 
-static char *UNKNOWN_DIR = "/";  /* placeholder -- short, illegal directory */
+static const char *UNKNOWN_DIR = "/";  /* placeholder -- short, illegal directory */
 
 static int dir_rename_already_determinable(struct strintmap *counts)
 {
@@ -429,8 +432,8 @@ static int dir_rename_already_determinable(struct strintmap *counts)
 }
 
 static void increment_count(struct dir_rename_info *info,
-			    char *old_dir,
-			    char *new_dir)
+			    const char *old_dir,
+			    const char *new_dir)
 {
 	struct strintmap *counts;
 	struct strmap_entry *e;
@@ -685,7 +688,6 @@ static void cleanup_dir_rename_info(struct dir_rename_info *info,
 	struct hashmap_iter iter;
 	struct strmap_entry *entry;
 	struct string_list to_remove = STRING_LIST_INIT_NODUP;
-	int i;
 
 	if (!info->setup)
 		return;
@@ -731,7 +733,7 @@ static void cleanup_dir_rename_info(struct dir_rename_info *info,
 		if (strintmap_contains(counts, UNKNOWN_DIR))
 			strintmap_remove(counts, UNKNOWN_DIR);
 	}
-	for (i = 0; i < to_remove.nr; ++i)
+	for (size_t i = 0; i < to_remove.nr; ++i)
 		strmap_remove(info->dir_rename_count,
 			      to_remove.items[i].string, 1);
 	string_list_clear(&to_remove, 0);
@@ -930,7 +932,7 @@ static int find_basename_matches(struct diff_options *options,
 	 * spend more cycles to find similarities between files, so it may
 	 * be less likely that this heuristic is wanted.  If someone is
 	 * doing break detection, that means they do not want filename
-	 * similarity to imply any form of content similiarity, and thus
+	 * similarity to imply any form of content similarity, and thus
 	 * this heuristic would definitely be incompatible.
 	 */
 
@@ -1385,7 +1387,7 @@ void diffcore_rename_extended(struct diff_options *options,
 	int detect_rename = options->detect_rename;
 	int minimum_score = options->rename_score;
 	struct diff_queue_struct *q = &diff_queued_diff;
-	struct diff_queue_struct outq;
+	struct diff_queue_struct outq = DIFF_QUEUE_INIT;
 	struct diff_score *mx;
 	int i, j, rename_count, skip_unmodified = 0;
 	int num_destinations, dst_cnt;
@@ -1404,7 +1406,7 @@ void diffcore_rename_extended(struct diff_options *options,
 
 	trace2_region_enter("diff", "setup", options->repo);
 	info.setup = 0;
-	assert(!dir_rename_count || strmap_empty(dir_rename_count));
+	ASSERT(!dir_rename_count || strmap_empty(dir_rename_count));
 	want_copies = (detect_rename == DIFF_DETECT_COPY);
 	if (dirs_removed && (break_idx || want_copies))
 		BUG("dirs_removed incompatible with break/copy detection");
@@ -1422,7 +1424,7 @@ void diffcore_rename_extended(struct diff_options *options,
 				 strcmp(options->single_follow, p->two->path))
 				continue; /* not interested */
 			else if (!options->flags.rename_empty &&
-				 is_empty_blob_oid(&p->two->oid))
+				 is_empty_blob_oid(&p->two->oid, the_repository->hash_algo))
 				continue;
 			else if (add_rename_dst(p) < 0) {
 				warning("skipping rename detection, detected"
@@ -1432,7 +1434,7 @@ void diffcore_rename_extended(struct diff_options *options,
 			}
 		}
 		else if (!options->flags.rename_empty &&
-			 is_empty_blob_oid(&p->one->oid))
+			 is_empty_blob_oid(&p->one->oid, the_repository->hash_algo))
 			continue;
 		else if (!DIFF_PAIR_UNMERGED(p) && !DIFF_FILE_VALID(p->two)) {
 			/*
@@ -1531,7 +1533,7 @@ void diffcore_rename_extended(struct diff_options *options,
 		 *   - remove ones not found in relevant_sources
 		 * and
 		 *   - remove ones in relevant_sources which are needed only
-		 *     for directory renames IF no ancestory directory
+		 *     for directory renames IF no ancestry directory
 		 *     actually needs to know any more individual path
 		 *     renames under them
 		 */
@@ -1565,6 +1567,7 @@ void diffcore_rename_extended(struct diff_options *options,
 	trace2_region_enter("diff", "inexact renames", options->repo);
 	if (options->show_rename_progress) {
 		progress = start_delayed_progress(
+				the_repository,
 				_("Performing inexact rename detection"),
 				(uint64_t)num_destinations * (uint64_t)num_sources);
 	}
@@ -1635,7 +1638,6 @@ void diffcore_rename_extended(struct diff_options *options,
 	 * are recorded in rename_dst.  The original list is still in *q.
 	 */
 	trace2_region_enter("diff", "write back to queue", options->repo);
-	DIFF_QUEUE_CLEAR(&outq);
 	for (i = 0; i < q->nr; i++) {
 		struct diff_filepair *p = q->queue[i];
 		struct diff_filepair *pair_to_free = NULL;
@@ -1667,9 +1669,10 @@ void diffcore_rename_extended(struct diff_options *options,
 			if (DIFF_PAIR_BROKEN(p)) {
 				/* broken delete */
 				struct diff_rename_dst *dst = locate_rename_dst(p);
-				if (!dst)
-					BUG("tracking failed somehow; failed to find associated dst for broken pair");
-				if (dst->is_rename)
+				if (options->single_follow && dst &&
+				    strcmp(dst->p->two->path, p->two->path))
+					dst = NULL;
+				if (dst && dst->is_rename)
 					/* counterpart is now rename/copy */
 					pair_to_free = p;
 			}

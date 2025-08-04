@@ -2,24 +2,26 @@
 #include "gettext.h"
 #include "hex.h"
 #include "oidmap.h"
-#include "object-store-ll.h"
+#include "object-store.h"
 #include "replace-object.h"
 #include "refs.h"
 #include "repository.h"
 #include "commit.h"
 
-static int register_replace_ref(struct repository *r,
-				const char *refname,
+static int register_replace_ref(const char *refname,
+				const char *referent UNUSED,
 				const struct object_id *oid,
 				int flag UNUSED,
-				void *cb_data UNUSED)
+				void *cb_data)
 {
+	struct repository *r = cb_data;
+
 	/* Get sha1 from refname */
 	const char *slash = strrchr(refname, '/');
 	const char *hash = slash ? slash + 1 : refname;
 	struct replace_object *repl_obj = xmalloc(sizeof(*repl_obj));
 
-	if (get_oid_hex(hash, &repl_obj->original.oid)) {
+	if (get_oid_hex_algop(hash, &repl_obj->original.oid, r->hash_algo)) {
 		free(repl_obj);
 		warning(_("bad replace ref name: %s"), refname);
 		return 0;
@@ -29,7 +31,7 @@ static int register_replace_ref(struct repository *r,
 	oidcpy(&repl_obj->replacement, oid);
 
 	/* Register new object */
-	if (oidmap_put(r->objects->replace_map, repl_obj))
+	if (oidmap_put(&r->objects->replace_map, repl_obj))
 		die(_("duplicate replace ref: %s"), refname);
 
 	return 0;
@@ -46,11 +48,10 @@ void prepare_replace_object(struct repository *r)
 		return;
 	}
 
-	r->objects->replace_map =
-		xmalloc(sizeof(*r->objects->replace_map));
-	oidmap_init(r->objects->replace_map, 0);
+	oidmap_init(&r->objects->replace_map, 0);
 
-	for_each_replace_ref(r, register_replace_ref, NULL);
+	refs_for_each_replace_ref(get_main_ref_store(r),
+				  register_replace_ref, r);
 	r->objects->replace_map_initialized = 1;
 
 	pthread_mutex_unlock(&r->objects->replace_mutex);
@@ -77,7 +78,7 @@ const struct object_id *do_lookup_replace_object(struct repository *r,
 	/* Try to recursively replace the object */
 	while (depth-- > 0) {
 		struct replace_object *repl_obj =
-			oidmap_get(r->objects->replace_map, cur);
+			oidmap_get(&r->objects->replace_map, cur);
 		if (!repl_obj)
 			return cur;
 		cur = &repl_obj->replacement;

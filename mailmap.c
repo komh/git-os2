@@ -1,13 +1,16 @@
+#define USE_THE_REPOSITORY_VARIABLE
+#define DISABLE_SIGN_COMPARE_WARNINGS
+
 #include "git-compat-util.h"
 #include "environment.h"
 #include "string-list.h"
 #include "mailmap.h"
 #include "object-name.h"
-#include "object-store-ll.h"
+#include "object-store.h"
 #include "setup.h"
 
-const char *git_mailmap_file;
-const char *git_mailmap_blob;
+char *git_mailmap_file;
+char *git_mailmap_blob;
 
 struct mailmap_info {
 	char *name;
@@ -140,11 +143,8 @@ static void read_mailmap_line(struct string_list *map, char *buffer)
 		add_mapping(map, name1, email1, name2, email2);
 }
 
-/* Flags for read_mailmap_file() */
-#define MAILMAP_NOFOLLOW (1<<0)
-
-static int read_mailmap_file(struct string_list *map, const char *filename,
-			     unsigned flags)
+int read_mailmap_file(struct string_list *map, const char *filename,
+		      unsigned flags)
 {
 	char buffer[1024];
 	FILE *f;
@@ -184,7 +184,7 @@ static void read_mailmap_string(struct string_list *map, char *buf)
 	}
 }
 
-static int read_mailmap_blob(struct string_list *map, const char *name)
+int read_mailmap_blob(struct string_list *map, const char *name)
 {
 	struct object_id oid;
 	char *buf;
@@ -199,8 +199,10 @@ static int read_mailmap_blob(struct string_list *map, const char *name)
 	buf = repo_read_object_file(the_repository, &oid, &type, &size);
 	if (!buf)
 		return error("unable to read mailmap object at %s", name);
-	if (type != OBJ_BLOB)
+	if (type != OBJ_BLOB) {
+		free(buf);
 		return error("mailmap is not a blob: %s", name);
+	}
 
 	read_mailmap_string(map, buf);
 
@@ -216,7 +218,7 @@ int read_mailmap(struct string_list *map)
 	map->cmp = namemap_cmp;
 
 	if (!git_mailmap_blob && is_bare_repository())
-		git_mailmap_blob = "HEAD:.mailmap";
+		git_mailmap_blob = xstrdup("HEAD:.mailmap");
 
 	if (!startup_info->have_repository || !is_bare_repository())
 		err |= read_mailmap_file(map, ".mailmap",

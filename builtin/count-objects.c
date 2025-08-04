@@ -3,18 +3,16 @@
  *
  * Copyright (c) 2006 Junio C Hamano
  */
-
+#define USE_THE_REPOSITORY_VARIABLE
 #include "builtin.h"
 #include "config.h"
 #include "dir.h"
-#include "environment.h"
 #include "gettext.h"
 #include "path.h"
-#include "repository.h"
 #include "parse-options.h"
 #include "quote.h"
 #include "packfile.h"
-#include "object-store-ll.h"
+#include "object-file.h"
 
 static unsigned long garbage;
 static off_t size_garbage;
@@ -69,7 +67,7 @@ static int count_loose(const struct object_id *oid, const char *path,
 	else {
 		loose_size += on_disk_bytes(st);
 		loose++;
-		if (verbose && has_object_pack(oid))
+		if (verbose && has_object_pack(the_repository, oid))
 			packed_loose++;
 	}
 	return 0;
@@ -95,7 +93,10 @@ static char const * const count_objects_usage[] = {
 	NULL
 };
 
-int cmd_count_objects(int argc, const char **argv, const char *prefix)
+int cmd_count_objects(int argc,
+		      const char **argv,
+		      const char *prefix,
+		      struct repository *repo UNUSED)
 {
 	int human_readable = 0;
 	struct option opts[] = {
@@ -113,10 +114,10 @@ int cmd_count_objects(int argc, const char **argv, const char *prefix)
 		usage_with_options(count_objects_usage, opts);
 	if (verbose) {
 		report_garbage = real_report_garbage;
-		report_linked_checkout_garbage();
+		report_linked_checkout_garbage(the_repository);
 	}
 
-	for_each_loose_file_in_objdir(get_object_directory(),
+	for_each_loose_file_in_objdir(repo_get_object_directory(the_repository),
 				      count_loose, count_cruft, NULL, NULL);
 
 	if (verbose) {

@@ -1,7 +1,9 @@
+#define USE_THE_REPOSITORY_VARIABLE
+
 #include "git-compat-util.h"
 #include "gettext.h"
 #include "hex.h"
-#include "object-store-ll.h"
+#include "object-store.h"
 #include "run-command.h"
 #include "sigchain.h"
 #include "connected.h"
@@ -52,7 +54,8 @@ int check_connected(oid_iterate_fn fn, void *cb_data,
 		strbuf_add(&idx_file, transport->pack_lockfiles.items[0].string,
 			   base_len);
 		strbuf_addstr(&idx_file, ".idx");
-		new_pack = add_packed_git(idx_file.buf, idx_file.len, 1);
+		new_pack = add_packed_git(the_repository, idx_file.buf,
+					  idx_file.len, 1);
 		strbuf_release(&idx_file);
 	}
 
@@ -76,7 +79,7 @@ int check_connected(oid_iterate_fn fn, void *cb_data,
 			for (p = get_all_packs(the_repository); p; p = p->next) {
 				if (!p->pack_promisor)
 					continue;
-				if (find_pack_entry_one(oid->hash, p))
+				if (find_pack_entry_one(oid, p))
 					goto promisor_pack_found;
 			}
 			/*
@@ -142,7 +145,7 @@ no_promisor_pack_found:
 		 * are sure the ref is good and not sending it to
 		 * rev-list for verification.
 		 */
-		if (new_pack && find_pack_entry_one(oid->hash, new_pack))
+		if (new_pack && find_pack_entry_one(oid, new_pack))
 			continue;
 
 		if (fprintf(rev_list_in, "%s\n", oid_to_hex(oid)) < 0)

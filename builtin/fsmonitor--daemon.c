@@ -1,19 +1,22 @@
+#define USE_THE_REPOSITORY_VARIABLE
+#define DISABLE_SIGN_COMPARE_WARNINGS
+
 #include "builtin.h"
 #include "abspath.h"
 #include "config.h"
-#include "environment.h"
+#include "dir.h"
 #include "gettext.h"
 #include "parse-options.h"
 #include "fsmonitor-ll.h"
 #include "fsmonitor-ipc.h"
-#include "fsmonitor-path-utils.h"
 #include "fsmonitor-settings.h"
 #include "compat/fsmonitor/fsm-health.h"
 #include "compat/fsmonitor/fsm-listen.h"
 #include "fsmonitor--daemon.h"
+
 #include "simple-ipc.h"
 #include "khash.h"
-#include "pkt-line.h"
+#include "run-command.h"
 #include "trace.h"
 #include "trace2.h"
 
@@ -129,8 +132,9 @@ struct fsmonitor_cookie_item {
 	enum fsmonitor_cookie_item_result result;
 };
 
-static int cookies_cmp(const void *data, const struct hashmap_entry *he1,
-		     const struct hashmap_entry *he2, const void *keydata)
+static int cookies_cmp(const void *data UNUSED,
+		       const struct hashmap_entry *he1,
+		       const struct hashmap_entry *he2, const void *keydata)
 {
 	const struct fsmonitor_cookie_item *a =
 		container_of(he1, const struct fsmonitor_cookie_item, entry);
@@ -1206,9 +1210,9 @@ static int fsmonitor_run_daemon_1(struct fsmonitor_daemon_state *state)
 	 * system event listener thread so that we have the IPC handle
 	 * before we need it.
 	 */
-	if (ipc_server_run_async(&state->ipc_server_data,
-				 state->path_ipc.buf, &ipc_opts,
-				 handle_client, state))
+	if (ipc_server_init_async(&state->ipc_server_data,
+				  state->path_ipc.buf, &ipc_opts,
+				  handle_client, state))
 		return error_errno(
 			_("could not start IPC thread pool on '%s'"),
 			state->path_ipc.buf);
@@ -1289,7 +1293,8 @@ static int fsmonitor_run_daemon(void)
 
 	/* Prepare to (recursively) watch the <worktree-root> directory. */
 	strbuf_init(&state.path_worktree_watch, 0);
-	strbuf_addstr(&state.path_worktree_watch, absolute_path(get_git_work_tree()));
+	strbuf_addstr(&state.path_worktree_watch,
+		      absolute_path(repo_get_work_tree(the_repository)));
 	state.nr_paths_watching = 1;
 
 	strbuf_init(&state.alias.alias, 0);
@@ -1309,7 +1314,9 @@ static int fsmonitor_run_daemon(void)
 	strbuf_addstr(&state.path_gitdir_watch, "/.git");
 	if (!is_directory(state.path_gitdir_watch.buf)) {
 		strbuf_reset(&state.path_gitdir_watch);
-		strbuf_addstr(&state.path_gitdir_watch, absolute_path(get_git_dir()));
+		strbuf_addstr(&state.path_gitdir_watch,
+			      absolute_path(repo_get_git_dir(the_repository)));
+		strbuf_strip_suffix(&state.path_gitdir_watch, "/.");
 		state.nr_paths_watching = 2;
 	}
 
@@ -1412,7 +1419,7 @@ done:
 	return err;
 }
 
-static int try_to_run_foreground_daemon(int detach_console)
+static int try_to_run_foreground_daemon(int detach_console MAYBE_UNUSED)
 {
 	/*
 	 * Technically, we don't need to probe for an existing daemon
@@ -1442,7 +1449,8 @@ static int try_to_run_foreground_daemon(int detach_console)
 
 static start_bg_wait_cb bg_wait_cb;
 
-static int bg_wait_cb(const struct child_process *cp, void *cb_data)
+static int bg_wait_cb(const struct child_process *cp UNUSED,
+		      void *cb_data UNUSED)
 {
 	enum ipc_active_state s = fsmonitor_ipc__get_state();
 
@@ -1518,7 +1526,10 @@ static int try_to_start_background_daemon(void)
 	}
 }
 
-int cmd_fsmonitor__daemon(int argc, const char **argv, const char *prefix)
+int cmd_fsmonitor__daemon(int argc,
+			  const char **argv,
+			  const char *prefix,
+			  struct repository *repo UNUSED)
 {
 	const char *subcmd;
 	enum fsmonitor_reason reason;
@@ -1581,14 +1592,14 @@ int cmd_fsmonitor__daemon(int argc, const char **argv, const char *prefix)
 }
 
 #else
-int cmd_fsmonitor__daemon(int argc, const char **argv, const char *prefix UNUSED)
+int cmd_fsmonitor__daemon(int argc, const char **argv, const char *prefix UNUSED, struct repository *repo UNUSED)
 {
 	struct option options[] = {
 		OPT_END()
 	};
 
-	if (argc == 2 && !strcmp(argv[1], "-h"))
-		usage_with_options(builtin_fsmonitor__daemon_usage, options);
+	show_usage_with_options_if_asked(argc, argv,
+					 builtin_fsmonitor__daemon_usage, options);
 
 	die(_("fsmonitor--daemon not supported on this platform"));
 }

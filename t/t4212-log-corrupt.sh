@@ -2,7 +2,6 @@
 
 test_description='git log with invalid commit headers'
 
-TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 test_expect_success 'setup' '
@@ -17,7 +16,7 @@ test_expect_success 'setup' '
 
 test_expect_success 'fsck notices broken commit' '
 	test_must_fail git fsck 2>actual &&
-	test_i18ngrep invalid.author actual
+	test_grep invalid.author actual
 '
 
 test_expect_success 'git log with broken author email' '

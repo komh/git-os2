@@ -2,7 +2,6 @@
 
 test_description='basic symbolic-ref tests'
 
-TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 # If the tests munging HEAD fail, they can break detection of
@@ -16,7 +15,7 @@ reset_to_sane() {
 test_expect_success 'setup' '
 	git symbolic-ref HEAD refs/heads/foo &&
 	test_commit file &&
-	"$TAR" cf .git.tar .git/
+	"$TAR" cf .git.tar .git
 '
 
 test_expect_success 'symbolic-ref read/write roundtrip' '
@@ -106,9 +105,8 @@ test_expect_success LONG_REF 'we can parse long symbolic ref' '
 '
 
 test_expect_success 'symbolic-ref reports failure in exit code' '
-	test_when_finished "rm -f .git/HEAD.lock" &&
-	>.git/HEAD.lock &&
-	test_must_fail git symbolic-ref HEAD refs/heads/whatever
+	# Create d/f conflict to simulate failure.
+	test_must_fail git symbolic-ref refs/heads refs/heads/foo
 '
 
 test_expect_success 'symbolic-ref writes reflog entry' '
@@ -171,8 +169,8 @@ test_expect_success 'symbolic-ref refuses invalid target for non-HEAD' '
 '
 
 test_expect_success 'symbolic-ref allows top-level target for non-HEAD' '
-	git symbolic-ref refs/heads/top-level FETCH_HEAD &&
-	git update-ref FETCH_HEAD HEAD &&
+	git symbolic-ref refs/heads/top-level ORIG_HEAD &&
+	git update-ref ORIG_HEAD HEAD &&
 	test_cmp_rev top-level HEAD
 '
 

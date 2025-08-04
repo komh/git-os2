@@ -2,7 +2,6 @@
 
 test_description='verify safe.bareRepository checks'
 
-TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 pwd="$(pwd)"
@@ -29,9 +28,20 @@ expect_rejected () {
 	grep -F "implicit-bare-repository:$pwd" "$pwd/trace.perf"
 }
 
-test_expect_success 'setup bare repo in worktree' '
+test_expect_success 'setup an embedded bare repo, secondary worktree and submodule' '
 	git init outer-repo &&
-	git init --bare outer-repo/bare-repo
+	git init --bare --initial-branch=main outer-repo/bare-repo &&
+	git -C outer-repo worktree add ../outer-secondary &&
+	test_path_is_dir outer-secondary &&
+	(
+		cd outer-repo &&
+		test_commit A &&
+		git push bare-repo +HEAD:refs/heads/main &&
+		git -c protocol.file.allow=always \
+			submodule add --name subn -- ./bare-repo subd
+	) &&
+	test_path_is_dir outer-repo/.git/worktrees/outer-secondary &&
+	test_path_is_dir outer-repo/.git/modules/subn
 '
 
 test_expect_success 'safe.bareRepository unset' '
@@ -53,8 +63,7 @@ test_expect_success 'safe.bareRepository in the repository' '
 	# safe.bareRepository must not be "explicit", otherwise
 	# git config fails with "fatal: not in a git directory" (like
 	# safe.directory)
-	test_config -C outer-repo/bare-repo safe.bareRepository \
-		all &&
+	test_config -C outer-repo/bare-repo safe.bareRepository all &&
 	test_config_global safe.bareRepository explicit &&
 	expect_rejected -C outer-repo/bare-repo
 '
@@ -76,6 +85,22 @@ test_expect_success 'safe.bareRepository in included file' '
 
 test_expect_success 'no trace when GIT_DIR is explicitly provided' '
 	expect_accepted_explicit "$pwd/outer-repo/bare-repo"
+'
+
+test_expect_success 'no trace when "bare repository" is .git' '
+	expect_accepted_implicit -C outer-repo/.git
+'
+
+test_expect_success 'no trace when "bare repository" is a subdir of .git' '
+	expect_accepted_implicit -C outer-repo/.git/objects
+'
+
+test_expect_success 'no trace in $GIT_DIR of secondary worktree' '
+	expect_accepted_implicit -C outer-repo/.git/worktrees/outer-secondary
+'
+
+test_expect_success 'no trace in $GIT_DIR of a submodule' '
+	expect_accepted_implicit -C outer-repo/.git/modules/subn
 '
 
 test_done

@@ -168,7 +168,7 @@ struct transport *transport_get(struct remote *, const char *);
  * Check whether a transport is allowed by the environment.
  *
  * Type should generally be the URL scheme, as described in
- * Documentation/git.txt
+ * Documentation/git.adoc
  *
  * from_user specifies if the transport was given by the user.  If unknown pass
  * a -1 to read from the environment to determine if the transport was given by
@@ -341,5 +341,9 @@ void transport_print_push_status(const char *dest, struct ref *refs,
 
 /* common method used by transport-helper.c and send-pack.c */
 void reject_atomic_push(struct ref *refs, int mirror_mode);
+
+/* common method to parse push-option or server-option from config */
+int parse_transport_option(const char *var, const char *value,
+			   struct string_list *transport_options);
 
 #endif

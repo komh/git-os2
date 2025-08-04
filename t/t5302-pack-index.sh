@@ -5,7 +5,6 @@
 
 test_description='pack index with 64-bit offsets and object CRC'
 
-TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 test_expect_success 'setup' '
@@ -282,8 +281,8 @@ test_expect_success 'index-pack --fsck-objects also warns upon missing tagger in
 test_expect_success 'index-pack -v --stdin produces progress for both phases' '
 	pack=$(git pack-objects --all pack </dev/null) &&
 	GIT_PROGRESS_DELAY=0 git index-pack -v --stdin <pack-$pack.pack 2>err &&
-	test_i18ngrep "Receiving objects" err &&
-	test_i18ngrep "Resolving deltas" err
+	test_grep "Receiving objects" err &&
+	test_grep "Resolving deltas" err
 '
 
 test_expect_success 'too-large packs report the breach' '

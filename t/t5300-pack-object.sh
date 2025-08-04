@@ -3,16 +3,15 @@
 # Copyright (c) 2005 Junio C Hamano
 #
 
-test_description='git pack-object
+test_description='git pack-object'
 
-'
 . ./test-lib.sh
 
 test_expect_success 'setup' '
 	rm -f .git/index* &&
-	perl -e "print \"a\" x 4096;" >a &&
-	perl -e "print \"b\" x 4096;" >b &&
-	perl -e "print \"c\" x 4096;" >c &&
+	test-tool genzeros 4096 | tr "\000" "a" >a &&
+	test-tool genzeros 4096 | tr "\000" "b" >b &&
+	test-tool genzeros 4096 | tr "\000" "c" >c &&
 	test-tool genrandom "seed a" 2097152 >a_big &&
 	test-tool genrandom "seed b" 2097152 >b_big &&
 	git update-index --add a a_big b b_big c &&
@@ -141,7 +140,7 @@ test_expect_success 'pack-object <stdin parsing: --stdin-packs handles garbage' 
 # usage: check_deltas <stderr_from_pack_objects> <cmp_op> <nr_deltas>
 # e.g.: check_deltas stderr -gt 0
 check_deltas() {
-	deltas=$(perl -lne '/delta (\d+)/ and print $1' "$1") &&
+	deltas=$(sed -n 's/Total [0-9][0-9]* (delta \([0-9][0-9]*\)).*/\1/p' "$1") &&
 	shift &&
 	if ! test "$deltas" "$@"
 	then
@@ -153,6 +152,11 @@ check_deltas() {
 test_expect_success 'pack without delta' '
 	packname_1=$(git pack-objects --progress --window=0 test-1 \
 			<obj-list 2>stderr) &&
+	check_deltas stderr = 0
+'
+
+test_expect_success 'negative window clamps to 0' '
+	git pack-objects --progress --window=-1 neg-window <obj-list 2>stderr &&
 	check_deltas stderr = 0
 '
 
@@ -211,7 +215,7 @@ test_expect_success 'unpack with OFS_DELTA (core.fsyncmethod=batch)' '
 	check_unpack test-3-${packname_3} obj-list "$BATCH_CONFIGURATION"
 '
 
-test_expect_success 'compare delta flavors' '
+test_expect_success PERL_TEST_HELPERS 'compare delta flavors' '
 	perl -e '\''
 		defined($_ = -s $_) or die for @ARGV;
 		exit 1 if $ARGV[0] <= $ARGV[1];
@@ -327,10 +331,8 @@ test_expect_success 'build pack index for an existing pack' '
 	git index-pack -o tmp.idx test-3.pack &&
 	cmp tmp.idx test-1-${packname_1}.idx &&
 
-	git index-pack --promisor=message test-3.pack &&
+	git index-pack test-3.pack &&
 	cmp test-3.idx test-1-${packname_1}.idx &&
-	echo message >expect &&
-	test_cmp expect test-3.promisor &&
 
 	cat test-2-${packname_2}.pack >test-3.pack &&
 	git index-pack -o tmp.idx test-2-${packname_2}.pack &&
@@ -441,6 +443,47 @@ test_expect_success 'index-pack with --strict' '
 	)
 '
 
+test_expect_success 'setup for --strict and --fsck-objects downgrading fsck msgs' '
+	git init strict &&
+	(
+		cd strict &&
+		test_commit first hello &&
+		cat >commit <<-EOF &&
+		tree $(git rev-parse HEAD^{tree})
+		parent $(git rev-parse HEAD)
+		author A U Thor
+		committer A U Thor
+
+		commit: this is a commit with bad emails
+
+		EOF
+		git hash-object --literally -t commit -w --stdin <commit >commit_list &&
+		git pack-objects test <commit_list >pack-name
+	)
+'
+
+test_with_bad_commit () {
+	must_fail_arg="$1" &&
+	must_pass_arg="$2" &&
+	(
+		cd strict &&
+		test_must_fail git index-pack "$must_fail_arg" "test-$(cat pack-name).pack" &&
+		git index-pack "$must_pass_arg" "test-$(cat pack-name).pack"
+	)
+}
+
+test_expect_success 'index-pack with --strict downgrading fsck msgs' '
+	test_with_bad_commit --strict --strict="missingEmail=ignore"
+'
+
+test_expect_success 'index-pack with --fsck-objects downgrading fsck msgs' '
+	test_with_bad_commit --fsck-objects --fsck-objects="missingEmail=ignore"
+'
+
+test_expect_success 'cleanup for --strict and --fsck-objects downgrading fsck msgs' '
+	rm -rf strict
+'
+
 test_expect_success 'honor pack.packSizeLimit' '
 	git config pack.packSizeLimit 3m &&
 	packname_10=$(git pack-objects test-10 <obj-list) &&
@@ -481,6 +524,24 @@ test_expect_success 'index-pack --strict <pack> works in non-repo' '
 	nongit git index-pack --strict --object-format=$(test_oid algo) ../foo.pack &&
 	test_path_is_file foo.idx
 '
+
+test_expect_success SHA1 'show-index works OK outside a repository' '
+	nongit git show-index <foo.idx
+'
+
+for hash in sha1 sha256
+do
+	test_expect_success 'show-index works OK outside a repository with hash algo passed in via --object-format' '
+		test_when_finished "rm -rf explicit-hash-$hash" &&
+		git init --object-format=$hash explicit-hash-$hash &&
+		test_commit -C explicit-hash-$hash one &&
+		git -C explicit-hash-$hash rev-parse one >in &&
+		git -C explicit-hash-$hash pack-objects explicit-hash-$hash <in &&
+		idx=$(echo explicit-hash-$hash/explicit-hash-$hash*.idx) &&
+		nongit git show-index --object-format=$hash <"$idx" >actual &&
+		test_line_count = 1 actual
+	'
+done
 
 test_expect_success !PTHREADS,!FAIL_PREREQS \
 	'index-pack --threads=N or pack.threads=N warns when no pthreads' '
@@ -541,7 +602,7 @@ test_expect_success 'make sure index-pack detects the SHA1 collision' '
 	(
 		cd corrupt &&
 		test_must_fail git index-pack -o ../bad.idx ../test-3.pack 2>msg &&
-		test_i18ngrep "SHA1 COLLISION FOUND" msg
+		test_grep "SHA1 COLLISION FOUND" msg
 	)
 '
 
@@ -549,7 +610,7 @@ test_expect_success 'make sure index-pack detects the SHA1 collision (large blob
 	(
 		cd corrupt &&
 		test_must_fail git -c core.bigfilethreshold=1 index-pack -o ../bad.idx ../test-3.pack 2>msg &&
-		test_i18ngrep "SHA1 COLLISION FOUND" msg
+		test_grep "SHA1 COLLISION FOUND" msg
 	)
 '
 
@@ -589,9 +650,77 @@ test_expect_success 'prefetch objects' '
 	test_line_count = 1 donelines
 '
 
-test_expect_success 'negative window clamps to 0' '
-	git pack-objects --progress --window=-1 neg-window <obj-list 2>stderr &&
-	check_deltas stderr = 0
+for hash in sha1 sha256
+do
+	test_expect_success "verify-pack with $hash packfile" '
+		test_when_finished "rm -rf repo" &&
+		git init --object-format=$hash repo &&
+		test_commit -C repo initial &&
+		git -C repo repack -ad &&
+		git -C repo verify-pack "$(pwd)"/repo/.git/objects/pack/*.idx &&
+		if test $hash = sha1
+		then
+			nongit git verify-pack "$(pwd)"/repo/.git/objects/pack/*.idx
+		else
+			# We have no way to identify the hash used by packfiles
+			# or indices, so we always fall back to SHA1.
+			nongit test_must_fail git verify-pack "$(pwd)"/repo/.git/objects/pack/*.idx &&
+			# But with an explicit object format we should succeed.
+			nongit git verify-pack --object-format=$hash "$(pwd)"/repo/.git/objects/pack/*.idx
+		fi
+	'
+
+	test_expect_success "index-pack outside of a $hash repository" '
+		test_when_finished "rm -rf repo" &&
+		git init --object-format=$hash repo &&
+		test_commit -C repo initial &&
+		git -C repo repack -ad &&
+		git -C repo index-pack --verify "$(pwd)"/repo/.git/objects/pack/*.pack &&
+		if test $hash = sha1
+		then
+			nongit git index-pack --verify "$(pwd)"/repo/.git/objects/pack/*.pack
+		else
+			# We have no way to identify the hash used by packfiles
+			# or indices, so we always fall back to SHA1.
+			nongit test_must_fail git index-pack --verify "$(pwd)"/repo/.git/objects/pack/*.pack 2>err &&
+			# But with an explicit object format we should succeed.
+			nongit git index-pack --object-format=$hash --verify "$(pwd)"/repo/.git/objects/pack/*.pack
+		fi
+	'
+done
+
+test_expect_success 'valid and invalid --name-hash-versions' '
+	sane_unset GIT_TEST_NAME_HASH_VERSION &&
+
+	# Valid values are hard to verify other than "do not fail".
+	# Performance tests will be more valuable to validate these versions.
+	# Negative values are converted to version 1.
+	for value in -1 1 2
+	do
+		git pack-objects base --all --name-hash-version=$value || return 1
+	done &&
+
+	# Invalid values have clear post-conditions.
+	for value in 0 3
+	do
+		test_must_fail git pack-objects base --all --name-hash-version=$value 2>err &&
+		test_grep "invalid --name-hash-version option" err || return 1
+	done
+'
+
+# The following test is not necessarily a permanent choice, but since we do not
+# have a "name hash version" bit in the .bitmap file format, we cannot write the
+# hash values into the .bitmap file without risking breakage later.
+#
+# TODO: Make these compatible in the future and replace this test with the
+# expected behavior when both are specified.
+test_expect_success '--name-hash-version=2 and --write-bitmap-index are incompatible' '
+	git pack-objects base --all --name-hash-version=2 --write-bitmap-index 2>err &&
+	test_grep "currently, --write-bitmap-index requires --name-hash-version=1" err &&
+
+	# --stdout option silently removes --write-bitmap-index
+	git pack-objects --stdout --all --name-hash-version=2 --write-bitmap-index >out 2>err &&
+	! test_grep "currently, --write-bitmap-index requires --name-hash-version=1" err
 '
 
 test_done

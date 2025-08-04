@@ -5,14 +5,15 @@
  * See COPYING for licensing conditions
  */
 
-#include "git-compat-util.h"
+#define USE_THE_REPOSITORY_VARIABLE
+
+#include "builtin.h"
 #include "config.h"
 #include "color.h"
 #include "builtin.h"
 #include "environment.h"
 #include "gettext.h"
 #include "hex.h"
-#include "repository.h"
 #include "commit.h"
 #include "diff.h"
 #include "revision.h"
@@ -25,10 +26,9 @@
 #include "userdiff.h"
 #include "line-range.h"
 #include "line-log.h"
-#include "dir.h"
 #include "progress.h"
 #include "object-name.h"
-#include "object-store-ll.h"
+#include "object-store.h"
 #include "pager.h"
 #include "blame.h"
 #include "refs.h"
@@ -36,17 +36,17 @@
 #include "tag.h"
 #include "write-or-die.h"
 
-static char blame_usage[] = N_("git blame [<options>] [<rev-opts>] [<rev>] [--] <file>");
-static char annotate_usage[] = N_("git annotate [<options>] [<rev-opts>] [<rev>] [--] <file>");
+static const char blame_usage[] = N_("git blame [<options>] [<rev-opts>] [<rev>] [--] <file>");
+static const char annotate_usage[] = N_("git annotate [<options>] [<rev-opts>] [<rev>] [--] <file>");
 
-static const char *blame_opt_usage[] = {
+static const char *const blame_opt_usage[] = {
 	blame_usage,
 	"",
 	N_("<rev-opts> are documented in git-rev-list(1)"),
 	NULL
 };
 
-static const char *annotate_opt_usage[] = {
+static const char *const annotate_opt_usage[] = {
 	annotate_usage,
 	"",
 	N_("<rev-opts> are documented in git-rev-list(1)"),
@@ -68,7 +68,7 @@ static int no_whole_file_rename;
 static int show_progress;
 static char repeated_meta_color[COLOR_MAXLEN];
 static int coloring_mode;
-static struct string_list ignore_revs_file_list = STRING_LIST_INIT_NODUP;
+static struct string_list ignore_revs_file_list = STRING_LIST_INIT_DUP;
 static int mark_unblamable_lines;
 static int mark_ignored_lines;
 
@@ -135,7 +135,7 @@ static void get_ac_line(const char *inbuf, const char *what,
 {
 	struct ident_split ident;
 	size_t len, maillen, namelen;
-	char *tmp, *endp;
+	const char *tmp, *endp;
 	const char *namebuf, *mailbuf;
 
 	tmp = strstr(inbuf, what);
@@ -317,7 +317,7 @@ static const char *format_time(timestamp_t time, const char *tz_str,
 		size_t time_width;
 		int tz;
 		tz = atoi(tz_str);
-		time_str = show_date(time, tz, &blame_date_mode);
+		time_str = show_date(time, tz, blame_date_mode);
 		strbuf_addstr(&time_buf, time_str);
 		/*
 		 * Add space paddings to time_buf to display a fixed width
@@ -351,6 +351,19 @@ static void emit_porcelain_details(struct blame_origin *suspect, int repeat)
 		write_filename_info(suspect);
 }
 
+/*
+ * Information which needs to be printed per-line goes here. Any
+ * information which can be clubbed on a commit/file level, should
+ * be printed via 'emit_one_suspect_detail()'.
+ */
+static void emit_porcelain_per_line_details(struct blame_entry *ent)
+{
+	if (mark_unblamable_lines && ent->unblamable)
+		puts("unblamable");
+	if (mark_ignored_lines && ent->ignored)
+		puts("ignored");
+}
+
 static void emit_porcelain(struct blame_scoreboard *sb, struct blame_entry *ent,
 			   int opt)
 {
@@ -367,6 +380,7 @@ static void emit_porcelain(struct blame_scoreboard *sb, struct blame_entry *ent,
 	       ent->lno + 1,
 	       ent->num_lines);
 	emit_porcelain_details(suspect, repeat);
+	emit_porcelain_per_line_details(ent);
 
 	cp = blame_nth_line(sb, ent->lno);
 	for (cnt = 0; cnt < ent->num_lines; cnt++) {
@@ -377,6 +391,7 @@ static void emit_porcelain(struct blame_scoreboard *sb, struct blame_entry *ent,
 			       ent->lno + 1 + cnt);
 			if (repeat)
 				emit_porcelain_details(suspect, 1);
+			emit_porcelain_per_line_details(ent);
 		}
 		putchar('\t');
 		do {
@@ -467,9 +482,14 @@ static void emit_other(struct blame_scoreboard *sb, struct blame_entry *ent, int
 		reset = GIT_COLOR_RESET;
 	}
 
+	if (abbrev < MINIMUM_ABBREV)
+		BUG("abbreviation is smaller than minimum length: %d < %d",
+		    abbrev, MINIMUM_ABBREV);
+
 	for (cnt = 0; cnt < ent->num_lines; cnt++) {
 		char ch;
-		int length = (opt & OUTPUT_LONG_OBJECT_NAME) ? the_hash_algo->hexsz : abbrev;
+		size_t length = (opt & OUTPUT_LONG_OBJECT_NAME) ?
+			the_hash_algo->hexsz : (size_t) abbrev;
 
 		if (opt & OUTPUT_COLOR_LINE) {
 			if (cnt > 0) {
@@ -484,9 +504,9 @@ static void emit_other(struct blame_scoreboard *sb, struct blame_entry *ent, int
 			fputs(color, stdout);
 
 		if (suspect->commit->object.flags & UNINTERESTING) {
-			if (blank_boundary)
-				memset(hex, ' ', length);
-			else if (!(opt & OUTPUT_ANNOTATE_COMPAT)) {
+			if (blank_boundary) {
+				memset(hex, ' ', strlen(hex));
+			} else if (!(opt & OUTPUT_ANNOTATE_COMPAT)) {
 				length--;
 				putchar('^');
 			}
@@ -500,7 +520,8 @@ static void emit_other(struct blame_scoreboard *sb, struct blame_entry *ent, int
 			length--;
 			putchar('?');
 		}
-		printf("%.*s", length, hex);
+
+		printf("%.*s", (int)(length < GIT_MAX_HEXSZ ? length : GIT_MAX_HEXSZ), hex);
 		if (opt & OUTPUT_ANNOTATE_COMPAT) {
 			const char *name;
 			if (opt & OUTPUT_SHOW_EMAIL)
@@ -688,7 +709,7 @@ static unsigned parse_score(const char *arg)
 	return score;
 }
 
-static const char *add_prefix(const char *prefix, const char *path)
+static char *add_prefix(const char *prefix, const char *path)
 {
 	return prefix_path(prefix, prefix ? strlen(prefix) : 0, path);
 }
@@ -719,13 +740,14 @@ static int git_blame_config(const char *var, const char *value,
 		return 0;
 	}
 	if (!strcmp(var, "blame.ignorerevsfile")) {
-		const char *str;
+		char *str;
 		int ret;
 
 		ret = git_config_pathname(&str, var, value);
 		if (ret)
 			return ret;
 		string_list_insert(&ignore_revs_file_list, str);
+		free(str);
 		return 0;
 	}
 	if (!strcmp(var, "blame.markunblamablelines")) {
@@ -748,6 +770,8 @@ static int git_blame_config(const char *var, const char *value,
 	}
 
 	if (!strcmp(var, "blame.coloring")) {
+		if (!value)
+			return config_error_nonbool(var);
 		if (!strcmp(value, "repeatedLines")) {
 			coloring_mode |= OUTPUT_COLOR_LINE;
 		} else if (!strcmp(value, "highlightRecent")) {
@@ -851,6 +875,7 @@ static void build_ignorelist(struct blame_scoreboard *sb,
 			oidset_clear(&sb->ignore_list);
 		else
 			oidset_parse_file_carefully(&sb->ignore_list, i->string,
+						    the_repository->hash_algo,
 						    peel_to_commit_oid, sb);
 	}
 	for_each_string_list_item(i, ignore_rev_list) {
@@ -861,10 +886,13 @@ static void build_ignorelist(struct blame_scoreboard *sb,
 	}
 }
 
-int cmd_blame(int argc, const char **argv, const char *prefix)
+int cmd_blame(int argc,
+	      const char **argv,
+	      const char *prefix,
+	      struct repository *repo UNUSED)
 {
 	struct rev_info revs;
-	const char *path;
+	char *path = NULL;
 	struct blame_scoreboard sb;
 	struct blame_origin *o;
 	struct blame_entry *ent = NULL;
@@ -914,10 +942,9 @@ int cmd_blame(int argc, const char **argv, const char *prefix)
 	struct range_set ranges;
 	unsigned int range_i;
 	long anchor;
-	const int hexsz = the_hash_algo->hexsz;
 	long num_lines = 0;
 	const char *str_usage = cmd_is_annotate ? annotate_usage : blame_usage;
-	const char **opt_usage = cmd_is_annotate ? annotate_opt_usage : blame_opt_usage;
+	const char *const *opt_usage = cmd_is_annotate ? annotate_opt_usage : blame_opt_usage;
 
 	setup_default_color_by_age();
 	git_config(git_blame_config, &output_option);
@@ -972,11 +999,11 @@ parse_done:
 	} else if (show_progress < 0)
 		show_progress = isatty(2);
 
-	if (0 < abbrev && abbrev < hexsz)
+	if (0 < abbrev && abbrev < (int)the_hash_algo->hexsz)
 		/* one more abbrev length is needed for the boundary commit */
 		abbrev++;
 	else if (!abbrev)
-		abbrev = hexsz;
+		abbrev = the_hash_algo->hexsz;
 
 	if (revs_file && read_ancestry(revs_file))
 		die_errno("reading graft file '%s' failed", revs_file);
@@ -1028,7 +1055,7 @@ parse_done:
 		blame_date_width = sizeof("Thu Oct 19 16:00:04 2006 -0700");
 		break;
 	case DATE_STRFTIME:
-		blame_date_width = strlen(show_date(0, 0, &blame_date_mode)) + 1; /* add the null */
+		blame_date_width = strlen(show_date(0, 0, blame_date_mode)) + 1; /* add the null */
 		break;
 	}
 	blame_date_width -= 1; /* strip the null */
@@ -1079,7 +1106,7 @@ parse_done:
 			path = add_prefix(prefix, argv[1]);
 			argv[1] = argv[2];
 		} else {	/* (2a) */
-			if (argc == 2 && is_a_rev(argv[1]) && !get_git_work_tree())
+			if (argc == 2 && is_a_rev(argv[1]) && !repo_get_work_tree(the_repository))
 				die("missing <path> to blame");
 			path = add_prefix(prefix, argv[argc - 1]);
 		}
@@ -1092,8 +1119,8 @@ parse_done:
 		struct commit *head_commit;
 		struct object_id head_oid;
 
-		if (!resolve_ref_unsafe("HEAD", RESOLVE_REF_READING,
-					&head_oid, NULL) ||
+		if (!refs_resolve_ref_unsafe(get_main_ref_store(the_repository), "HEAD", RESOLVE_REF_READING,
+					     &head_oid, NULL) ||
 		    !(head_commit = lookup_commit_reference_gently(revs.repo,
 							     &head_oid, 1)))
 			die("no such ref: HEAD");
@@ -1182,14 +1209,16 @@ parse_done:
 	sb.found_guilty_entry = &found_guilty_entry;
 	sb.found_guilty_entry_data = &pi;
 	if (show_progress)
-		pi.progress = start_delayed_progress(_("Blaming lines"), num_lines);
+		pi.progress = start_delayed_progress(the_repository,
+						     _("Blaming lines"),
+						     num_lines);
 
 	assign_blame(&sb, opt);
 
 	stop_progress(&pi.progress);
 
 	if (!incremental)
-		setup_pager();
+		setup_pager(the_repository);
 	else
 		goto cleanup;
 
@@ -1212,12 +1241,6 @@ parse_done:
 		output_option &= ~(OUTPUT_COLOR_LINE | OUTPUT_SHOW_AGE_WITH_COLOR);
 
 	output(&sb, output_option);
-	free((void *)sb.final_buf);
-	for (ent = sb.ent; ent; ) {
-		struct blame_entry *e = ent->next;
-		free(ent);
-		ent = e;
-	}
 
 	if (show_stats) {
 		printf("num read blob: %d\n", sb.num_read_blob);
@@ -1226,6 +1249,13 @@ parse_done:
 	}
 
 cleanup:
+	for (ent = sb.ent; ent; ) {
+		struct blame_entry *e = ent->next;
+		free(ent);
+		ent = e;
+	}
+
+	free(path);
 	cleanup_scoreboard(&sb);
 	release_revisions(&revs);
 	return 0;

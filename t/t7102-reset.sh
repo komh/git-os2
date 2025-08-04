@@ -12,21 +12,31 @@ export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
 
 . ./test-lib.sh
 
-commit_msg () {
-	# String "modify 2nd file (changed)" partly in German
-	# (translated with Google Translate),
-	# encoded in UTF-8, used as a commit log message below.
-	msg="modify 2nd file (ge\303\244ndert)\n"
-	if test -n "$1"
-	then
-		printf "$msg" | iconv -f utf-8 -t "$1"
-	else
-		printf "$msg"
-	fi
-}
+if test_have_prereq ICONV
+then
+	commit_msg () {
+		# String "modify 2nd file (changed)" partly in German
+		# (translated with Google Translate),
+		# encoded in UTF-8, used as a commit log message below.
+		msg="modify 2nd file (ge\303\244ndert)\n"
+		if test -n "$1"
+		then
+			printf "$msg" | iconv -f utf-8 -t "$1"
+		else
+			printf "$msg"
+		fi
+	}
 
-# Tested non-UTF-8 encoding
-test_encoding="ISO8859-1"
+	# Tested non-UTF-8 encoding
+	test_encoding="ISO8859-1"
+else
+	commit_msg () {
+		echo "modify 2nd file (geandert)"
+	}
+
+	# Tested non-UTF-8 encoding
+	test_encoding="UTF-8"
+fi
 
 test_expect_success 'creating initial files and commits' '
 	test_tick &&
@@ -614,6 +624,14 @@ test_expect_success 'reset --mixed sets up work tree' '
 	) &&
 	git --git-dir=mixed_worktree/.git --work-tree=mixed_worktree reset >actual &&
 	test_must_be_empty actual
+'
+
+test_expect_success 'reset handles --end-of-options' '
+	git update-ref refs/heads/--foo HEAD^ &&
+	git log -1 --format=%s refs/heads/--foo >expect &&
+	git reset --hard --end-of-options --foo &&
+	git log -1 --format=%s HEAD >actual &&
+	test_cmp expect actual
 '
 
 test_done

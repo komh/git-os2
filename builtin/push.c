@@ -1,20 +1,21 @@
 /*
  * "git push"
  */
+
+#define USE_THE_REPOSITORY_VARIABLE
+
 #include "builtin.h"
 #include "advice.h"
 #include "branch.h"
 #include "config.h"
 #include "environment.h"
 #include "gettext.h"
-#include "refs.h"
 #include "refspec.h"
 #include "run-command.h"
 #include "remote.h"
 #include "transport.h"
 #include "parse-options.h"
 #include "pkt-line.h"
-#include "repository.h"
 #include "submodule.h"
 #include "submodule-config.h"
 #include "send-pack.h"
@@ -73,13 +74,15 @@ static void refspec_append_mapped(struct refspec *refspec, const char *ref,
 	const char *branch_name;
 
 	if (remote->push.nr) {
-		struct refspec_item query;
-		memset(&query, 0, sizeof(struct refspec_item));
-		query.src = matched->name;
-		if (!query_refspecs(&remote->push, &query) && query.dst) {
+		struct refspec_item query = {
+			.src = matched->name,
+		};
+
+		if (!refspec_find_match(&remote->push, &query) && query.dst) {
 			refspec_appendf(refspec, "%s%s:%s",
 					query.force ? "+" : "",
 					query.src, query.dst);
+			free(query.dst);
 			return;
 		}
 	}
@@ -97,9 +100,8 @@ static void refspec_append_mapped(struct refspec *refspec, const char *ref,
 	refspec_append(refspec, ref);
 }
 
-static void set_refspecs(const char **refs, int nr, const char *repo)
+static void set_refspecs(const char **refs, int nr, struct remote *remote)
 {
-	struct remote *remote = NULL;
 	struct ref *local_refs = NULL;
 	int i;
 
@@ -125,31 +127,14 @@ static void set_refspecs(const char **refs, int nr, const char *repo)
 				local_refs = get_local_heads();
 
 			/* Does "ref" uniquely name our ref? */
-			if (count_refspec_match(ref, local_refs, &matched) != 1) {
+			if (count_refspec_match(ref, local_refs, &matched) != 1)
 				refspec_append(&rs, ref);
-			} else {
-				/* lazily grab remote */
-				if (!remote)
-					remote = remote_get(repo);
-				if (!remote)
-					BUG("must get a remote for repo '%s'", repo);
-
+			else
 				refspec_append_mapped(&rs, ref, remote, matched);
-			}
 		} else
 			refspec_append(&rs, ref);
 	}
 	free_refs(local_refs);
-}
-
-static int push_url_of_remote(struct remote *remote, const char ***url_p)
-{
-	if (remote->pushurl_nr) {
-		*url_p = remote->pushurl;
-		return remote->pushurl_nr;
-	}
-	*url_p = remote->url;
-	return remote->url_nr;
 }
 
 static NORETURN void die_push_simple(struct branch *branch,
@@ -392,7 +377,7 @@ static int push_with_options(struct transport *transport, struct refspec *rs,
 	if (!is_empty_cas(&cas)) {
 		if (!transport->smart_options)
 			die("underlying transport does not support --%s option",
-			    CAS_OPT_NAME);
+			    "force-with-lease");
 		transport->smart_options->cas = &cas;
 	}
 
@@ -434,9 +419,8 @@ static int do_push(int flags,
 		   const struct string_list *push_options,
 		   struct remote *remote)
 {
-	int i, errs;
-	const char **url;
-	int url_nr;
+	int errs;
+	struct strvec *url;
 	struct refspec *push_refspec = &rs;
 
 	if (push_options->nr)
@@ -449,19 +433,10 @@ static int do_push(int flags,
 			setup_default_push_refspecs(&flags, remote);
 	}
 	errs = 0;
-	url_nr = push_url_of_remote(remote, &url);
-	if (url_nr) {
-		for (i = 0; i < url_nr; i++) {
-			struct transport *transport =
-				transport_get(remote, url[i]);
-			if (flags & TRANSPORT_PUSH_OPTIONS)
-				transport->push_options = push_options;
-			if (push_with_options(transport, push_refspec, flags))
-				errs++;
-		}
-	} else {
+	url = push_url_of_remote(remote);
+	for (size_t i = 0; i < url->nr; i++) {
 		struct transport *transport =
-			transport_get(remote, NULL);
+			transport_get(remote, url->v[i]);
 		if (flags & TRANSPORT_PUSH_OPTIONS)
 			transport->push_options = push_options;
 		if (push_with_options(transport, push_refspec, flags))
@@ -526,39 +501,27 @@ static int git_push_config(const char *k, const char *v,
 			*flags |= TRANSPORT_PUSH_AUTO_UPSTREAM;
 		return 0;
 	} else if (!strcmp(k, "push.gpgsign")) {
-		const char *value;
-		if (!git_config_get_value("push.gpgsign", &value)) {
-			switch (git_parse_maybe_bool(value)) {
-			case 0:
-				set_push_cert_flags(flags, SEND_PACK_PUSH_CERT_NEVER);
-				break;
-			case 1:
-				set_push_cert_flags(flags, SEND_PACK_PUSH_CERT_ALWAYS);
-				break;
-			default:
-				if (value && !strcasecmp(value, "if-asked"))
-					set_push_cert_flags(flags, SEND_PACK_PUSH_CERT_IF_ASKED);
-				else
-					return error(_("invalid value for '%s'"), k);
-			}
+		switch (git_parse_maybe_bool(v)) {
+		case 0:
+			set_push_cert_flags(flags, SEND_PACK_PUSH_CERT_NEVER);
+			break;
+		case 1:
+			set_push_cert_flags(flags, SEND_PACK_PUSH_CERT_ALWAYS);
+			break;
+		default:
+			if (!strcasecmp(v, "if-asked"))
+				set_push_cert_flags(flags, SEND_PACK_PUSH_CERT_IF_ASKED);
+			else
+				return error(_("invalid value for '%s'"), k);
 		}
 	} else if (!strcmp(k, "push.recursesubmodules")) {
-		const char *value;
-		if (!git_config_get_value("push.recursesubmodules", &value))
-			recurse_submodules = parse_push_recurse_submodules_arg(k, value);
+		recurse_submodules = parse_push_recurse_submodules_arg(k, v);
 	} else if (!strcmp(k, "submodule.recurse")) {
 		int val = git_config_bool(k, v) ?
 			RECURSE_SUBMODULES_ON_DEMAND : RECURSE_SUBMODULES_OFF;
 		recurse_submodules = val;
 	} else if (!strcmp(k, "push.pushoption")) {
-		if (!v)
-			return config_error_nonbool(k);
-		else
-			if (!*v)
-				string_list_clear(&push_options_config, 0);
-			else
-				string_list_append(&push_options_config, v);
-		return 0;
+		return parse_transport_option(k, v, &push_options_config);
 	} else if (!strcmp(k, "color.push")) {
 		push_use_color = git_config_colorbool(k, v);
 		return 0;
@@ -580,7 +543,10 @@ static int git_push_config(const char *k, const char *v,
 	return git_default_config(k, v, ctx, NULL);
 }
 
-int cmd_push(int argc, const char **argv, const char *prefix)
+int cmd_push(int argc,
+	     const char **argv,
+	     const char *prefix,
+	     struct repository *repository UNUSED)
 {
 	int flags = 0;
 	int tags = 0;
@@ -604,7 +570,7 @@ int cmd_push(int argc, const char **argv, const char *prefix)
 		OPT_BIT('n' , "dry-run", &flags, N_("dry run"), TRANSPORT_PUSH_DRY_RUN),
 		OPT_BIT( 0,  "porcelain", &flags, N_("machine-readable output"), TRANSPORT_PUSH_PORCELAIN),
 		OPT_BIT('f', "force", &flags, N_("force updates"), TRANSPORT_PUSH_FORCE),
-		OPT_CALLBACK_F(0, CAS_OPT_NAME, &cas, N_("<refname>:<expect>"),
+		OPT_CALLBACK_F(0, "force-with-lease", &cas, N_("<refname>:<expect>"),
 			       N_("require old value of ref to be at this value"),
 			       PARSE_OPT_OPTARG | PARSE_OPT_LITERAL_ARGHELP, parseopt_push_cas_option),
 		OPT_BIT(0, TRANS_OPT_FORCE_IF_INCLUDES, &flags,
@@ -639,8 +605,10 @@ int cmd_push(int argc, const char **argv, const char *prefix)
 		: &push_options_config);
 	set_push_cert_flags(&flags, push_cert);
 
-	if (deleterefs && (tags || (flags & (TRANSPORT_PUSH_ALL | TRANSPORT_PUSH_MIRROR))))
-		die(_("options '%s' and '%s' cannot be used together"), "--delete", "--all/--branches/--mirror/--tags");
+	die_for_incompatible_opt4(deleterefs, "--delete",
+				  tags, "--tags",
+				  flags & TRANSPORT_PUSH_ALL, "--all/--branches",
+				  flags & TRANSPORT_PUSH_MIRROR, "--mirror");
 	if (deleterefs && argc < 2)
 		die(_("--delete doesn't make sense without any refs"));
 
@@ -654,10 +622,8 @@ int cmd_push(int argc, const char **argv, const char *prefix)
 	if (tags)
 		refspec_append(&rs, "refs/tags/*");
 
-	if (argc > 0) {
+	if (argc > 0)
 		repo = argv[0];
-		set_refspecs(argv + 1, argc - 1, repo);
-	}
 
 	remote = pushremote_get(repo);
 	if (!remote) {
@@ -673,23 +639,20 @@ int cmd_push(int argc, const char **argv, const char *prefix)
 		    "    git push <name>\n"));
 	}
 
+	if (argc > 0)
+		set_refspecs(argv + 1, argc - 1, remote);
+
 	if (remote->mirror)
 		flags |= (TRANSPORT_PUSH_MIRROR|TRANSPORT_PUSH_FORCE);
 
 	if (flags & TRANSPORT_PUSH_ALL) {
-		if (tags)
-			die(_("options '%s' and '%s' cannot be used together"), "--all", "--tags");
 		if (argc >= 2)
 			die(_("--all can't be combined with refspecs"));
 	}
 	if (flags & TRANSPORT_PUSH_MIRROR) {
-		if (tags)
-			die(_("options '%s' and '%s' cannot be used together"), "--mirror", "--tags");
 		if (argc >= 2)
 			die(_("--mirror can't be combined with refspecs"));
 	}
-	if ((flags & TRANSPORT_PUSH_ALL) && (flags & TRANSPORT_PUSH_MIRROR))
-		die(_("options '%s' and '%s' cannot be used together"), "--all", "--mirror");
 
 	if (!is_empty_cas(&cas) && (flags & TRANSPORT_PUSH_FORCE_IF_INCLUDES))
 		cas.use_force_if_includes = 1;
@@ -701,6 +664,7 @@ int cmd_push(int argc, const char **argv, const char *prefix)
 	rc = do_push(flags, push_options, remote);
 	string_list_clear(&push_options_cmdline, 0);
 	string_list_clear(&push_options_config, 0);
+	clear_cas_option(&cas);
 	if (rc == -1)
 		usage_with_options(push_usage, options);
 	else

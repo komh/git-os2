@@ -3,8 +3,7 @@
  *
  * Copyright (C) Linus Torvalds, 2005
  */
-
-#define USE_THE_INDEX_VARIABLE
+#define USE_THE_REPOSITORY_VARIABLE
 #include "builtin.h"
 #include "config.h"
 #include "gettext.h"
@@ -16,14 +15,11 @@
 #include "tree-walk.h"
 #include "cache-tree.h"
 #include "unpack-trees.h"
-#include "dir.h"
 #include "parse-options.h"
-#include "repository.h"
 #include "resolve-undo.h"
 #include "setup.h"
 #include "sparse-index.h"
 #include "submodule.h"
-#include "submodule-config.h"
 
 static int nr_trees;
 static int read_empty;
@@ -49,7 +45,7 @@ static const char * const read_tree_usage[] = {
 	NULL
 };
 
-static int index_output_cb(const struct option *opt, const char *arg,
+static int index_output_cb(const struct option *opt UNUSED, const char *arg,
 				 int unset)
 {
 	BUG_ON_OPT_NEG(unset);
@@ -111,7 +107,10 @@ static int git_read_tree_config(const char *var, const char *value,
 	return git_default_config(var, value, ctx, cb);
 }
 
-int cmd_read_tree(int argc, const char **argv, const char *cmd_prefix)
+int cmd_read_tree(int argc,
+		  const char **argv,
+		  const char *cmd_prefix,
+		  struct repository *repo UNUSED)
 {
 	int i, stage = 0;
 	struct object_id oid;
@@ -136,9 +135,14 @@ int cmd_read_tree(int argc, const char **argv, const char *cmd_prefix)
 			 N_("3-way merge in presence of adds and removes")),
 		OPT_BOOL(0, "reset", &opts.reset,
 			 N_("same as -m, but discard unmerged entries")),
-		{ OPTION_STRING, 0, "prefix", &opts.prefix, N_("<subdirectory>/"),
-		  N_("read the tree into the index under <subdirectory>/"),
-		  PARSE_OPT_NONEG },
+		{
+			.type = OPTION_STRING,
+			.long_name = "prefix",
+			.value = &opts.prefix,
+			.argh = N_("<subdirectory>/"),
+			.help = N_("read the tree into the index under <subdirectory>/"),
+			.flags = PARSE_OPT_NONEG,
+		},
 		OPT_BOOL('u', NULL, &opts.update,
 			 N_("update working tree with merge result")),
 		OPT_CALLBACK_F(0, "exclude-per-directory", &opts,
@@ -161,8 +165,8 @@ int cmd_read_tree(int argc, const char **argv, const char *cmd_prefix)
 
 	memset(&opts, 0, sizeof(opts));
 	opts.head_idx = -1;
-	opts.src_index = &the_index;
-	opts.dst_index = &the_index;
+	opts.src_index = the_repository->index;
+	opts.dst_index = the_repository->index;
 
 	git_config(git_read_tree_config, NULL);
 
@@ -199,7 +203,7 @@ int cmd_read_tree(int argc, const char **argv, const char *cmd_prefix)
 			die(_("You need to resolve your current index first"));
 		stage = opts.merge = 1;
 	}
-	resolve_undo_clear_index(&the_index);
+	resolve_undo_clear_index(the_repository->index);
 
 	for (i = 0; i < argc; i++) {
 		const char *arg = argv[i];
@@ -227,7 +231,7 @@ int cmd_read_tree(int argc, const char **argv, const char *cmd_prefix)
 		setup_work_tree();
 
 	if (opts.skip_sparse_checkout)
-		ensure_full_index(&the_index);
+		ensure_full_index(the_repository->index);
 
 	if (opts.merge) {
 		switch (stage - 1) {
@@ -239,7 +243,7 @@ int cmd_read_tree(int argc, const char **argv, const char *cmd_prefix)
 			break;
 		case 2:
 			opts.fn = twoway_merge;
-			opts.initial_checkout = is_index_unborn(&the_index);
+			opts.initial_checkout = is_index_unborn(the_repository->index);
 			break;
 		case 3:
 		default:
@@ -260,11 +264,12 @@ int cmd_read_tree(int argc, const char **argv, const char *cmd_prefix)
 	if (nr_trees == 1 && !opts.prefix)
 		opts.skip_cache_tree_update = 1;
 
-	cache_tree_free(&the_index.cache_tree);
+	cache_tree_free(&the_repository->index->cache_tree);
 	for (i = 0; i < nr_trees; i++) {
 		struct tree *tree = trees[i];
-		parse_tree(tree);
-		init_tree_desc(t+i, tree->buffer, tree->size);
+		if (parse_tree(tree) < 0)
+			return 128;
+		init_tree_desc(t+i, &tree->object.oid, tree->buffer, tree->size);
 	}
 	if (unpack_trees(nr_trees, t, &opts))
 		return 128;
@@ -283,7 +288,7 @@ int cmd_read_tree(int argc, const char **argv, const char *cmd_prefix)
 				 the_repository->index,
 				 trees[0]);
 
-	if (write_locked_index(&the_index, &lock_file, COMMIT_LOCK))
+	if (write_locked_index(the_repository->index, &lock_file, COMMIT_LOCK))
 		die("unable to write new index file");
 	return 0;
 }

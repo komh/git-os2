@@ -4,7 +4,6 @@ test_description='pack-objects --stdin'
 GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
 export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
 
-TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 packed_objects () {
@@ -65,7 +64,7 @@ test_expect_success '--stdin-packs is incompatible with --filter' '
 		cd stdin-packs &&
 		test_must_fail git pack-objects --stdin-packs --stdout \
 			--filter=blob:none </dev/null 2>err &&
-		test_i18ngrep "cannot use --filter with --stdin-packs" err
+		test_grep "cannot use --filter with --stdin-packs" err
 	)
 '
 
@@ -74,7 +73,7 @@ test_expect_success '--stdin-packs is incompatible with --revs' '
 		cd stdin-packs &&
 		test_must_fail git pack-objects --stdin-packs --revs out \
 			</dev/null 2>err &&
-		test_i18ngrep "cannot use internal rev list with --stdin-packs" err
+		test_grep "cannot use internal rev list with --stdin-packs" err
 	)
 '
 

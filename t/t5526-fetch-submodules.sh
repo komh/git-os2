@@ -771,7 +771,7 @@ test_expect_success 'fetching submodule into a broken repository' '
 	git -C dst fetch --recurse-submodules &&
 
 	# Break the receiving submodule
-	rm -f dst/sub/.git/HEAD &&
+	rm -r dst/sub/.git/objects &&
 
 	# NOTE: without the fix the following tests will recurse forever!
 	# They should terminate with an error.

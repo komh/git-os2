@@ -1,7 +1,7 @@
 #ifndef DIR_H
 #define DIR_H
 
-#include "hash-ll.h"
+#include "hash.h"
 #include "hashmap.h"
 #include "pathspec.h"
 #include "statinfo.h"
@@ -43,7 +43,6 @@ struct repository;
  *
  */
 
-struct repository;
 
 struct dir_entry {
 	unsigned int len;
@@ -62,7 +61,6 @@ struct path_pattern {
 	 */
 	struct pattern_list *pl;
 
-	const char *pattern;
 	int patternlen;
 	int nowildcardlen;
 	const char *base;
@@ -74,6 +72,8 @@ struct path_pattern {
 	 * and from -1 decrementing for patterns from CLI args.
 	 */
 	int srcpos;
+
+	char pattern[FLEX_ARRAY];
 };
 
 /* used for hashmaps for cone patterns */
@@ -93,9 +93,6 @@ struct pattern_entry {
 struct pattern_list {
 	int nr;
 	int alloc;
-
-	/* remember pointer to exclude file contents so we can free() */
-	char *filebuf;
 
 	/* origin of list, e.g. path to filename, or descriptive string */
 	const char *src;
@@ -363,6 +360,22 @@ struct dir_struct {
 
 struct dirent *readdir_skip_dot_and_dotdot(DIR *dirp);
 
+/*
+ * Get the d_type of a dirent. If the d_type is unknown, derive it from
+ * stat.st_mode using the path to the dirent's containing directory (path) and
+ * the name of the dirent itself.
+ *
+ * If 'follow_symlink' is 1, this function will attempt to follow DT_LNK types
+ * using 'stat'. Links are *not* followed recursively, so a symlink pointing
+ * to another symlink will still resolve to 'DT_LNK'.
+ *
+ * Note that 'path' is assumed to have a trailing slash. It is also modified
+ * in-place during the execution of the function, but is then reverted to its
+ * original value before returning.
+ */
+unsigned char get_dtype(struct dirent *e, struct strbuf *path,
+			int follow_symlink);
+
 /*Count the number of slashes for string s*/
 int count_slashes(const char *s);
 
@@ -453,6 +466,9 @@ void add_patterns_from_file(struct dir_struct *, const char *fname);
 int add_patterns_from_blob_to_list(struct object_id *oid,
 				   const char *base, int baselen,
 				   struct pattern_list *pl);
+int add_patterns_from_buffer(char *buf, size_t size,
+			     const char *base, int baselen,
+			     struct pattern_list *pl);
 void parse_path_pattern(const char **string, int *patternlen, unsigned *flags, int *nowildcardlen);
 void add_pattern(const char *string, const char *base,
 		 int baselen, struct pattern_list *pl, int srcpos);
@@ -527,10 +543,17 @@ int remove_dir_recursively(struct strbuf *path, int flag);
  */
 int remove_path(const char *path);
 
-int fspathcmp(const char *a, const char *b);
+int git_fspathcmp(const char *a, const char *b);
 int fspatheq(const char *a, const char *b);
-int fspathncmp(const char *a, const char *b, size_t count);
+int git_fspathncmp(const char *a, const char *b, size_t count);
 unsigned int fspathhash(const char *str);
+
+/*
+ * Reports whether paths collide. This may be because the paths differ only in
+ * case on a case-sensitive filesystem, or that one path refers to a symlink
+ * that collides with one of the parent directories of the other.
+ */
+int paths_collide(const char *a, const char *b);
 
 /*
  * The prefix part of pattern must not contains wildcards.
@@ -560,6 +583,13 @@ int cmp_dir_entry(const void *p1, const void *p2);
 int check_dir_entry_contains(const struct dir_entry *out, const struct dir_entry *in);
 
 void untracked_cache_invalidate_path(struct index_state *, const char *, int safe_path);
+/*
+ * Invalidate the untracked-cache for this path, but first strip
+ * off a trailing slash, if present.
+ */
+void untracked_cache_invalidate_trimmed_path(struct index_state *,
+					     const char *path,
+					     int safe_path);
 void untracked_cache_remove_from_index(struct index_state *, const char *);
 void untracked_cache_add_to_index(struct index_state *, const char *);
 

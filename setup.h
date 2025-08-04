@@ -1,6 +1,7 @@
 #ifndef SETUP_H
 #define SETUP_H
 
+#include "refs.h"
 #include "string-list.h"
 
 int is_inside_git_dir(void);
@@ -41,17 +42,61 @@ const char *read_gitfile_gently(const char *path, int *return_error_code);
 const char *resolve_gitdir_gently(const char *suspect, int *return_error_code);
 #define resolve_gitdir(path) resolve_gitdir_gently((path), NULL)
 
+/*
+ * Check if a repository is safe and die if it is not, by verifying the
+ * ownership of the worktree (if any), the git directory, and the gitfile (if
+ * any).
+ *
+ * Exemptions for known-safe repositories can be added via `safe.directory`
+ * config settings; for non-bare repositories, their worktree needs to be
+ * added, for bare ones their git directory.
+ */
+void die_upon_dubious_ownership(const char *gitfile, const char *worktree,
+				const char *gitdir);
+
 void setup_work_tree(void);
+
+/*
+ * discover_git_directory_reason() is similar to discover_git_directory(),
+ * except it returns an enum value instead. It is important to note that
+ * a zero-valued return here is actually GIT_DIR_NONE, which is different
+ * from discover_git_directory.
+ */
+enum discovery_result {
+	GIT_DIR_EXPLICIT = 1,
+	GIT_DIR_DISCOVERED = 2,
+	GIT_DIR_BARE = 3,
+	/* these are errors */
+	GIT_DIR_HIT_CEILING = -1,
+	GIT_DIR_HIT_MOUNT_POINT = -2,
+	GIT_DIR_INVALID_GITFILE = -3,
+	GIT_DIR_INVALID_OWNERSHIP = -4,
+	GIT_DIR_DISALLOWED_BARE = -5,
+	GIT_DIR_INVALID_FORMAT = -6,
+	GIT_DIR_CWD_FAILURE = -7,
+};
+enum discovery_result discover_git_directory_reason(struct strbuf *commondir,
+						    struct strbuf *gitdir);
+
 /*
  * Find the commondir and gitdir of the repository that contains the current
  * working directory, without changing the working directory or other global
  * state. The result is appended to commondir and gitdir.  If the discovered
  * gitdir does not correspond to a worktree, then 'commondir' and 'gitdir' will
  * both have the same result appended to the buffer.  The return value is
- * either 0 upon success and non-zero if no repository was found.
+ * either 0 upon success and -1 if no repository was found.
  */
-int discover_git_directory(struct strbuf *commondir,
-			   struct strbuf *gitdir);
+static inline int discover_git_directory(struct strbuf *commondir,
+					 struct strbuf *gitdir)
+{
+	if (discover_git_directory_reason(commondir, gitdir) <= 0)
+		return -1;
+	return 0;
+}
+
+void set_git_dir(const char *path, int make_realpath);
+void set_git_work_tree(const char *tree);
+
 const char *setup_git_directory_gently(int *);
 const char *setup_git_directory(void);
 char *prefix_path(const char *prefix, int len, const char *path);
@@ -84,8 +129,11 @@ struct repository_format {
 	int precious_objects;
 	char *partial_clone; /* value of extensions.partialclone */
 	int worktree_config;
+	int relative_worktrees;
 	int is_bare;
 	int hash_algo;
+	int compat_hash_algo;
+	enum ref_storage_format ref_storage_format;
 	int sparse_index;
 	char *work_tree;
 	struct string_list unknown_extensions;
@@ -102,6 +150,7 @@ struct repository_format {
 	.version = -1, \
 	.is_bare = -1, \
 	.hash_algo = GIT_HASH_SHA1, \
+	.ref_storage_format = REF_STORAGE_FORMAT_FILES, \
 	.unknown_extensions = STRING_LIST_INIT_DUP, \
 	.v1_only_extensions = STRING_LIST_INIT_DUP, \
 }
@@ -131,7 +180,7 @@ int verify_repository_format(const struct repository_format *format,
 			     struct strbuf *err);
 
 /*
- * Check the repository format version in the path found in get_git_dir(),
+ * Check the repository format version in the path found in repo_get_git_dir(the_repository),
  * and die if it is a version we don't understand. Generally one would
  * set_git_dir() before calling this, and use it only for "are we in a valid
  * repo?".
@@ -140,14 +189,22 @@ int verify_repository_format(const struct repository_format *format,
  */
 void check_repository_format(struct repository_format *fmt);
 
-#define INIT_DB_QUIET 0x0001
-#define INIT_DB_EXIST_OK 0x0002
+const char *get_template_dir(const char *option_template);
+
+#define INIT_DB_QUIET      (1 << 0)
+#define INIT_DB_EXIST_OK   (1 << 1)
+#define INIT_DB_SKIP_REFDB (1 << 2)
 
 int init_db(const char *git_dir, const char *real_git_dir,
 	    const char *template_dir, int hash_algo,
+	    enum ref_storage_format ref_storage_format,
 	    const char *initial_branch, int init_shared_repository,
 	    unsigned int flags);
-void initialize_repository_version(int hash_algo, int reinit);
+void initialize_repository_version(int hash_algo,
+				   enum ref_storage_format ref_storage_format,
+				   int reinit);
+void create_reference_database(enum ref_storage_format ref_storage_format,
+			       const char *initial_branch, int quiet);
 
 /*
  * NOTE NOTE NOTE!!

@@ -2,8 +2,13 @@
 
 test_description='test corner cases of git-archive'
 
-TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
+
+if ! test_have_prereq PERL_TEST_HELPERS
+then
+	skip_all='skipping archive corner cases tests; Perl not available'
+	test_done
+fi
 
 # the 10knuls.tar file is used to test for an empty git generated tar
 # without having to invoke tar because an otherwise valid empty GNU tar

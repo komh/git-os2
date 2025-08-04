@@ -1,3 +1,6 @@
+#define USE_THE_REPOSITORY_VARIABLE
+#define DISABLE_SIGN_COMPARE_WARNINGS
+
 #include "builtin.h"
 #include "bulk-checkin.h"
 #include "config.h"
@@ -5,20 +8,18 @@
 #include "gettext.h"
 #include "git-zlib.h"
 #include "hex.h"
-#include "object-store-ll.h"
+#include "object-file.h"
+#include "object-store.h"
 #include "object.h"
 #include "delta.h"
 #include "pack.h"
 #include "blob.h"
-#include "commit.h"
 #include "replace-object.h"
 #include "strbuf.h"
-#include "tag.h"
-#include "tree.h"
-#include "tree-walk.h"
 #include "progress.h"
 #include "decorate.h"
 #include "fsck.h"
+#include "packfile.h"
 
 static int dry_run, quiet, recover, has_errors, strict;
 static const char unpack_usage[] = "git unpack-objects [-n] [-q] [-r] [--strict]";
@@ -28,7 +29,7 @@ static unsigned char buffer[4096];
 static unsigned int offset, len;
 static off_t consumed_bytes;
 static off_t max_input_size;
-static git_hash_ctx ctx;
+static struct git_hash_ctx ctx;
 static struct fsck_options fsck_options = FSCK_OPTIONS_STRICT;
 static struct progress *progress;
 
@@ -70,7 +71,7 @@ static void *fill(int min)
 	if (min > sizeof(buffer))
 		die("cannot fill %d bytes", min);
 	if (offset) {
-		the_hash_algo->update_fn(&ctx, buffer, offset);
+		git_hash_update(&ctx, buffer, offset);
 		memmove(buffer, buffer + offset, len);
 		offset = 0;
 	}
@@ -443,19 +444,20 @@ static void unpack_delta_entry(enum object_type type, unsigned long delta_size,
 	struct object_id base_oid;
 
 	if (type == OBJ_REF_DELTA) {
-		oidread(&base_oid, fill(the_hash_algo->rawsz));
+		oidread(&base_oid, fill(the_hash_algo->rawsz), the_repository->hash_algo);
 		use(the_hash_algo->rawsz);
 		delta_data = get_data(delta_size);
 		if (!delta_data)
 			return;
-		if (repo_has_object_file(the_repository, &base_oid))
+		if (has_object(the_repository, &base_oid,
+			       HAS_OBJECT_RECHECK_PACKED | HAS_OBJECT_FETCH_PROMISOR))
 			; /* Ok we have this one */
 		else if (resolve_against_held(nr, &base_oid,
 					      delta_data, delta_size))
 			return; /* we are done */
 		else {
 			/* cannot resolve yet --- queue it */
-			oidclr(&obj_list[nr].oid);
+			oidclr(&obj_list[nr].oid, the_repository->hash_algo);
 			add_delta_to_list(nr, &base_oid, 0, delta_data, delta_size);
 			return;
 		}
@@ -504,8 +506,8 @@ static void unpack_delta_entry(enum object_type type, unsigned long delta_size,
 			 * The delta base object is itself a delta that
 			 * has not been resolved yet.
 			 */
-			oidclr(&obj_list[nr].oid);
-			add_delta_to_list(nr, null_oid(), base_offset,
+			oidclr(&obj_list[nr].oid, the_repository->hash_algo);
+			add_delta_to_list(nr, null_oid(the_hash_algo), base_offset,
 					  delta_data, delta_size);
 			return;
 		}
@@ -553,7 +555,8 @@ static void unpack_one(unsigned nr)
 
 	switch (type) {
 	case OBJ_BLOB:
-		if (!dry_run && size > big_file_threshold) {
+		if (!dry_run &&
+		    size > repo_settings_get_big_file_threshold(the_repository)) {
 			stream_blob(size, nr);
 			return;
 		}
@@ -579,19 +582,21 @@ static void unpack_one(unsigned nr)
 static void unpack_all(void)
 {
 	int i;
-	struct pack_header *hdr = fill(sizeof(struct pack_header));
+	unsigned char *hdr = fill(sizeof(struct pack_header));
 
-	nr_objects = ntohl(hdr->hdr_entries);
-
-	if (ntohl(hdr->hdr_signature) != PACK_SIGNATURE)
+	if (get_be32(hdr) != PACK_SIGNATURE)
 		die("bad pack file");
-	if (!pack_version_ok(hdr->hdr_version))
+	hdr += 4;
+	if (!pack_version_ok_native(get_be32(hdr)))
 		die("unknown pack file version %"PRIu32,
-			ntohl(hdr->hdr_version));
+		    get_be32(hdr));
+	hdr += 4;
+	nr_objects = get_be32(hdr);
 	use(sizeof(struct pack_header));
 
 	if (!quiet)
-		progress = start_progress(_("Unpacking objects"), nr_objects);
+		progress = start_progress(the_repository,
+					  _("Unpacking objects"), nr_objects);
 	CALLOC_ARRAY(obj_list, nr_objects);
 	begin_odb_transaction();
 	for (i = 0; i < nr_objects; i++) {
@@ -605,16 +610,22 @@ static void unpack_all(void)
 		die("unresolved deltas left after unpacking");
 }
 
-int cmd_unpack_objects(int argc, const char **argv, const char *prefix UNUSED)
+int cmd_unpack_objects(int argc,
+		       const char **argv,
+		       const char *prefix UNUSED,
+		       struct repository *repo UNUSED)
 {
 	int i;
 	struct object_id oid;
+	struct git_hash_ctx tmp_ctx;
 
 	disable_replace_refs();
 
 	git_config(git_default_config, NULL);
 
 	quiet = !isatty(2);
+
+	show_usage_if_asked(argc, argv, unpack_usage);
 
 	for (i = 1 ; i < argc; i++) {
 		const char *arg = argv[i];
@@ -641,19 +652,10 @@ int cmd_unpack_objects(int argc, const char **argv, const char *prefix UNUSED)
 				fsck_set_msg_types(&fsck_options, arg);
 				continue;
 			}
-			if (starts_with(arg, "--pack_header=")) {
-				struct pack_header *hdr;
-				char *c;
-
-				hdr = (struct pack_header *)buffer;
-				hdr->hdr_signature = htonl(PACK_SIGNATURE);
-				hdr->hdr_version = htonl(strtoul(arg + 14, &c, 10));
-				if (*c != ',')
-					die("bad %s", arg);
-				hdr->hdr_entries = htonl(strtoul(c + 1, &c, 10));
-				if (*c)
-					die("bad %s", arg);
-				len = sizeof(*hdr);
+			if (skip_prefix(arg, "--pack_header=", &arg)) {
+				if (parse_pack_header_option(arg,
+							     buffer, &len) < 0)
+					die(_("bad --pack_header: %s"), arg);
 				continue;
 			}
 			if (skip_prefix(arg, "--max-input-size=", &arg)) {
@@ -668,25 +670,22 @@ int cmd_unpack_objects(int argc, const char **argv, const char *prefix UNUSED)
 	}
 	the_hash_algo->init_fn(&ctx);
 	unpack_all();
-	the_hash_algo->update_fn(&ctx, buffer, offset);
-	the_hash_algo->final_oid_fn(&oid, &ctx);
+	git_hash_update(&ctx, buffer, offset);
+	the_hash_algo->init_fn(&tmp_ctx);
+	git_hash_clone(&tmp_ctx, &ctx);
+	git_hash_final_oid(&oid, &tmp_ctx);
 	if (strict) {
 		write_rest();
 		if (fsck_finish(&fsck_options))
 			die(_("fsck error in pack objects"));
 	}
-	if (!hasheq(fill(the_hash_algo->rawsz), oid.hash))
+	if (!hasheq(fill(the_hash_algo->rawsz), oid.hash,
+		    the_repository->hash_algo))
 		die("final sha1 did not match");
 	use(the_hash_algo->rawsz);
 
 	/* Write the last part of the buffer to stdout */
-	while (len) {
-		int ret = xwrite(1, buffer + offset, len);
-		if (ret <= 0)
-			break;
-		len -= ret;
-		offset += ret;
-	}
+	write_in_full(1, buffer + offset, len);
 
 	/* All done */
 	return has_errors;

@@ -2,7 +2,6 @@
 
 test_description='basic sanity checks for git var'
 
-TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 sane_unset_all_editors () {
@@ -157,7 +156,7 @@ test_expect_success POSIXPERM 'GIT_SHELL_PATH points to a valid executable' '
 test_expect_success MINGW 'GIT_SHELL_PATH points to a suitable shell' '
 	shellpath=$(git var GIT_SHELL_PATH) &&
 	case "$shellpath" in
-	*sh) ;;
+	[A-Z]:/*/sh.exe) test -f "$shellpath";;
 	*) return 1;;
 	esac
 '
@@ -266,6 +265,15 @@ test_expect_success 'git var -l does not split multiline editors' '
 
 test_expect_success 'listing and asking for variables are exclusive' '
 	test_must_fail git var -l GIT_COMMITTER_IDENT
+'
+
+test_expect_success '`git var -l` works even without HOME' '
+	(
+		XDG_CONFIG_HOME= &&
+		export XDG_CONFIG_HOME &&
+		unset HOME &&
+		git var -l
+	)
 '
 
 test_done

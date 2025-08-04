@@ -23,8 +23,6 @@ test_description="merge cases"
 #                     files that might be renamed into each other's paths.)
 
 . ./test-lib.sh
-. "$TEST_DIRECTORY"/lib-merge.sh
-
 
 ###########################################################################
 # SECTION 1: Cases involving no renames (one side has subset of changes of
@@ -375,7 +373,7 @@ test_expect_success '2c: Modify b & add c VS rename b->c' '
 		export GIT_MERGE_VERBOSITY &&
 		test_must_fail git merge -s recursive B^0 >out 2>err &&
 
-		test_i18ngrep "CONFLICT (.*/add):" out &&
+		test_grep "CONFLICT (.*/add):" out &&
 		test_must_be_empty err &&
 
 		git ls-files -s >index_files &&
@@ -663,7 +661,7 @@ test_setup_4a () {
 #   correct requires doing the merge in-memory first, then realizing that no
 #   updates to the file are necessary, and thus that we can just leave the path
 #   alone.
-test_expect_merge_algorithm failure success '4a: Change on A, change on B subset of A, dirty mods present' '
+test_expect_success '4a: Change on A, change on B subset of A, dirty mods present' '
 	test_setup_4a &&
 	(
 		cd 4a &&

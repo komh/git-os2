@@ -5,6 +5,10 @@
  * Copyright (C) Linus Torvalds, 2005-2006
  *		 Junio Hamano, 2005-2006
  */
+
+#define USE_THE_REPOSITORY_VARIABLE
+#define DISABLE_SIGN_COMPARE_WARNINGS
+
 #include "git-compat-util.h"
 #include "abspath.h"
 #include "config.h"
@@ -14,10 +18,9 @@
 #include "gettext.h"
 #include "name-hash.h"
 #include "object-file.h"
-#include "object-store-ll.h"
 #include "path.h"
-#include "attr.h"
 #include "refs.h"
+#include "repository.h"
 #include "wildmatch.h"
 #include "pathspec.h"
 #include "utf8.h"
@@ -31,6 +34,13 @@
 #include "symlinks.h"
 #include "trace2.h"
 #include "tree.h"
+#include "hex.h"
+
+ /*
+  * The maximum size of a pattern/exclude file. If the file exceeds this size
+  * we will ignore it.
+  */
+#define PATTERN_MAX_FILE_SIZE (100 * 1024 * 1024)
 
 /*
  * Tells read_directory_recursive how a file or directory should be treated.
@@ -86,7 +96,7 @@ int count_slashes(const char *s)
 	return cnt;
 }
 
-int fspathcmp(const char *a, const char *b)
+int git_fspathcmp(const char *a, const char *b)
 {
 	return ignore_case ? strcasecmp(a, b) : strcmp(a, b);
 }
@@ -96,9 +106,21 @@ int fspatheq(const char *a, const char *b)
 	return !fspathcmp(a, b);
 }
 
-int fspathncmp(const char *a, const char *b, size_t count)
+int git_fspathncmp(const char *a, const char *b, size_t count)
 {
 	return ignore_case ? strncasecmp(a, b, count) : strncmp(a, b, count);
+}
+
+int paths_collide(const char *a, const char *b)
+{
+	size_t len_a = strlen(a), len_b = strlen(b);
+
+	if (len_a == len_b)
+		return fspatheq(a, b);
+
+	if (len_a < len_b)
+		return is_dir_sep(b[len_a]) && !fspathncmp(a, b, len_a);
+	return is_dir_sep(a[len_b]) && !fspathncmp(a, b, len_b);
 }
 
 unsigned int fspathhash(const char *str)
@@ -496,7 +518,8 @@ static int do_match_pathspec(struct index_state *istate,
 		    ( exclude && !(ps->items[i].magic & PATHSPEC_EXCLUDE)))
 			continue;
 
-		if (seen && seen[i] == MATCHED_EXACTLY)
+		if (seen && seen[i] == MATCHED_EXACTLY &&
+		    ps->items[i].nowildcard_len == ps->items[i].len)
 			continue;
 		/*
 		 * Make exclude patterns optional and never report
@@ -715,6 +738,17 @@ static char *dup_and_filter_pattern(const char *pattern)
 	return result;
 }
 
+static void clear_pattern_entry_hashmap(struct hashmap *map)
+{
+	struct hashmap_iter iter;
+	struct pattern_entry *entry;
+
+	hashmap_for_each_entry(map, &iter, entry, ent) {
+		free(entry->pattern);
+	}
+	hashmap_clear_and_free(map, struct pattern_entry, ent);
+}
+
 static void add_pattern_to_hashsets(struct pattern_list *pl, struct path_pattern *given)
 {
 	struct pattern_entry *translated;
@@ -788,6 +822,8 @@ static void add_pattern_to_hashsets(struct pattern_list *pl, struct path_pattern
 
 	if (given->patternlen > 2 &&
 	    !strcmp(given->pattern + given->patternlen - 2, "/*")) {
+		struct pattern_entry *old;
+
 		if (!(given->flags & PATTERN_FLAG_NEGATIVE)) {
 			/* Not a cone pattern. */
 			warning(_("unrecognized pattern: '%s'"), given->pattern);
@@ -813,7 +849,11 @@ static void add_pattern_to_hashsets(struct pattern_list *pl, struct path_pattern
 		}
 
 		hashmap_add(&pl->parent_hashmap, &translated->ent);
-		hashmap_remove(&pl->recursive_hashmap, &translated->ent, &data);
+		old = hashmap_remove_entry(&pl->recursive_hashmap, translated, ent, &data);
+		if (old) {
+			free(old->pattern);
+			free(old);
+		}
 		free(data);
 		return;
 	}
@@ -844,8 +884,8 @@ static void add_pattern_to_hashsets(struct pattern_list *pl, struct path_pattern
 
 clear_hashmaps:
 	warning(_("disabling cone pattern matching"));
-	hashmap_clear_and_free(&pl->parent_hashmap, struct pattern_entry, ent);
-	hashmap_clear_and_free(&pl->recursive_hashmap, struct pattern_entry, ent);
+	clear_pattern_entry_hashmap(&pl->recursive_hashmap);
+	clear_pattern_entry_hashmap(&pl->parent_hashmap);
 	pl->use_cone_patterns = 0;
 }
 
@@ -897,12 +937,7 @@ void add_pattern(const char *string, const char *base,
 	int nowildcardlen;
 
 	parse_path_pattern(&string, &patternlen, &flags, &nowildcardlen);
-	if (flags & PATTERN_FLAG_MUSTBEDIR) {
-		FLEXPTR_ALLOC_MEM(pattern, pattern, string, patternlen);
-	} else {
-		pattern = xmalloc(sizeof(*pattern));
-		pattern->pattern = string;
-	}
+	FLEX_ALLOC_MEM(pattern, pattern, string, patternlen);
 	pattern->patternlen = patternlen;
 	pattern->nowildcardlen = nowildcardlen;
 	pattern->base = base;
@@ -944,9 +979,8 @@ void clear_pattern_list(struct pattern_list *pl)
 	for (i = 0; i < pl->nr; i++)
 		free(pl->patterns[i]);
 	free(pl->patterns);
-	free(pl->filebuf);
-	hashmap_clear_and_free(&pl->recursive_hashmap, struct pattern_entry, ent);
-	hashmap_clear_and_free(&pl->parent_hashmap, struct pattern_entry, ent);
+	clear_pattern_entry_hashmap(&pl->recursive_hashmap);
+	clear_pattern_entry_hashmap(&pl->parent_hashmap);
 
 	memset(pl, 0, sizeof(*pl));
 }
@@ -1023,6 +1057,8 @@ static void do_invalidate_gitignore(struct untracked_cache_dir *dir)
 {
 	int i;
 	dir->valid = 0;
+	for (size_t i = 0; i < dir->untracked_nr; i++)
+		free(dir->untracked[i]);
 	dir->untracked_nr = 0;
 	for (i = 0; i < dir->dirs_nr; i++)
 		do_invalidate_gitignore(dir->dirs[i]);
@@ -1050,14 +1086,12 @@ static void invalidate_directory(struct untracked_cache *uc,
 		uc->dir_invalidated++;
 
 	dir->valid = 0;
+	for (size_t i = 0; i < dir->untracked_nr; i++)
+		free(dir->untracked[i]);
 	dir->untracked_nr = 0;
 	for (i = 0; i < dir->dirs_nr; i++)
 		dir->dirs[i]->recurse = 0;
 }
-
-static int add_patterns_from_buffer(char *buf, size_t size,
-				    const char *base, int baselen,
-				    struct pattern_list *pl);
 
 /* Flags for add_patterns() */
 #define PATTERN_NOFOLLOW (1<<0)
@@ -1137,24 +1171,30 @@ static int add_patterns(const char *fname, const char *base, int baselen,
 		}
 	}
 
+	if (size > PATTERN_MAX_FILE_SIZE) {
+		warning("ignoring excessively large pattern file: %s", fname);
+		free(buf);
+		return -1;
+	}
+
 	add_patterns_from_buffer(buf, size, base, baselen, pl);
+	free(buf);
 	return 0;
 }
 
-static int add_patterns_from_buffer(char *buf, size_t size,
-				    const char *base, int baselen,
-				    struct pattern_list *pl)
+int add_patterns_from_buffer(char *buf, size_t size,
+			     const char *base, int baselen,
+			     struct pattern_list *pl)
 {
+	char *orig = buf;
 	int i, lineno = 1;
 	char *entry;
 
 	hashmap_init(&pl->recursive_hashmap, pl_hashmap_cmp, NULL, 0);
 	hashmap_init(&pl->parent_hashmap, pl_hashmap_cmp, NULL, 0);
 
-	pl->filebuf = buf;
-
 	if (skip_utf8_bom(&buf, size))
-		size -= buf - pl->filebuf;
+		size -= buf - orig;
 
 	entry = buf;
 
@@ -1193,7 +1233,15 @@ int add_patterns_from_blob_to_list(
 	if (r != 1)
 		return r;
 
+	if (size > PATTERN_MAX_FILE_SIZE) {
+		warning("ignoring excessively large pattern blob: %s",
+			oid_to_hex(oid));
+		free(buf);
+		return -1;
+	}
+
 	add_patterns_from_buffer(buf, size, base, baselen, pl);
+	free(buf);
 	return 0;
 }
 
@@ -1644,7 +1692,7 @@ static void prep_exclude(struct dir_struct *dir,
 		}
 
 		/* Try to read per-directory file */
-		oidclr(&oid_stat.oid);
+		oidclr(&oid_stat.oid, the_repository->hash_algo);
 		oid_stat.valid = 0;
 		if (dir->exclude_per_dir &&
 		    /*
@@ -2089,8 +2137,7 @@ static enum path_treatment treat_directory(struct dir_struct *dir,
 			 */
 			state = path_none;
 		} else {
-			int i;
-			for (i = old_ignored_nr + 1; i<dir->ignored_nr; ++i)
+			for (int i = old_ignored_nr; i < dir->ignored_nr; i++)
 				FREE_AND_NULL(dir->ignored[i]);
 			dir->ignored_nr = old_ignored_nr;
 		}
@@ -2102,8 +2149,7 @@ static enum path_treatment treat_directory(struct dir_struct *dir,
 	 */
 	if ((dir->flags & DIR_SHOW_IGNORED_TOO) &&
 	    !(dir->flags & DIR_KEEP_UNTRACKED_CONTENTS)) {
-		int i;
-		for (i = old_untracked_nr + 1; i<dir->nr; ++i)
+		for (int i = old_untracked_nr; i < dir->nr; i++)
 			FREE_AND_NULL(dir->entries[i]);
 		dir->nr = old_untracked_nr;
 	}
@@ -2179,7 +2225,8 @@ static int exclude_matches_pathspec(const char *path, int pathlen,
 		       PATHSPEC_LITERAL |
 		       PATHSPEC_GLOB |
 		       PATHSPEC_ICASE |
-		       PATHSPEC_EXCLUDE);
+		       PATHSPEC_EXCLUDE |
+		       PATHSPEC_ATTR);
 
 	for (i = 0; i < pathspec->nr; i++) {
 		const struct pathspec_item *item = &pathspec->items[i];
@@ -2233,6 +2280,39 @@ static int get_index_dtype(struct index_state *istate,
 		return DT_DIR;
 	}
 	return DT_UNKNOWN;
+}
+
+unsigned char get_dtype(struct dirent *e, struct strbuf *path,
+			int follow_symlink)
+{
+	struct stat st;
+	unsigned char dtype = DTYPE(e);
+	size_t base_path_len;
+
+	if (dtype != DT_UNKNOWN && !(follow_symlink && dtype == DT_LNK))
+		return dtype;
+
+	/*
+	 * d_type unknown or unfollowed symlink, try to fall back on [l]stat
+	 * results. If [l]stat fails, explicitly set DT_UNKNOWN.
+	 */
+	base_path_len = path->len;
+	strbuf_addstr(path, e->d_name);
+	if ((follow_symlink && stat(path->buf, &st)) ||
+	    (!follow_symlink && lstat(path->buf, &st)))
+		goto cleanup;
+
+	/* determine d_type from st_mode */
+	if (S_ISREG(st.st_mode))
+		dtype = DT_REG;
+	else if (S_ISDIR(st.st_mode))
+		dtype = DT_DIR;
+	else if (S_ISLNK(st.st_mode))
+		dtype = DT_LNK;
+
+cleanup:
+	strbuf_setlen(path, base_path_len);
+	return dtype;
 }
 
 static int resolve_dtype(int dtype, struct index_state *istate,
@@ -2758,7 +2838,7 @@ static const char *get_ident_string(void)
 		return sb.buf;
 	if (uname(&uts) < 0)
 		die_errno(_("failed to get kernel name and information"));
-	strbuf_addf(&sb, "Location %s, system %s", get_git_work_tree(),
+	strbuf_addf(&sb, "Location %s, system %s", repo_get_work_tree(the_repository),
 		    uts.sysname);
 	return sb.buf;
 }
@@ -2789,14 +2869,14 @@ static void set_untracked_ident(struct untracked_cache *uc)
 static unsigned new_untracked_cache_flags(struct index_state *istate)
 {
 	struct repository *repo = istate->repo;
-	char *val;
+	const char *val;
 
 	/*
 	 * This logic is coordinated with the setting of these flags in
 	 * wt-status.c#wt_status_collect_untracked(), and the evaluation
 	 * of the config setting in commit.c#git_status_config()
 	 */
-	if (!repo_config_get_string(repo, "status.showuntrackedfiles", &val) &&
+	if (!repo_config_get_string_tmp(repo, "status.showuntrackedfiles", &val) &&
 	    !strcmp(val, "all"))
 		return 0;
 
@@ -3273,7 +3353,8 @@ static int remove_dir_recurse(struct strbuf *path, int flag, int *kept_up)
 	struct object_id submodule_head;
 
 	if ((flag & REMOVE_DIR_KEEP_NESTED_GIT) &&
-	    !resolve_gitlink_ref(path->buf, "HEAD", &submodule_head)) {
+	    !repo_resolve_gitlink_ref(the_repository, path->buf,
+				      "HEAD", &submodule_head)) {
 		/* Do not descend and nuke a nested git work tree. */
 		if (kept_up)
 			*kept_up = 1;
@@ -3370,7 +3451,7 @@ void setup_standard_excludes(struct dir_struct *dir)
 
 char *get_sparse_checkout_filename(void)
 {
-	return git_pathdup("info/sparse-checkout");
+	return repo_git_path(the_repository, "info/sparse-checkout");
 }
 
 int get_sparse_checkout_patterns(struct pattern_list *pl)
@@ -3493,6 +3574,8 @@ static void write_one_dir(struct untracked_cache_dir *untracked,
 	 * for safety..
 	 */
 	if (!untracked->valid) {
+		for (size_t i = 0; i < untracked->untracked_nr; i++)
+			free(untracked->untracked[i]);
 		untracked->untracked_nr = 0;
 		untracked->check_only = 0;
 	}
@@ -3716,7 +3799,7 @@ static void read_oid(size_t pos, void *cb)
 		rd->data = rd->end + 1;
 		return;
 	}
-	oidread(&ud->exclude_oid, rd->data);
+	oidread(&ud->exclude_oid, rd->data, the_repository->hash_algo);
 	rd->data += the_hash_algo->rawsz;
 }
 
@@ -3724,7 +3807,7 @@ static void load_oid_stat(struct oid_stat *oid_stat, const unsigned char *data,
 			  const unsigned char *sha1)
 {
 	stat_data_from_disk(&oid_stat->stat, data);
-	oidread(&oid_stat->oid, sha1);
+	oidread(&oid_stat->oid, sha1, the_repository->hash_algo);
 	oid_stat->valid = 1;
 }
 
@@ -3825,6 +3908,8 @@ static void invalidate_one_directory(struct untracked_cache *uc,
 {
 	uc->dir_invalidated++;
 	ucd->valid = 0;
+	for (size_t i = 0; i < ucd->untracked_nr; i++)
+		free(ucd->untracked[i]);
 	ucd->untracked_nr = 0;
 }
 
@@ -3885,6 +3970,26 @@ void untracked_cache_invalidate_path(struct index_state *istate,
 				 path, strlen(path));
 }
 
+void untracked_cache_invalidate_trimmed_path(struct index_state *istate,
+					     const char *path,
+					     int safe_path)
+{
+	size_t len = strlen(path);
+
+	if (!len)
+		BUG("untracked_cache_invalidate_trimmed_path given zero length path");
+
+	if (path[len - 1] != '/') {
+		untracked_cache_invalidate_path(istate, path, safe_path);
+	} else {
+		struct strbuf tmp = STRBUF_INIT;
+
+		strbuf_add(&tmp, path, len - 1);
+		untracked_cache_invalidate_path(istate, tmp.buf, safe_path);
+		strbuf_release(&tmp);
+	}
+}
+
 void untracked_cache_remove_from_index(struct index_state *istate,
 				       const char *path)
 {
@@ -3930,7 +4035,7 @@ static void connect_wt_gitdir_in_nested(const char *sub_worktree,
 			 */
 			i++;
 
-		sub = submodule_from_path(&subrepo, null_oid(), ce->name);
+		sub = submodule_from_path(&subrepo, null_oid(the_hash_algo), ce->name);
 		if (!sub || !is_submodule_active(&subrepo, ce->name))
 			/* .gitmodules broken or inactive sub */
 			continue;
@@ -3958,12 +4063,12 @@ void connect_work_tree_and_git_dir(const char *work_tree_,
 
 	/* Prepare .git file */
 	strbuf_addf(&gitfile_sb, "%s/.git", work_tree_);
-	if (safe_create_leading_directories_const(gitfile_sb.buf))
+	if (safe_create_leading_directories_const(the_repository, gitfile_sb.buf))
 		die(_("could not create directories for %s"), gitfile_sb.buf);
 
 	/* Prepare config file */
 	strbuf_addf(&cfg_sb, "%s/config", git_dir_);
-	if (safe_create_leading_directories_const(cfg_sb.buf))
+	if (safe_create_leading_directories_const(the_repository, cfg_sb.buf))
 		die(_("could not create directories for %s"), cfg_sb.buf);
 
 	git_dir = real_pathdup(git_dir_, 1);

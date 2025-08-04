@@ -3,7 +3,11 @@
  *
  * Copyright (C) Eric Biederman, 2005
  */
+
+#define USE_THE_REPOSITORY_VARIABLE
+
 #include "builtin.h"
+
 #include "attr.h"
 #include "config.h"
 #include "editor.h"
@@ -12,6 +16,7 @@
 #include "refs.h"
 #include "path.h"
 #include "strbuf.h"
+#include "run-command.h"
 
 static const char var_usage[] = "git var (-l | <variable>)";
 
@@ -37,7 +42,7 @@ static char *sequence_editor(int ident_flag UNUSED)
 
 static char *pager(int ident_flag UNUSED)
 {
-	const char *pgm = git_pager(1);
+	const char *pgm = git_pager(the_repository, 1);
 
 	if (!pgm)
 		pgm = "cat";
@@ -46,12 +51,12 @@ static char *pager(int ident_flag UNUSED)
 
 static char *default_branch(int ident_flag UNUSED)
 {
-	return xstrdup_or_null(git_default_branch_name(1));
+	return repo_default_branch_name(the_repository, 1);
 }
 
 static char *shell_path(int ident_flag UNUSED)
 {
-	return xstrdup(SHELL_PATH);
+	return git_shell_path();
 }
 
 static char *git_attr_val_system(int ident_flag UNUSED)
@@ -66,7 +71,7 @@ static char *git_attr_val_system(int ident_flag UNUSED)
 
 static char *git_attr_val_global(int ident_flag UNUSED)
 {
-	char *file = xstrdup(git_attr_global_file());
+	char *file = xstrdup_or_null(git_attr_global_file());
 	if (file) {
 		normalize_path_copy(file, file);
 		return file;
@@ -90,7 +95,7 @@ static char *git_config_val_global(int ident_flag UNUSED)
 	char *user, *xdg;
 	size_t unused;
 
-	git_global_config(&user, &xdg);
+	git_global_config_paths(&user, &xdg);
 	if (xdg && *xdg) {
 		normalize_path_copy(xdg, xdg);
 		strbuf_addf(&buf, "%s\n", xdg);
@@ -175,10 +180,9 @@ static void list_vars(void)
 		if ((val = ptr->read(0))) {
 			if (ptr->multivalued && *val) {
 				struct string_list list = STRING_LIST_INIT_DUP;
-				int i;
 
 				string_list_split(&list, val, '\n', -1);
-				for (i = 0; i < list.nr; i++)
+				for (size_t i = 0; i < list.nr; i++)
 					printf("%s=%s\n", ptr->name, list.items[i].string);
 				string_list_clear(&list, 0);
 			} else {
@@ -209,11 +213,15 @@ static int show_config(const char *var, const char *value,
 	return git_default_config(var, value, ctx, cb);
 }
 
-int cmd_var(int argc, const char **argv, const char *prefix UNUSED)
+int cmd_var(int argc,
+	    const char **argv,
+	    const char *prefix UNUSED,
+	    struct repository *repo UNUSED)
 {
 	const struct git_var *git_var;
 	char *val;
 
+	show_usage_if_asked(argc, argv, var_usage);
 	if (argc != 2)
 		usage(var_usage);
 

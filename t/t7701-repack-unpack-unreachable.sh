@@ -5,7 +5,6 @@ test_description='git repack works correctly'
 GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
 export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
 
-TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 fsha1=
@@ -194,6 +193,22 @@ test_expect_success 'repack -k packs unreachable loose objects' '
 	git repack -adk &&
 	test_path_is_missing $objpath &&
 	git cat-file -p $sha1
+'
+
+test_expect_success 'repack -k packs unreachable loose objects without existing packfiles' '
+	test_when_finished "rm -rf repo" &&
+	git init repo &&
+	(
+		cd repo &&
+
+		oid=$(echo would-be-deleted-loose | git hash-object -w --stdin) &&
+		objpath=.git/objects/$(echo $sha1 | sed "s,..,&/,") &&
+		test_path_is_file $objpath &&
+
+		git repack -ad --keep-unreachable &&
+		test_path_is_missing $objpath &&
+		git cat-file -p $oid
+	)
 '
 
 test_done

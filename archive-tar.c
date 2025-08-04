@@ -1,6 +1,9 @@
 /*
  * Copyright (c) 2005, 2006 Rene Scharfe
  */
+
+#define USE_THE_REPOSITORY_VARIABLE
+
 #include "git-compat-util.h"
 #include "config.h"
 #include "gettext.h"
@@ -8,7 +11,8 @@
 #include "hex.h"
 #include "tar.h"
 #include "archive.h"
-#include "object-store-ll.h"
+#include "object-store.h"
+#include "strbuf.h"
 #include "streaming.h"
 #include "run-command.h"
 #include "write-or-die.h"
@@ -364,7 +368,7 @@ static struct archiver *find_tar_filter(const char *name, size_t len)
 	int i;
 	for (i = 0; i < nr_tar_filters; i++) {
 		struct archiver *ar = tar_filters[i];
-		if (!strncmp(ar->name, name, len) && !ar->name[len])
+		if (!xstrncmpz(ar->name, name, len))
 			return ar;
 	}
 	return NULL;
@@ -469,9 +473,7 @@ static const char internal_gzip_command[] = "git archive gzip";
 static int write_tar_filter_archive(const struct archiver *ar,
 				    struct archiver_args *args)
 {
-#if ZLIB_VERNUM >= 0x1221
 	struct gz_header_s gzhead = { .os = 3 }; /* Unix, for reproducibility */
-#endif
 	struct strbuf cmd = STRBUF_INIT;
 	struct child_process filter = CHILD_PROCESS_INIT;
 	int r;
@@ -482,10 +484,8 @@ static int write_tar_filter_archive(const struct archiver *ar,
 	if (!strcmp(ar->filter_command, internal_gzip_command)) {
 		write_block = tgz_write_block;
 		git_deflate_init_gzip(&gzstream, args->compression_level);
-#if ZLIB_VERNUM >= 0x1221
 		if (deflateSetHeader(&gzstream.z, &gzhead) != Z_OK)
 			BUG("deflateSetHeader() called too late");
-#endif
 		gzstream.next_out = outbuf;
 		gzstream.avail_out = sizeof(outbuf);
 

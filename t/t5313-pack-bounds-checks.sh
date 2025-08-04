@@ -2,16 +2,15 @@
 
 test_description='bounds-checking of access to mmapped on-disk file formats'
 
-TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 clear_base () {
 	test_when_finished 'restore_base' &&
-	rm -f $base
+	rm -r -f $base
 }
 
 restore_base () {
-	cp base-backup/* .git/objects/pack/
+	cp -r base-backup/* .git/objects/pack/
 }
 
 do_pack () {
@@ -64,9 +63,9 @@ test_expect_success 'set up base packfile and variables' '
 	git commit -m base &&
 	git repack -ad &&
 	base=$(echo .git/objects/pack/*) &&
-	chmod +w $base &&
+	chmod -R +w $base &&
 	mkdir base-backup &&
-	cp $base base-backup/ &&
+	cp -r $base base-backup/ &&
 	object=$(git rev-parse HEAD:file)
 '
 

@@ -5,7 +5,6 @@
 
 test_description='commit tests of various authorhip options. '
 
-TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 author_header () {
@@ -99,7 +98,7 @@ test_expect_success '--amend option with empty author' '
 	echo "Empty author test" >>foo &&
 	test_tick &&
 	test_must_fail git commit -a -m "empty author" --amend 2>err &&
-	test_i18ngrep "empty ident" err
+	test_grep "empty ident" err
 '
 
 test_expect_success '--amend option with missing author' '
@@ -112,7 +111,7 @@ test_expect_success '--amend option with missing author' '
 	echo "Missing author test" >>foo &&
 	test_tick &&
 	test_must_fail git commit -a -m "malformed author" --amend 2>err &&
-	test_i18ngrep "empty ident" err
+	test_grep "empty ident" err
 '
 
 test_expect_success '--reset-author makes the commit ours even with --amend option' '

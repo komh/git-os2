@@ -217,19 +217,19 @@ test_expect_success 'switch to another branch while carrying a deletion' '
 	git rm two &&
 
 	test_must_fail git checkout simple 2>errs &&
-	test_i18ngrep overwritten errs &&
+	test_grep overwritten errs &&
 
 	test_must_fail git read-tree --quiet -m -u HEAD simple 2>errs &&
 	test_must_be_empty errs
 '
 
 test_expect_success 'checkout to detach HEAD (with advice declined)' '
-	git config advice.detachedHead false &&
+	git config set advice.detachedHead false &&
 	rev=$(git rev-parse --short renamer^) &&
 	git checkout -f renamer &&
 	git clean -f &&
 	git checkout renamer^ 2>messages &&
-	test_i18ngrep "HEAD is now at $rev" messages &&
+	test_grep "HEAD is now at $rev" messages &&
 	test_line_count = 1 messages &&
 	H=$(git rev-parse --verify HEAD) &&
 	M=$(git show-ref -s --verify refs/heads/main) &&
@@ -244,7 +244,7 @@ test_expect_success 'checkout to detach HEAD (with advice declined)' '
 '
 
 test_expect_success 'checkout to detach HEAD' '
-	git config advice.detachedHead true &&
+	git config set advice.detachedHead true &&
 	rev=$(git rev-parse --short renamer^) &&
 	git checkout -f renamer &&
 	git clean -f &&
@@ -497,6 +497,24 @@ test_expect_success 'checkout unmerged stage' '
 	test ztheirside = "z$(cat file)"
 '
 
+test_expect_success 'checkout --ours is incompatible with switching' '
+	test_must_fail git checkout --ours 2>error &&
+	test_grep "needs the paths to check out" error &&
+
+	test_must_fail git checkout --ours HEAD 2>error &&
+	test_grep "cannot be used with switching" error &&
+
+	test_must_fail git checkout --ours main 2>error &&
+	test_grep "cannot be used with switching" error &&
+
+	git checkout --ours file
+'
+
+test_expect_success 'checkout path with --merge from tree-ish is a no-no' '
+	setup_conflicting_index &&
+	test_must_fail git checkout -m HEAD -- file
+'
+
 test_expect_success 'checkout with --merge' '
 	setup_conflicting_index &&
 	echo "none of the above" >sample &&
@@ -512,6 +530,48 @@ test_expect_success 'checkout with --merge' '
 		echo theirside &&
 		echo ">>>>>>> theirs"
 	) >merged &&
+	test_cmp expect fild &&
+	test_cmp expect filf &&
+	test_cmp merged file
+'
+
+test_expect_success 'checkout -m works after (mistaken) resolution' '
+	setup_conflicting_index &&
+	echo "none of the above" >sample &&
+	cat sample >fild &&
+	cat sample >file &&
+	cat sample >filf &&
+	# resolve to something
+	git add file &&
+	git checkout --merge -- fild file filf &&
+	{
+		echo "<<<<<<< ours" &&
+		echo ourside &&
+		echo "=======" &&
+		echo theirside &&
+		echo ">>>>>>> theirs"
+	} >merged &&
+	test_cmp expect fild &&
+	test_cmp expect filf &&
+	test_cmp merged file
+'
+
+test_expect_success 'checkout -m works after (mistaken) resolution to remove' '
+	setup_conflicting_index &&
+	echo "none of the above" >sample &&
+	cat sample >fild &&
+	cat sample >file &&
+	cat sample >filf &&
+	# resolve to remove
+	git rm file &&
+	git checkout --merge -- fild file filf &&
+	{
+		echo "<<<<<<< ours" &&
+		echo ourside &&
+		echo "=======" &&
+		echo theirside &&
+		echo ">>>>>>> theirs"
+	} >merged &&
 	test_cmp expect fild &&
 	test_cmp expect filf &&
 	test_cmp merged file
@@ -582,6 +642,72 @@ test_expect_success 'checkout --conflict=diff3' '
 	test_cmp expect fild &&
 	test_cmp expect filf &&
 	test_cmp merged file
+'
+
+test_expect_success 'checkout --conflict=diff3 --no-conflict does not merge' '
+	setup_conflicting_index &&
+	echo "none of the above" >expect &&
+	cat expect >fild &&
+	cat expect >file &&
+	test_must_fail git checkout --conflict=diff3 --no-conflict -- fild file 2>err &&
+	test_cmp expect file &&
+	test_cmp expect fild &&
+	echo "error: path ${SQ}file${SQ} is unmerged" >expect &&
+	test_cmp expect err
+'
+
+test_expect_success 'checkout --conflict=diff3 --no-merge does not merge' '
+	setup_conflicting_index &&
+	echo "none of the above" >expect &&
+	cat expect >fild &&
+	cat expect >file &&
+	test_must_fail git checkout --conflict=diff3 --no-merge -- fild file 2>err &&
+	test_cmp expect file &&
+	test_cmp expect fild &&
+	echo "error: path ${SQ}file${SQ} is unmerged" >expect &&
+	test_cmp expect err
+'
+
+test_expect_success 'checkout --no-merge --conflict=diff3 does merge' '
+	setup_conflicting_index &&
+	echo "none of the above" >fild &&
+	echo "none of the above" >file &&
+	git checkout --no-merge --conflict=diff3 -- fild file &&
+	echo "ourside" >expect &&
+	test_cmp expect fild &&
+	cat >expect <<-\EOF &&
+	<<<<<<< ours
+	ourside
+	||||||| base
+	original
+	=======
+	theirside
+	>>>>>>> theirs
+	EOF
+	test_cmp expect file
+'
+
+test_expect_success 'checkout --merge --conflict=diff3 --no-conflict does merge' '
+	setup_conflicting_index &&
+	echo "none of the above" >fild &&
+	echo "none of the above" >file &&
+	git checkout --merge --conflict=diff3 --no-conflict -- fild file &&
+	echo "ourside" >expect &&
+	test_cmp expect fild &&
+	cat >expect <<-\EOF &&
+	<<<<<<< ours
+	ourside
+	=======
+	theirside
+	>>>>>>> theirs
+	EOF
+	test_cmp expect file
+'
+
+test_expect_success 'checkout with invalid conflict style' '
+	test_must_fail git checkout --conflict=bad 2>actual -- file &&
+	echo "error: unknown conflict style ${SQ}bad${SQ}" >expect &&
+	test_cmp expect actual
 '
 
 test_expect_success 'failing checkout -b should not break working tree' '

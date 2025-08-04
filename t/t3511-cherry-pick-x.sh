@@ -2,7 +2,6 @@
 
 test_description='Test cherry-pick -x and -s'
 
-TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 pristine_detach () {
@@ -52,7 +51,7 @@ trailing empty lines
 "
 
 test_expect_success setup '
-	git config advice.detachedhead false &&
+	git config set advice.detachedhead false &&
 	echo unrelated >unrelated &&
 	git add unrelated &&
 	test_commit initial foo a &&

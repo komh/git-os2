@@ -46,6 +46,13 @@ test_expect_success 'output from clone' '
 	test $(grep Clon output | wc -l) = 1
 '
 
+test_expect_success 'output from clone with core.abbrev does not crash' '
+	rm -fr dst &&
+	echo "Cloning into ${SQ}dst${SQ}..." >expect &&
+	git -c core.abbrev=12 clone -n "file://$(pwd)/src" dst >actual 2>&1 &&
+	test_cmp expect actual
+'
+
 test_expect_success 'clone does not keep pack' '
 
 	rm -fr dst &&
@@ -155,6 +162,23 @@ test_expect_success 'clone --mirror does not repeat tags' '
 	! grep Duplicate mirror2/clone.err &&
 	grep some-tag mirror2/clone.out
 
+'
+
+test_expect_success 'clone with files ref format' '
+	test_when_finished "rm -rf ref-storage" &&
+	git clone --ref-format=files --mirror src ref-storage &&
+	echo files >expect &&
+	git -C ref-storage rev-parse --show-ref-format >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'clone with garbage ref format' '
+	cat >expect <<-EOF &&
+	fatal: unknown ref storage format ${SQ}garbage${SQ}
+	EOF
+	test_must_fail git clone --ref-format=garbage --mirror src ref-storage 2>err &&
+	test_cmp expect err &&
+	test_path_is_missing ref-storage
 '
 
 test_expect_success 'clone to destination with trailing /' '
@@ -506,19 +530,30 @@ do
 	'
 done
 
+# Parsing of paths that look like IPv6 addresses is broken on Cygwin.
+expectation_for_ipv6_tests=success
+if test_have_prereq CYGWIN
+then
+	expectation_for_ipv6_tests=failure
+fi
+
 #ipv6
 for repo in rep rep/home/project 123
 do
-	test_expect_success "clone [::1]:$repo" '
+	test_expect_$expectation_for_ipv6_tests "clone [::1]:$repo" '
 		test_clone_url [::1]:$repo ::1 "$repo"
 	'
 done
-#home directory
-test_expect_success "clone host:/~repo" '
+
+# Home directory. All tests that use "~repo" are broken in our CI job when the
+# leak sanitizer is enabled. It seems like either a bug in the sanitizer or in
+# glibc, but when executing getpwnam(3p) with an invalid username we eventually
+# start recursing in a call to free(3p), until bust the stack and segfault.
+test_expect_success !SANITIZE_LEAK "clone host:/~repo" '
 	test_clone_url host:/~repo host "~repo"
 '
 
-test_expect_success "clone [::1]:/~repo" '
+test_expect_$expectation_for_ipv6_tests !SANITIZE_LEAK "clone [::1]:/~repo" '
 	test_clone_url [::1]:/~repo ::1 "~repo"
 '
 
@@ -538,9 +573,9 @@ do
 		test_clone_url "ssh://host.xz$tcol/home/user/repo" host.xz /home/user/repo
 	'
 	# from home directory
-	test_expect_success "clone ssh://host.xz$tcol/~repo" '
-	test_clone_url "ssh://host.xz$tcol/~repo" host.xz "~repo"
-'
+	test_expect_success !SANITIZE_LEAK "clone ssh://host.xz$tcol/~repo" '
+		test_clone_url "ssh://host.xz$tcol/~repo" host.xz "~repo"
+	'
 done
 
 # with port number
@@ -549,7 +584,7 @@ test_expect_success 'clone ssh://host.xz:22/home/user/repo' '
 '
 
 # from home directory with port number
-test_expect_success 'clone ssh://host.xz:22/~repo' '
+test_expect_success !SANITIZE_LEAK 'clone ssh://host.xz:22/~repo' '
 	test_clone_url "ssh://host.xz:22/~repo" "-p 22 host.xz" "~repo"
 '
 
@@ -566,8 +601,8 @@ done
 for tuah in ::1 [::1] user@::1 user@[::1] [user@::1]
 do
 	euah=$(echo $tuah | tr -d "[]")
-	test_expect_success "clone ssh://$tuah/~repo" "
-	  test_clone_url ssh://$tuah/~repo $euah '~repo'
+	test_expect_success !SANITIZE_LEAK "clone ssh://$tuah/~repo" "
+		test_clone_url ssh://$tuah/~repo $euah '~repo'
 	"
 done
 
@@ -584,8 +619,8 @@ done
 for tuah in [::1] user@[::1] [user@::1]
 do
 	euah=$(echo $tuah | tr -d "[]")
-	test_expect_success "clone ssh://$tuah:22/~repo" "
-	  test_clone_url ssh://$tuah:22/~repo '-p 22' $euah '~repo'
+	test_expect_success !SANITIZE_LEAK "clone ssh://$tuah:22/~repo" "
+		  test_clone_url ssh://$tuah:22/~repo '-p 22' $euah '~repo'
 	"
 done
 
@@ -614,7 +649,7 @@ test_expect_success 'GIT_TRACE_PACKFILE produces a usable pack' '
 	git -C replay.git index-pack -v --stdin <tmp.pack
 '
 
-test_expect_success 'clone on case-insensitive fs' '
+test_expect_success PERL_TEST_HELPERS 'clone on case-insensitive fs' '
 	git init icasefs &&
 	(
 		cd icasefs &&
@@ -627,10 +662,25 @@ test_expect_success 'clone on case-insensitive fs' '
 	)
 '
 
-test_expect_success CASE_INSENSITIVE_FS 'colliding file detection' '
+test_expect_success PERL_TEST_HELPERS,CASE_INSENSITIVE_FS 'colliding file detection' '
 	grep X icasefs/warning &&
 	grep x icasefs/warning &&
-	test_i18ngrep "the following paths have collided" icasefs/warning
+	test_grep "the following paths have collided" icasefs/warning
+'
+
+test_expect_success CASE_INSENSITIVE_FS,SYMLINKS \
+		'colliding symlink/directory keeps directory' '
+	git init icasefs-colliding-symlink &&
+	(
+		cd icasefs-colliding-symlink &&
+		a=$(printf a | git hash-object -w --stdin) &&
+		printf "100644 %s 0\tA/dir/b\n120000 %s 0\ta\n" $a $a >idx &&
+		git update-index --index-info <idx &&
+		test_tick &&
+		git commit -m initial
+	) &&
+	git clone icasefs-colliding-symlink icasefs-colliding-symlink-clone &&
+	test_file_not_empty icasefs-colliding-symlink-clone/A/dir/b
 '
 
 test_expect_success 'clone with GIT_DEFAULT_HASH' '
@@ -696,7 +746,7 @@ test_expect_success 'partial clone: warn if server does not support object filte
 
 	git clone --filter=blob:limit=0 "file://$(pwd)/server" client 2> err &&
 
-	test_i18ngrep "filtering not recognized by server" err
+	test_grep "filtering not recognized by server" err
 '
 
 test_expect_success 'batch missing blob request during checkout' '
@@ -759,6 +809,18 @@ test_expect_success 'batch missing blob request does not inadvertently try to fe
 . "$TEST_DIRECTORY"/lib-httpd.sh
 start_httpd
 
+test_expect_success 'clone with includeIf' '
+	test_when_finished "rm -rf repo \"$HTTPD_DOCUMENT_ROOT_PATH/repo.git\"" &&
+	git clone --bare --no-local src "$HTTPD_DOCUMENT_ROOT_PATH/repo.git" &&
+
+	test_when_finished "rm \"$HOME\"/.gitconfig" &&
+	cat >"$HOME"/.gitconfig <<-EOF &&
+	[includeIf "onbranch:something"]
+		path = /does/not/exist.inc
+	EOF
+	git clone $HTTPD_URL/smart/repo.git repo
+'
+
 test_expect_success 'partial clone using HTTP' '
 	partial_clone "$HTTPD_DOCUMENT_ROOT_PATH/server" "$HTTPD_URL/smart/server"
 '
@@ -767,7 +829,7 @@ test_expect_success 'reject cloning shallow repository using HTTP' '
 	test_when_finished "rm -rf repo" &&
 	git clone --bare --no-local --depth=1 src "$HTTPD_DOCUMENT_ROOT_PATH/repo.git" &&
 	test_must_fail git -c protocol.version=2 clone --reject-shallow $HTTPD_URL/smart/repo.git repo 2>err &&
-	test_i18ngrep -e "source repository is shallow, reject to clone." err &&
+	test_grep -e "source repository is shallow, reject to clone." err &&
 
 	git clone --no-reject-shallow $HTTPD_URL/smart/repo.git repo
 '

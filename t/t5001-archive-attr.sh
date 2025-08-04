@@ -3,7 +3,6 @@
 test_description='git archive attribute tests'
 
 TEST_CREATE_REPO_NO_TEMPLATE=1
-TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 SUBSTFORMAT='%H (%h)%n'
@@ -133,12 +132,13 @@ test_expect_success 'git archive vs. bare' '
 '
 
 test_expect_success 'git archive with worktree attributes, bare' '
-	(cd bare && git archive --worktree-attributes HEAD) >bare-worktree.tar &&
+	(cd bare &&
+	git -c attr.tree=HEAD archive --worktree-attributes HEAD) >bare-worktree.tar &&
 	(mkdir bare-worktree && cd bare-worktree && "$TAR" xf -) <bare-worktree.tar
 '
 
 test_expect_missing	bare-worktree/ignored
-test_expect_exists	bare-worktree/ignored-by-tree
+test_expect_missing	bare-worktree/ignored-by-tree
 test_expect_exists	bare-worktree/ignored-by-worktree
 
 test_expect_success 'export-subst' '

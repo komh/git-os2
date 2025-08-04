@@ -2,7 +2,6 @@
 
 test_description='git bugreport'
 
-TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 test_expect_success 'create a report' '
@@ -39,16 +38,17 @@ test_expect_success 'sanity check "System Info" section' '
 
 	sed -ne "/^\[System Info\]$/,/^$/p" <git-bugreport-format.txt >system &&
 
-	# The beginning should match "git version --build-info" verbatim,
+	# The beginning should match "git version --build-options" verbatim,
 	# but rather than checking bit-for-bit equality, just test some basics.
-	grep "git version [0-9]." system &&
+	grep "git version " system &&
 	grep "shell-path: ." system &&
 
 	# After the version, there should be some more info.
 	# This is bound to differ from environment to environment,
 	# so we just do some rather high-level checks.
 	grep "uname: ." system &&
-	grep "compiler info: ." system
+	grep "compiler info: ." system &&
+	grep "zlib." system
 '
 
 test_expect_success 'dies if file with same name as report already exists' '
@@ -65,7 +65,14 @@ test_expect_success '--output-directory puts the report in the provided dir' '
 
 test_expect_success 'incorrect arguments abort with usage' '
 	test_must_fail git bugreport --false 2>output &&
-	test_i18ngrep usage output &&
+	test_grep usage output &&
+	test_path_is_missing git-bugreport-*
+'
+
+test_expect_success 'incorrect positional arguments abort with usage and hint' '
+	test_must_fail git bugreport false 2>output &&
+	test_grep usage output &&
+	test_grep false output &&
 	test_path_is_missing git-bugreport-*
 '
 
