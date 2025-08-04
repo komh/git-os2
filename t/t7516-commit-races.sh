@@ -1,6 +1,7 @@
 #!/bin/sh
 
 test_description='git commit races'
+
 . ./test-lib.sh
 
 test_expect_success 'race to create orphan commit' '

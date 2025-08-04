@@ -22,6 +22,8 @@ struct object_context {
 	char *path;
 };
 
+void object_context_release(struct object_context *ctx);
+
 /*
  * Return an abbreviated sha1 unique within this repository's object database.
  * The result will be at least `len` characters long, and will be NUL
@@ -49,6 +51,12 @@ void strbuf_repo_add_unique_abbrev(struct strbuf *sb, struct repository *repo,
 void strbuf_add_unique_abbrev(struct strbuf *sb, const struct object_id *oid,
 			      int abbrev_len);
 
+/*
+ * This is like "get_oid_basic()", except it allows "object ID expressions",
+ * notably "xyz^" for "parent of xyz". Accepts GET_OID_* flags.
+ */
+int repo_get_oid_with_flags(struct repository *r, const char *str,
+			    struct object_id *oid, unsigned flags);
 int repo_get_oid(struct repository *r, const char *str, struct object_id *oid);
 __attribute__((format (printf, 2, 3)))
 int get_oidf(struct object_id *oid, const char *fmt, ...);
@@ -67,7 +75,8 @@ enum get_oid_result get_oid_with_context(struct repository *repo, const char *st
 
 
 typedef int each_abbrev_fn(const struct object_id *oid, void *);
-int repo_for_each_abbrev(struct repository *r, const char *prefix, each_abbrev_fn, void *);
+int repo_for_each_abbrev(struct repository *r, const char *prefix,
+			 const struct git_hash_algo *algo, each_abbrev_fn, void *);
 
 int set_disambiguate_hint_config(const char *var, const char *value);
 

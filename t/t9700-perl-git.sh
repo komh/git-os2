@@ -5,7 +5,6 @@
 
 test_description='perl interface (Git.pm)'
 
-TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 . "$TEST_DIRECTORY"/lib-perl.sh
 
@@ -45,7 +44,8 @@ test_expect_success 'set up test repository' '
 '
 
 test_expect_success 'set up bare repository' '
-	git init --bare bare.git
+	git init --bare bare.git &&
+	git -C bare.git --work-tree=. commit --allow-empty -m "bare commit"
 '
 
 test_expect_success 'use t9700/test.pl to test Git.pm' '

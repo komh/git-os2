@@ -23,27 +23,20 @@
 #include <crtdbg.h>
 #endif
 
+#include "compat/posix.h"
+
 struct strbuf;
 
-
-#define _FILE_OFFSET_BITS 64
-
-
-/* Derived from Linux "Features Test Macro" header
- * Convenience macros to test the versions of gcc (or
- * a compatible compiler).
- * Use them like this:
- *  #if GIT_GNUC_PREREQ (2,8)
- *   ... code requiring gcc 2.8 or later ...
- *  #endif
-*/
-#if defined(__GNUC__) && defined(__GNUC_MINOR__)
-# define GIT_GNUC_PREREQ(maj, min) \
-	((__GNUC__ << 16) + __GNUC_MINOR__ >= ((maj) << 16) + (min))
+#if defined(__GNUC__) || defined(__clang__)
+#  define PRAGMA(pragma)           _Pragma(#pragma)
+#  define DISABLE_WARNING(warning) PRAGMA(GCC diagnostic ignored #warning)
 #else
- #define GIT_GNUC_PREREQ(maj, min) 0
+#  define DISABLE_WARNING(warning)
 #endif
 
+#ifdef DISABLE_SIGN_COMPARE_WARNINGS
+DISABLE_WARNING(-Wsign-compare)
+#endif
 
 #ifndef FLEX_ARRAY
 /*
@@ -100,12 +93,19 @@ struct strbuf;
 # define BARF_UNLESS_COPYABLE(dst, src) \
 	BUILD_ASSERT_OR_ZERO(__builtin_types_compatible_p(__typeof__(*(dst)), \
 							  __typeof__(*(src))))
+
+# define BARF_UNLESS_SIGNED(var)   BUILD_ASSERT_OR_ZERO(((__typeof__(var)) -1) < 0)
+# define BARF_UNLESS_UNSIGNED(var) BUILD_ASSERT_OR_ZERO(((__typeof__(var)) -1) > 0)
 #else
 # define BARF_UNLESS_AN_ARRAY(arr) 0
 # define BARF_UNLESS_COPYABLE(dst, src) \
 	BUILD_ASSERT_OR_ZERO(0 ? ((*(dst) = *(src)), 0) : \
 				 sizeof(*(dst)) == sizeof(*(src)))
+
+# define BARF_UNLESS_SIGNED(var)   0
+# define BARF_UNLESS_UNSIGNED(var) 0
 #endif
+
 /*
  * ARRAY_SIZE - get the number of elements in a visible array
  * @x: the array whose size you want.
@@ -166,96 +166,16 @@ struct strbuf;
 /* Approximation of the length of the decimal representation of this type. */
 #define decimal_length(x)	((int)(sizeof(x) * 2.56 + 0.5) + 1)
 
-#ifdef __MINGW64__
-#define _POSIX_C_SOURCE 1
-#elif defined(__sun__)
- /*
-  * On Solaris, when _XOPEN_EXTENDED is set, its header file
-  * forces the programs to be XPG4v2, defeating any _XOPEN_SOURCE
-  * setting to say we are XPG5 or XPG6.  Also on Solaris,
-  * XPG6 programs must be compiled with a c99 compiler, while
-  * non XPG6 programs must be compiled with a pre-c99 compiler.
-  */
-# if __STDC_VERSION__ - 0 >= 199901L
-# define _XOPEN_SOURCE 600
-# else
-# define _XOPEN_SOURCE 500
-# endif
-#elif !defined(__APPLE__) && !defined(__FreeBSD__) && !defined(__USLC__) && \
-      !defined(_M_UNIX) && !defined(__sgi) && !defined(__DragonFly__) && \
-      !defined(__TANDEM) && !defined(__QNX__) && !defined(__MirBSD__) && \
-      !defined(__CYGWIN__)
-#define _XOPEN_SOURCE 600 /* glibc2 and AIX 5.3L need 500, OpenBSD needs 600 for S_ISLNK() */
-#define _XOPEN_SOURCE_EXTENDED 1 /* AIX 5.3L needs this */
-#endif
-#define _ALL_SOURCE 1
-#define _GNU_SOURCE 1
-#define _BSD_SOURCE 1
-#define _DEFAULT_SOURCE 1
-#define _NETBSD_SOURCE 1
-#define _SGI_SOURCE 1
-
-#if GIT_GNUC_PREREQ(4, 5)
-#define UNUSED __attribute__((unused)) \
-	__attribute__((deprecated ("parameter declared as UNUSED")))
-#elif defined(__GNUC__)
-#define UNUSED __attribute__((unused)) \
-	__attribute__((deprecated))
+#if defined(NO_UNIX_SOCKETS) || !defined(GIT_WINDOWS_NATIVE)
+static inline int _have_unix_sockets(void)
+{
+#if defined(NO_UNIX_SOCKETS)
+	return 0;
 #else
-#define UNUSED
+	return 1;
 #endif
-
-#if defined(WIN32) && !defined(__CYGWIN__) /* Both MinGW and MSVC */
-# if !defined(_WIN32_WINNT)
-#  define _WIN32_WINNT 0x0600
-# endif
-#define WIN32_LEAN_AND_MEAN  /* stops windows.h including winsock.h */
-#include <winsock2.h>
-#ifndef NO_UNIX_SOCKETS
-#include <afunix.h>
-#endif
-#include <windows.h>
-#define GIT_WINDOWS_NATIVE
-#endif
-
-#include <unistd.h>
-#include <stdio.h>
-#include <sys/stat.h>
-#include <fcntl.h>
-#include <stddef.h>
-#include <stdlib.h>
-#include <stdarg.h>
-#include <string.h>
-#ifdef HAVE_STRINGS_H
-#include <strings.h> /* for strcasecmp() */
-#endif
-#include <errno.h>
-#include <limits.h>
-#include <locale.h>
-#ifdef NEEDS_SYS_PARAM_H
-#include <sys/param.h>
-#endif
-#include <sys/types.h>
-#include <dirent.h>
-#include <sys/time.h>
-#include <time.h>
-#include <signal.h>
-#include <assert.h>
-#include <regex.h>
-#include <utime.h>
-#include <syslog.h>
-#if !defined(NO_POLL_H)
-#include <poll.h>
-#elif !defined(NO_SYS_POLL_H)
-#include <sys/poll.h>
-#else
-/* Pull the compat stuff */
-#if !defined(NO_POLL_H)
-#include <poll.h>
-#endif
-#endif
-#ifdef HAVE_BSD_SYSCTL
-#include <sys/sysctl.h>
+}
+#define have_unix_sockets _have_unix_sockets
 #endif
 
 /* Used by compat/win32/path-utils.h, and more */
@@ -278,48 +198,6 @@ static inline int is_xplatform_dir_sep(int c)
 #elif defined(_MSC_VER)
 #include "compat/win32/path-utils.h"
 #include "compat/msvc.h"
-#else
-#include <sys/utsname.h>
-#include <sys/wait.h>
-#include <sys/resource.h>
-#include <sys/socket.h>
-#include <sys/ioctl.h>
-#include <sys/statvfs.h>
-#include <termios.h>
-#ifndef NO_SYS_SELECT_H
-#include <sys/select.h>
-#endif
-#include <netinet/in.h>
-#include <netinet/tcp.h>
-#include <arpa/inet.h>
-#include <netdb.h>
-#include <pwd.h>
-#include <sys/un.h>
-#ifndef NO_INTTYPES_H
-#include <inttypes.h>
-#else
-#include <stdint.h>
-#endif
-#ifdef HAVE_ARC4RANDOM_LIBBSD
-#include <bsd/stdlib.h>
-#endif
-#ifdef HAVE_GETRANDOM
-#include <sys/random.h>
-#endif
-#ifdef NO_INTPTR_T
-/*
- * On I16LP32, ILP32 and LP64 "long" is the safe bet, however
- * on LLP86, IL33LLP64 and P64 it needs to be "long long",
- * while on IP16 and IP16L32 it is "int" (resp. "short")
- * Size needs to match (or exceed) 'sizeof(void *)'.
- * We can't take "long long" here as not everybody has it.
- */
-typedef long intptr_t;
-typedef unsigned long uintptr_t;
-#endif
-#undef _ALL_SOURCE /* AIX 5.3L defines a struct list with _ALL_SOURCE. */
-#include <grp.h>
-#define _ALL_SOURCE 1
 #endif
 
 /* used on Mac OS X */
@@ -340,62 +218,9 @@ static inline const char *precompose_string_if_needed(const char *in)
 #define probe_utf8_pathname_composition()
 #endif
 
-#ifdef MKDIR_WO_TRAILING_SLASH
-#define mkdir(a,b) compat_mkdir_wo_trailing_slash((a),(b))
-int compat_mkdir_wo_trailing_slash(const char*, mode_t);
-#endif
-
-#ifdef time
-#undef time
-#endif
-static inline time_t git_time(time_t *tloc)
-{
-	struct timeval tv;
-
-	/*
-	 * Avoid time(NULL), which can disagree with gettimeofday(2)
-	 * and filesystem timestamps.
-	 */
-	gettimeofday(&tv, NULL);
-
-	if (tloc)
-		*tloc = tv.tv_sec;
-	return tv.tv_sec;
-}
-#define time git_time
-
-#ifdef NO_STRUCT_ITIMERVAL
-struct itimerval {
-	struct timeval it_interval;
-	struct timeval it_value;
-};
-#endif
-
-#ifdef NO_SETITIMER
-static inline int git_setitimer(int which UNUSED,
-				const struct itimerval *value UNUSED,
-				struct itimerval *newvalue UNUSED) {
-	return 0; /* pretend success */
-}
-#undef setitimer
-#define setitimer(which,value,ovalue) git_setitimer(which,value,ovalue)
-#endif
-
-#ifndef NO_LIBGEN_H
-#include <libgen.h>
-#else
-#define basename gitbasename
-char *gitbasename(char *);
-#define dirname gitdirname
-char *gitdirname(char *);
-#endif
-
-#ifndef NO_ICONV
-#include <iconv.h>
-#endif
-
 #ifndef NO_OPENSSL
 #ifdef __APPLE__
+#undef __AVAILABILITY_MACROS_USES_AVAILABILITY
 #define __AVAILABILITY_MACROS_USES_AVAILABILITY 0
 #include <AvailabilityMacros.h>
 #undef DEPRECATED_ATTRIBUTE
@@ -409,30 +234,6 @@ char *gitdirname(char *);
 #ifdef HAVE_SYSINFO
 # include <sys/sysinfo.h>
 #endif
-
-/* On most systems <netdb.h> would have given us this, but
- * not on some systems (e.g. z/OS).
- */
-#ifndef NI_MAXHOST
-#define NI_MAXHOST 1025
-#endif
-
-#ifndef NI_MAXSERV
-#define NI_MAXSERV 32
-#endif
-
-/* On most systems <limits.h> would have given us this, but
- * not on some systems (e.g. GNU/Hurd).
- */
-#ifndef PATH_MAX
-#define PATH_MAX 4096
-#endif
-
-typedef uintmax_t timestamp_t;
-#define PRItime PRIuMAX
-#define parse_timestamp strtoumax
-#define TIME_MAX UINTMAX_MAX
-#define TIME_MIN 0
 
 #ifndef PATH_SEP
 #define PATH_SEP ':'
@@ -455,11 +256,6 @@ static inline int noop_core_config(const char *var UNUSED,
 	return 0;
 }
 #define platform_core_config noop_core_config
-#endif
-
-int lstat_cache_aware_rmdir(const char *path);
-#if !defined(__MINGW32__) && !defined(_MSC_VER)
-#define rmdir lstat_cache_aware_rmdir
 #endif
 
 #ifndef has_dos_drive_prefix
@@ -492,6 +288,14 @@ static inline int git_offset_1st_component(const char *path)
 	return is_dir_sep(path[0]);
 }
 #define offset_1st_component git_offset_1st_component
+#endif
+
+#ifndef fspathcmp
+#define fspathcmp git_fspathcmp
+#endif
+
+#ifndef fspathncmp
+#define fspathncmp git_fspathncmp
 #endif
 
 #ifndef is_valid_path
@@ -629,6 +433,17 @@ static inline int git_has_dir_sep(const char *path)
 #define RESULT_MUST_BE_USED
 #endif
 
+/*
+ * MAYBE_UNUSED marks a function parameter that may be unused, but
+ * whose use is not an error.  It also can be used to annotate a
+ * function, a variable, or a type that may be unused.
+ *
+ * Depending on a configuration, all uses of such a thing may become
+ * #ifdef'ed away.  Marking it with UNUSED would give a warning in a
+ * compilation where it is indeed used, and not marking it at all
+ * would give a warning in a compilation where it is unused.  In such
+ * a case, MAYBE_UNUSED is the appropriate annotation to use.
+ */
 #define MAYBE_UNUSED __attribute__((__unused__))
 
 #include "compat/bswap.h"
@@ -646,6 +461,8 @@ int error(const char *err, ...) __attribute__((format (printf, 1, 2)));
 int error_errno(const char *err, ...) __attribute__((format (printf, 1, 2)));
 void warning(const char *err, ...) __attribute__((format (printf, 1, 2)));
 void warning_errno(const char *err, ...) __attribute__((format (printf, 1, 2)));
+
+void show_usage_if_asked(int ac, const char **av, const char *err);
 
 #ifndef NO_OPENSSL
 #ifdef APPLE_COMMON_CRYPTO
@@ -686,11 +503,11 @@ report_fn get_warn_routine(void);
 void set_die_is_recursing_routine(int (*routine)(void));
 
 /*
- * If the string "str" begins with the string found in "prefix", return 1.
+ * If the string "str" begins with the string found in "prefix", return true.
  * The "out" parameter is set to "str + strlen(prefix)" (i.e., to the point in
  * the string right after the prefix).
  *
- * Otherwise, return 0 and leave "out" untouched.
+ * Otherwise, return false and leave "out" untouched.
  *
  * Examples:
  *
@@ -701,57 +518,58 @@ void set_die_is_recursing_routine(int (*routine)(void));
  *   [skip prefix if present, otherwise use whole string]
  *   skip_prefix(name, "refs/heads/", &name);
  */
-static inline int skip_prefix(const char *str, const char *prefix,
-			      const char **out)
+static inline bool skip_prefix(const char *str, const char *prefix,
+			       const char **out)
 {
 	do {
 		if (!*prefix) {
 			*out = str;
-			return 1;
+			return true;
 		}
 	} while (*str++ == *prefix++);
-	return 0;
+	return false;
 }
 
 /*
  * Like skip_prefix, but promises never to read past "len" bytes of the input
  * buffer, and returns the remaining number of bytes in "out" via "outlen".
  */
-static inline int skip_prefix_mem(const char *buf, size_t len,
-				  const char *prefix,
-				  const char **out, size_t *outlen)
+static inline bool skip_prefix_mem(const char *buf, size_t len,
+				   const char *prefix,
+				   const char **out, size_t *outlen)
 {
 	size_t prefix_len = strlen(prefix);
 	if (prefix_len <= len && !memcmp(buf, prefix, prefix_len)) {
 		*out = buf + prefix_len;
 		*outlen = len - prefix_len;
-		return 1;
+		return true;
 	}
-	return 0;
+	return false;
 }
 
 /*
- * If buf ends with suffix, return 1 and subtract the length of the suffix
- * from *len. Otherwise, return 0 and leave *len untouched.
+ * If buf ends with suffix, return true and subtract the length of the suffix
+ * from *len. Otherwise, return false and leave *len untouched.
  */
-static inline int strip_suffix_mem(const char *buf, size_t *len,
-				   const char *suffix)
+static inline bool strip_suffix_mem(const char *buf, size_t *len,
+				    const char *suffix)
 {
 	size_t suflen = strlen(suffix);
 	if (*len < suflen || memcmp(buf + (*len - suflen), suffix, suflen))
-		return 0;
+		return false;
 	*len -= suflen;
-	return 1;
+	return true;
 }
 
 /*
- * If str ends with suffix, return 1 and set *len to the size of the string
- * without the suffix. Otherwise, return 0 and set *len to the size of the
+ * If str ends with suffix, return true and set *len to the size of the string
+ * without the suffix. Otherwise, return false and set *len to the size of the
  * string.
  *
  * Note that we do _not_ NUL-terminate str to the new length.
  */
-static inline int strip_suffix(const char *str, const char *suffix, size_t *len)
+static inline bool strip_suffix(const char *str, const char *suffix,
+				size_t *len)
 {
 	*len = strlen(str);
 	return strip_suffix_mem(str, len, suffix);
@@ -766,25 +584,6 @@ static inline int strip_suffix(const char *str, const char *suffix, size_t *len)
 	       BUILD_ASSERT_OR_ZERO(sizeof(a) == sizeof(b)));	\
 	memcpy(_swap_b_ptr, _swap_buffer, sizeof(a));		\
 } while (0)
-
-#if defined(NO_MMAP) || defined(USE_WIN32_MMAP)
-
-#ifndef PROT_READ
-#define PROT_READ 1
-#define PROT_WRITE 2
-#define MAP_PRIVATE 1
-#endif
-
-#define mmap git_mmap
-#define munmap git_munmap
-void *git_mmap(void *start, size_t length, int prot, int flags, int fd, off_t offset);
-int git_munmap(void *start, size_t length);
-
-#else /* NO_MMAP || USE_WIN32_MMAP */
-
-#include <sys/mman.h>
-
-#endif /* NO_MMAP || USE_WIN32_MMAP */
 
 #ifdef NO_MMAP
 
@@ -801,176 +600,17 @@ int git_munmap(void *start, size_t length);
 
 #endif /* NO_MMAP */
 
-#ifndef MAP_FAILED
-#define MAP_FAILED ((void *)-1)
-#endif
-
 #ifdef NO_ST_BLOCKS_IN_STRUCT_STAT
 #define on_disk_bytes(st) ((st).st_size)
 #else
 #define on_disk_bytes(st) ((st).st_blocks * 512)
 #endif
 
-#ifdef NEEDS_MODE_TRANSLATION
-#undef S_IFMT
-#undef S_IFREG
-#undef S_IFDIR
-#undef S_IFLNK
-#undef S_IFBLK
-#undef S_IFCHR
-#undef S_IFIFO
-#undef S_IFSOCK
-#define S_IFMT   0170000
-#define S_IFREG  0100000
-#define S_IFDIR  0040000
-#define S_IFLNK  0120000
-#define S_IFBLK  0060000
-#define S_IFCHR  0020000
-#define S_IFIFO  0010000
-#define S_IFSOCK 0140000
-#ifdef stat
-#undef stat
-#endif
-#define stat(path, buf) git_stat(path, buf)
-int git_stat(const char *, struct stat *);
-#ifdef fstat
-#undef fstat
-#endif
-#define fstat(fd, buf) git_fstat(fd, buf)
-int git_fstat(int, struct stat *);
-#ifdef lstat
-#undef lstat
-#endif
-#define lstat(path, buf) git_lstat(path, buf)
-int git_lstat(const char *, struct stat *);
-#endif
-
 #define DEFAULT_PACKED_GIT_LIMIT \
 	((1024L * 1024L) * (size_t)(sizeof(void*) >= 8 ? (32 * 1024L * 1024L) : 256))
 
-#ifdef NO_PREAD
-#define pread git_pread
-ssize_t git_pread(int fd, void *buf, size_t count, off_t offset);
-#endif
-
-#ifdef NO_SETENV
-#define setenv gitsetenv
-int gitsetenv(const char *, const char *, int);
-#endif
-
-#ifdef NO_MKDTEMP
-#define mkdtemp gitmkdtemp
-char *gitmkdtemp(char *);
-#endif
-
-#ifdef NO_UNSETENV
-#define unsetenv gitunsetenv
-int gitunsetenv(const char *);
-#endif
-
-#ifdef NO_STRCASESTR
-#define strcasestr gitstrcasestr
-char *gitstrcasestr(const char *haystack, const char *needle);
-#endif
-
-#ifdef NO_STRLCPY
-#define strlcpy gitstrlcpy
-size_t gitstrlcpy(char *, const char *, size_t);
-#endif
-
-#ifdef NO_STRTOUMAX
-#define strtoumax gitstrtoumax
-uintmax_t gitstrtoumax(const char *, char **, int);
-#define strtoimax gitstrtoimax
-intmax_t gitstrtoimax(const char *, char **, int);
-#endif
-
-#ifdef NO_HSTRERROR
-#define hstrerror githstrerror
-const char *githstrerror(int herror);
-#endif
-
-#ifdef NO_MEMMEM
-#define memmem gitmemmem
-void *gitmemmem(const void *haystack, size_t haystacklen,
-		const void *needle, size_t needlelen);
-#endif
-
-#ifdef OVERRIDE_STRDUP
-#ifdef strdup
-#undef strdup
-#endif
-#define strdup gitstrdup
-char *gitstrdup(const char *s);
-#endif
-
-#ifdef NO_GETPAGESIZE
-#define getpagesize() sysconf(_SC_PAGESIZE)
-#endif
-
-#ifndef O_CLOEXEC
-#define O_CLOEXEC 0
-#endif
-
-#ifdef FREAD_READS_DIRECTORIES
-# if !defined(SUPPRESS_FOPEN_REDEFINITION)
-#  ifdef fopen
-#   undef fopen
-#  endif
-#  define fopen(a,b) git_fopen(a,b)
-# endif
-FILE *git_fopen(const char*, const char*);
-#endif
-
-#ifdef SNPRINTF_RETURNS_BOGUS
-#ifdef snprintf
-#undef snprintf
-#endif
-#define snprintf git_snprintf
-int git_snprintf(char *str, size_t maxsize,
-		 const char *format, ...);
-#ifdef vsnprintf
-#undef vsnprintf
-#endif
-#define vsnprintf git_vsnprintf
-int git_vsnprintf(char *str, size_t maxsize,
-		  const char *format, va_list ap);
-#endif
-
-#ifdef OPEN_RETURNS_EINTR
-#undef open
-#define open git_open_with_retry
-int git_open_with_retry(const char *path, int flag, ...);
-#endif
-
-#ifdef __GLIBC_PREREQ
-#if __GLIBC_PREREQ(2, 1)
-#define HAVE_STRCHRNUL
-#endif
-#endif
-
-#ifndef HAVE_STRCHRNUL
-#define strchrnul gitstrchrnul
-static inline char *gitstrchrnul(const char *s, int c)
-{
-	while (*s && *s != c)
-		s++;
-	return (char *)s;
-}
-#endif
-
-#ifdef NO_INET_PTON
-int inet_pton(int af, const char *src, void *dst);
-#endif
-
-#ifdef NO_INET_NTOP
-const char *inet_ntop(int af, const void *src, char *dst, size_t size);
-#endif
-
-#ifdef NO_PTHREADS
-#define atexit git_atexit
-int git_atexit(void (*handler)(void));
-#endif
+int git_open_cloexec(const char *name, int flags);
+#define git_open(name) git_open_cloexec(name, O_RDONLY)
 
 static inline size_t st_add(size_t a, size_t b)
 {
@@ -1015,12 +655,37 @@ static inline unsigned long cast_size_t_to_ulong(size_t a)
 	return (unsigned long)a;
 }
 
+static inline uint32_t cast_size_t_to_uint32_t(size_t a)
+{
+	if (a != (uint32_t)a)
+		die("object too large to read on this platform: %"
+		    PRIuMAX" is cut off to %u",
+		    (uintmax_t)a, (uint32_t)a);
+	return (uint32_t)a;
+}
+
 static inline int cast_size_t_to_int(size_t a)
 {
 	if (a > INT_MAX)
 		die("number too large to represent as int on this platform: %"PRIuMAX,
 		    (uintmax_t)a);
 	return (int)a;
+}
+
+static inline uint64_t u64_mult(uint64_t a, uint64_t b)
+{
+	if (unsigned_mult_overflows(a, b))
+		die("uint64_t overflow: %"PRIuMAX" * %"PRIuMAX,
+		    (uintmax_t)a, (uintmax_t)b);
+	return a * b;
+}
+
+static inline uint64_t u64_add(uint64_t a, uint64_t b)
+{
+	if (unsigned_add_overflows(a, b))
+		die("uint64_t overflow: %"PRIuMAX" + %"PRIuMAX,
+		    (uintmax_t)a, (uintmax_t)b);
+	return a + b;
 }
 
 /*
@@ -1229,12 +894,6 @@ static inline size_t xsize_t(off_t len)
 	return (size_t) len;
 }
 
-#ifndef HOST_NAME_MAX
-#define HOST_NAME_MAX 256
-#endif
-
-#include "sane-ctype.h"
-
 /*
  * Like skip_prefix, but compare case-insensitively. Note that the comparison
  * is done via tolower(), so it is strictly ASCII (no multi-byte characters or
@@ -1300,34 +959,6 @@ static inline int strtol_i(char const *s, int base, int *result)
 	return 0;
 }
 
-void git_stable_qsort(void *base, size_t nmemb, size_t size,
-		      int(*compar)(const void *, const void *));
-#ifdef INTERNAL_QSORT
-#define qsort git_stable_qsort
-#endif
-
-#define QSORT(base, n, compar) sane_qsort((base), (n), sizeof(*(base)), compar)
-static inline void sane_qsort(void *base, size_t nmemb, size_t size,
-			      int(*compar)(const void *, const void *))
-{
-	if (nmemb > 1)
-		qsort(base, nmemb, size, compar);
-}
-
-#define STABLE_QSORT(base, n, compar) \
-	git_stable_qsort((base), (n), sizeof(*(base)), compar)
-
-#ifndef HAVE_ISO_QSORT_S
-int git_qsort_s(void *base, size_t nmemb, size_t size,
-		int (*compar)(const void *, const void *, void *), void *ctx);
-#define qsort_s git_qsort_s
-#endif
-
-#define QSORT_S(base, n, compar, ctx) do {			\
-	if (qsort_s((base), (n), sizeof(*(base)), compar, ctx))	\
-		BUG("qsort_s() failed");			\
-} while (0)
-
 #ifndef REG_STARTEND
 #error "Git requires REG_STARTEND support. Compile with NO_REGEX=NeedsStartEnd"
 #endif
@@ -1352,37 +983,10 @@ int git_regcomp(regex_t *preg, const char *pattern, int cflags);
 # define FORCE_DIR_SET_GID 0
 #endif
 
-#ifdef NO_NSEC
-#undef USE_NSEC
-#define ST_CTIME_NSEC(st) 0
-#define ST_MTIME_NSEC(st) 0
-#else
-#ifdef USE_ST_TIMESPEC
-#define ST_CTIME_NSEC(st) ((unsigned int)((st).st_ctimespec.tv_nsec))
-#define ST_MTIME_NSEC(st) ((unsigned int)((st).st_mtimespec.tv_nsec))
-#else
-#define ST_CTIME_NSEC(st) ((unsigned int)((st).st_ctim.tv_nsec))
-#define ST_MTIME_NSEC(st) ((unsigned int)((st).st_mtim.tv_nsec))
-#endif
-#endif
-
 #ifdef UNRELIABLE_FSTAT
 #define fstat_is_reliable() 0
 #else
 #define fstat_is_reliable() 1
-#endif
-
-#ifndef va_copy
-/*
- * Since an obvious implementation of va_list would be to make it a
- * pointer into the stack frame, a simple assignment will work on
- * many systems.  But let's try to be more portable.
- */
-#ifdef __va_copy
-#define va_copy(dst, src) __va_copy(dst, src)
-#else
-#define va_copy(dst, src) ((dst) = (src))
-#endif
 #endif
 
 /* usage.c: only to be used for testing BUG() implementation (see test-tool) */
@@ -1394,6 +998,8 @@ extern int bug_called_must_BUG;
 __attribute__((format (printf, 3, 4))) NORETURN
 void BUG_fl(const char *file, int line, const char *fmt, ...);
 #define BUG(...) BUG_fl(__FILE__, __LINE__, __VA_ARGS__)
+/* ASSERT: like assert(), but won't be compiled out with NDEBUG */
+#define ASSERT(a) if (!(a)) BUG("Assertion `" #a "' failed.")
 __attribute__((format (printf, 3, 4)))
 void bug_fl(const char *file, int line, const char *fmt, ...);
 #define bug(...) bug_fl(__FILE__, __LINE__, __VA_ARGS__)
@@ -1412,41 +1018,6 @@ void bug_fl(const char *file, int line, const char *fmt, ...);
 
 #ifndef SHELL_PATH
 # define SHELL_PATH "/bin/sh"
-#endif
-
-#ifndef _POSIX_THREAD_SAFE_FUNCTIONS
-static inline void git_flockfile(FILE *fh UNUSED)
-{
-	; /* nothing */
-}
-static inline void git_funlockfile(FILE *fh UNUSED)
-{
-	; /* nothing */
-}
-#undef flockfile
-#undef funlockfile
-#undef getc_unlocked
-#define flockfile(fh) git_flockfile(fh)
-#define funlockfile(fh) git_funlockfile(fh)
-#define getc_unlocked(fh) getc(fh)
-#endif
-
-#ifdef FILENO_IS_A_MACRO
-int git_fileno(FILE *stream);
-# ifndef COMPAT_CODE_FILENO
-#  undef fileno
-#  define fileno(p) git_fileno(p)
-# endif
-#endif
-
-#ifdef NEED_ACCESS_ROOT_HANDLER
-int git_access(const char *path, int mode);
-# ifndef COMPAT_CODE_ACCESS
-#  ifdef access
-#  undef access
-#  endif
-#  define access(path, mode) git_access(path, mode)
-# endif
 #endif
 
 /*
@@ -1472,38 +1043,6 @@ int cmd_main(int, const char **);
  */
 int common_exit(const char *file, int line, int code);
 #define exit(code) exit(common_exit(__FILE__, __LINE__, (code)))
-
-/*
- * You can mark a stack variable with UNLEAK(var) to avoid it being
- * reported as a leak by tools like LSAN or valgrind. The argument
- * should generally be the variable itself (not its address and not what
- * it points to). It's safe to use this on pointers which may already
- * have been freed, or on pointers which may still be in use.
- *
- * Use this _only_ for a variable that leaks by going out of scope at
- * program exit (so only from cmd_* functions or their direct helpers).
- * Normal functions, especially those which may be called multiple
- * times, should actually free their memory. This is only meant as
- * an annotation, and does nothing in non-leak-checking builds.
- */
-#ifdef SUPPRESS_ANNOTATED_LEAKS
-void unleak_memory(const void *ptr, size_t len);
-#define UNLEAK(var) unleak_memory(&(var), sizeof(var))
-#else
-#define UNLEAK(var) do {} while (0)
-#endif
-
-#define z_const
-#include <zlib.h>
-
-#if ZLIB_VERNUM < 0x1290
-/*
- * This is uncompress2, which is only available in zlib >= 1.2.9
- * (released as of early 2017). See compat/zlib-uncompress2.c.
- */
-int uncompress2(Bytef *dest, uLongf *destLen, const Bytef *source,
-		uLong *sourceLen);
-#endif
 
 /*
  * This include must come after system headers, since it introduces macros that
@@ -1548,5 +1087,21 @@ static inline void *container_of_or_null_offset(void *ptr, size_t offset)
 #define OFFSETOF_VAR(ptr, member) \
 	((uintptr_t)&(ptr)->member - (uintptr_t)(ptr))
 #endif /* !__GNUC__ */
+
+/*
+ * Prevent an overly clever compiler from optimizing an expression
+ * out, triggering a false positive when building with the
+ * -Wunreachable-code option. false_but_the_compiler_does_not_know_it_
+ * is defined in a compilation unit separate from where the macro is
+ * used, initialized to 0, and never modified.
+ */
+#define NOT_CONSTANT(expr) ((expr) || false_but_the_compiler_does_not_know_it_)
+extern int false_but_the_compiler_does_not_know_it_;
+
+#ifdef CHECK_ASSERTION_SIDE_EFFECTS
+#undef assert
+extern int not_supposed_to_survive;
+#define assert(expr) ((void)(not_supposed_to_survive || (expr)))
+#endif /* CHECK_ASSERTION_SIDE_EFFECTS */
 
 #endif

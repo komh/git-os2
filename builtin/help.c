@@ -1,6 +1,9 @@
 /*
  * Builtin help command
  */
+
+#define USE_THE_REPOSITORY_VARIABLE
+
 #include "builtin.h"
 #include "config.h"
 #include "exec-cmd.h"
@@ -52,7 +55,7 @@ static enum help_action {
 	HELP_ACTION_CONFIG_SECTIONS_FOR_COMPLETION,
 } cmd_mode;
 
-static const char *html_path;
+static char *html_path;
 static int verbose = 1;
 static enum help_format help_format = HELP_FORMAT_NONE;
 static int exclude_guides;
@@ -127,7 +130,6 @@ static void list_config_help(enum show_config_type type)
 	struct string_list keys = STRING_LIST_INIT_DUP;
 	struct string_list keys_uniq = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
-	int i;
 
 	for (p = config_name_list; *p; p++) {
 		const char *var = *p;
@@ -154,7 +156,7 @@ static void list_config_help(enum show_config_type type)
 			    e->prefix, e->placeholder);
 
 	string_list_sort(&keys);
-	for (i = 0; i < keys.nr; i++) {
+	for (size_t i = 0; i < keys.nr; i++) {
 		const char *var = keys.items[i].string;
 		const char *wildcard, *tag, *cut;
 		const char *dot = NULL;
@@ -409,6 +411,7 @@ static int git_help_config(const char *var, const char *value,
 	if (!strcmp(var, "help.htmlpath")) {
 		if (!value)
 			return config_error_nonbool(var);
+		free(html_path);
 		html_path = xstrdup(value);
 		return 0;
 	}
@@ -513,23 +516,24 @@ static void show_info_page(const char *page)
 static void get_html_page_path(struct strbuf *page_path, const char *page)
 {
 	struct stat st;
+	const char *path = html_path;
 	char *to_free = NULL;
 
-	if (!html_path)
-		html_path = to_free = system_path(GIT_HTML_PATH);
+	if (!path)
+		path = to_free = system_path(GIT_HTML_PATH);
 
 	/*
 	 * Check that the page we're looking for exists.
 	 */
-	if (!strstr(html_path, "://")) {
-		if (stat(mkpath("%s/%s.html", html_path, page), &st)
+	if (!strstr(path, "://")) {
+		if (stat(mkpath("%s/%s.html", path, page), &st)
 		    || !S_ISREG(st.st_mode))
 			die("'%s/%s.html': documentation file not found.",
-				html_path, page);
+				path, page);
 	}
 
 	strbuf_init(page_path, 0);
-	strbuf_addf(page_path, "%s/%s.html", html_path, page);
+	strbuf_addf(page_path, "%s/%s.html", path, page);
 	free(to_free);
 }
 
@@ -540,19 +544,19 @@ static void open_html(const char *path)
 
 static void show_html_page(const char *page)
 {
-	struct strbuf page_path; /* it leaks but we exec bellow */
+	struct strbuf page_path; /* it leaks but we exec below */
 
 	get_html_page_path(&page_path, page);
 
 	open_html(page_path.buf);
 }
 
-static const char *check_git_cmd(const char* cmd)
+static char *check_git_cmd(const char *cmd)
 {
 	char *alias;
 
 	if (is_git_command(cmd))
-		return cmd;
+		return xstrdup(cmd);
 
 	alias = alias_lookup(cmd);
 	if (alias) {
@@ -585,14 +589,13 @@ static const char *check_git_cmd(const char* cmd)
 			die(_("bad alias.%s string: %s"), cmd,
 			    split_cmdline_strerror(count));
 		free(argv);
-		UNLEAK(alias);
 		return alias;
 	}
 
 	if (exclude_guides)
 		return help_unknown_cmd(cmd);
 
-	return cmd;
+	return xstrdup(cmd);
 }
 
 static void no_help_format(const char *opt_mode, enum help_format fmt)
@@ -631,10 +634,14 @@ static void opt_mode_usage(int argc, const char *opt_mode,
 	no_help_format(opt_mode, fmt);
 }
 
-int cmd_help(int argc, const char **argv, const char *prefix)
+int cmd_help(int argc,
+	     const char **argv,
+	     const char *prefix,
+	     struct repository *repo UNUSED)
 {
 	int nongit;
 	enum help_format parsed_help_format;
+	char *command = NULL;
 	const char *page;
 
 	argc = parse_options(argc, argv, prefix, builtin_help_options,
@@ -651,7 +658,7 @@ int cmd_help(int argc, const char **argv, const char *prefix)
 	case HELP_ACTION_ALL:
 		opt_mode_usage(argc, "--all", help_format);
 		if (verbose) {
-			setup_pager();
+			setup_pager(the_repository);
 			list_all_cmds_help(show_external_commands,
 					   show_aliases);
 			return 0;
@@ -685,7 +692,7 @@ int cmd_help(int argc, const char **argv, const char *prefix)
 		return 0;
 	case HELP_ACTION_CONFIG:
 		opt_mode_usage(argc, "--config", help_format);
-		setup_pager();
+		setup_pager(the_repository);
 		list_config_help(SHOW_CONFIG_HUMAN);
 		printf("\n%s\n", _("'git help config' for more information"));
 		return 0;
@@ -706,9 +713,9 @@ int cmd_help(int argc, const char **argv, const char *prefix)
 	if (help_format == HELP_FORMAT_NONE)
 		help_format = parse_help_format(DEFAULT_HELP_FORMAT);
 
-	argv[0] = check_git_cmd(argv[0]);
+	command = check_git_cmd(argv[0]);
 
-	page = cmd_to_page(argv[0]);
+	page = cmd_to_page(command);
 	switch (help_format) {
 	case HELP_FORMAT_NONE:
 	case HELP_FORMAT_MAN:
@@ -722,5 +729,6 @@ int cmd_help(int argc, const char **argv, const char *prefix)
 		break;
 	}
 
+	free(command);
 	return 0;
 }

@@ -1,6 +1,7 @@
 #!/bin/sh
 
 test_description='git branch display tests'
+
 . ./test-lib.sh
 . "$TEST_DIRECTORY"/lib-terminal.sh
 
@@ -364,6 +365,34 @@ test_expect_success 'git branch --format with ahead-behind' '
 	refs/heads/ref-to-remote 1 0
 	EOF
 	git branch --format="%(refname) %(ahead-behind:HEAD)" >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'git branch `--sort=[-]ahead-behind` option' '
+	cat >expect <<-\EOF &&
+	(HEAD detached from fromtag) 0 0
+	refs/heads/ambiguous 0 0
+	refs/heads/branch-two 0 0
+	refs/heads/branch-one 1 0
+	refs/heads/main 1 0
+	refs/heads/ref-to-branch 1 0
+	refs/heads/ref-to-remote 1 0
+	EOF
+	git branch --format="%(refname) %(ahead-behind:HEAD)" \
+		--sort=refname --sort=ahead-behind:HEAD >actual &&
+	test_cmp expect actual &&
+
+	cat >expect <<-\EOF &&
+	(HEAD detached from fromtag) 0 0
+	refs/heads/branch-one 1 0
+	refs/heads/main 1 0
+	refs/heads/ref-to-branch 1 0
+	refs/heads/ref-to-remote 1 0
+	refs/heads/ambiguous 0 0
+	refs/heads/branch-two 0 0
+	EOF
+	git branch --format="%(refname) %(ahead-behind:HEAD)" \
+		--sort=refname --sort=-ahead-behind:HEAD >actual &&
 	test_cmp expect actual
 '
 

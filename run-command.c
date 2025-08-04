@@ -1,3 +1,6 @@
+#define USE_THE_REPOSITORY_VARIABLE
+#define DISABLE_SIGN_COMPARE_WARNINGS
+
 #include "git-compat-util.h"
 #include "run-command.h"
 #include "environment.h"
@@ -14,9 +17,7 @@
 #include "quote.h"
 #include "config.h"
 #include "packfile.h"
-#include "hook.h"
 #include "compat/nonblock.h"
-#include "alloc.h"
 
 void child_process_init(struct child_process *child)
 {
@@ -285,19 +286,27 @@ int sane_execvp(const char *file, char * const argv[])
 	return -1;
 }
 
+char *git_shell_path(void)
+{
+#ifdef __OS2__
+	return xstrdup(wrapped_getenv_for_os2("GIT_SHELL"));
+#endif
+#ifndef GIT_WINDOWS_NATIVE
+	return xstrdup(SHELL_PATH);
+#else
+	char *p = locate_in_PATH("sh");
+	convert_slashes(p);
+	return p;
+#endif
+}
+
 static const char **prepare_shell_cmd(struct strvec *out, const char **argv)
 {
 	if (!argv[0])
 		BUG("shell command is empty");
 
 	if (strcspn(argv[0], "|&;<>()$`\\\"' \t\n*?[#~=%") != strlen(argv[0])) {
-#if !defined(GIT_WINDOWS_NATIVE) && !defined(__OS2__)
-		strvec_push(out, SHELL_PATH);
-#elif defined(__OS2__)
-		strvec_push(out, wrapped_getenv_for_os2("GIT_SHELL"));
-#else
-		strvec_push(out, "sh");
-#endif
+		strvec_push_nodup(out, git_shell_path());
 		strvec_push(out, "-c");
 
 		/*
@@ -524,7 +533,13 @@ static void atfork_prepare(struct atfork_state *as)
 {
 	sigset_t all;
 
-	if (sigfillset(&all))
+	/*
+	 * POSIX says sigfillset() can fail, but an overly clever
+	 * compiler can see through the header files and decide
+	 * it cannot fail on a particular platform it is compiling for,
+	 * triggering -Wunreachable-code false positive.
+	 */
+	if (NOT_CONSTANT(sigfillset(&all)))
 		die_errno("sigfillset");
 #ifdef NO_PTHREADS
 	if (sigprocmask(SIG_SETMASK, &all, &as->old))
@@ -682,7 +697,7 @@ int start_command(struct child_process *cmd)
 	int need_in, need_out, need_err;
 	int fdin[2], fdout[2], fderr[2];
 	int failed_errno;
-	char *str;
+	const char *str;
 
 	/*
 	 * In case of errors we must keep the promise to close FDs
@@ -764,6 +779,8 @@ fail_pipe:
 			error_errno("cannot run %s", cmd->args.v[0]);
 		goto end_of_spawn;
 	}
+
+	trace_argv_printf(&argv.v[1], "trace: start_command:");
 
 	if (pipe(notify_pipe))
 		notify_pipe[0] = notify_pipe[1] = -1;
@@ -932,6 +949,7 @@ end_of_spawn:
 	else if (cmd->use_shell)
 		cmd->args.v = prepare_shell_cmd(&nargv, sargv);
 
+	trace_argv_printf(cmd->args.v, "trace: start_command:");
 #ifndef __OS2__
 	cmd->pid = mingw_spawnvpe(cmd->args.v[0], cmd->args.v,
 				  (char**) cmd->env.v,
@@ -1778,7 +1796,8 @@ void run_processes_parallel(const struct run_process_parallel_opts *opts)
 
 	if (do_trace2)
 		trace2_region_enter_printf(tr2_category, tr2_label, NULL,
-					   "max:%d", opts->processes);
+					   "max:%"PRIuMAX,
+					   (uintmax_t)opts->processes);
 
 	pp_init(&pp, opts, &pp_sig);
 	while (1) {
@@ -1818,20 +1837,37 @@ void run_processes_parallel(const struct run_process_parallel_opts *opts)
 		trace2_region_leave(tr2_category, tr2_label, NULL);
 }
 
-int run_auto_maintenance(int quiet)
+int prepare_auto_maintenance(int quiet, struct child_process *maint)
 {
-	int enabled;
-	struct child_process maint = CHILD_PROCESS_INIT;
+	int enabled, auto_detach;
 
 	if (!git_config_get_bool("maintenance.auto", &enabled) &&
 	    !enabled)
 		return 0;
 
-	maint.git_cmd = 1;
-	maint.close_object_store = 1;
-	strvec_pushl(&maint.args, "maintenance", "run", "--auto", NULL);
-	strvec_push(&maint.args, quiet ? "--quiet" : "--no-quiet");
+	/*
+	 * When `maintenance.autoDetach` isn't set, then we fall back to
+	 * honoring `gc.autoDetach`. This is somewhat weird, but required to
+	 * retain behaviour from when we used to run git-gc(1) here.
+	 */
+	if (git_config_get_bool("maintenance.autodetach", &auto_detach) &&
+	    git_config_get_bool("gc.autodetach", &auto_detach))
+		auto_detach = 1;
 
+	maint->git_cmd = 1;
+	maint->close_object_store = 1;
+	strvec_pushl(&maint->args, "maintenance", "run", "--auto", NULL);
+	strvec_push(&maint->args, quiet ? "--quiet" : "--no-quiet");
+	strvec_push(&maint->args, auto_detach ? "--detach" : "--no-detach");
+
+	return 1;
+}
+
+int run_auto_maintenance(int quiet)
+{
+	struct child_process maint = CHILD_PROCESS_INIT;
+	if (!prepare_auto_maintenance(quiet, &maint))
+		return 0;
 	return run_command(&maint);
 }
 

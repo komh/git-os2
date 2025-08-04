@@ -106,11 +106,6 @@ int unlink_or_msg(const char *file, struct strbuf *err);
  * not exist.
  */
 int rmdir_or_warn(const char *path);
-/*
- * Calls the correct function out of {unlink,rmdir}_or_warn based on
- * the supplied file mode.
- */
-int remove_or_warn(unsigned int mode, const char *path);
 
 /*
  * Call access(2), but warn for any error except "missing file"
@@ -132,11 +127,43 @@ int open_nofollow(const char *path, int flags);
 
 void sleep_millisec(int millisec);
 
+enum {
+	/*
+	 * Accept insecure bytes, which some CSPRNG implementations may return
+	 * in case the entropy pool has been exhausted.
+	 */
+	CSPRNG_BYTES_INSECURE = (1 << 0),
+};
+
 /*
  * Generate len bytes from the system cryptographically secure PRNG.
  * Returns 0 on success and -1 on error, setting errno.  The inability to
- * satisfy the full request is an error.
+ * satisfy the full request is an error. Accepts CSPRNG flags.
  */
-int csprng_bytes(void *buf, size_t len);
+int csprng_bytes(void *buf, size_t len, unsigned flags);
+
+/*
+ * Returns a random uint32_t, uniformly distributed across all possible
+ * values. Accepts CSPRNG flags.
+ */
+uint32_t git_rand(unsigned flags);
+
+/* Provide log2 of the given `size_t`. */
+static inline unsigned log2u(uintmax_t sz)
+{
+	unsigned l = 0;
+
+	/*
+	 * Technically this isn't required, but it helps the compiler optimize
+	 * this to a `bsr` instruction.
+	 */
+	if (!sz)
+		return 0;
+
+	for (; sz; sz >>= 1)
+		l++;
+
+	return l - 1;
+}
 
 #endif /* WRAPPER_H */

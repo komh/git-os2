@@ -55,21 +55,31 @@ fi
 
 HTTPD_PARA=""
 
-for DEFAULT_HTTPD_PATH in '/usr/sbin/httpd' '/usr/sbin/apache2'
+for DEFAULT_HTTPD_PATH in '/usr/sbin/httpd' \
+			  '/usr/sbin/apache2' \
+			  "$(command -v httpd)" \
+			  "$(command -v apache2)"
 do
-	if test -x "$DEFAULT_HTTPD_PATH"
+	if test -n "$DEFAULT_HTTPD_PATH" && test -x "$DEFAULT_HTTPD_PATH"
 	then
 		break
 	fi
 done
 
+if test -x "$DEFAULT_HTTPD_PATH"
+then
+	DETECTED_HTTPD_ROOT="$("$DEFAULT_HTTPD_PATH" -V 2>/dev/null | sed -n 's/^ -D HTTPD_ROOT="\(.*\)"$/\1/p')"
+fi
+
 for DEFAULT_HTTPD_MODULE_PATH in '/usr/libexec/apache2' \
 				 '/usr/lib/apache2/modules' \
 				 '/usr/lib64/httpd/modules' \
 				 '/usr/lib/httpd/modules' \
-				 '/usr/libexec/httpd'
+				 '/usr/libexec/httpd' \
+				 '/usr/lib/apache2' \
+				 "${DETECTED_HTTPD_ROOT:+${DETECTED_HTTPD_ROOT}/modules}"
 do
-	if test -d "$DEFAULT_HTTPD_MODULE_PATH"
+	if test -n "$DEFAULT_HTTPD_MODULE_PATH" && test -d "$DEFAULT_HTTPD_MODULE_PATH"
 	then
 		break
 	fi
@@ -127,6 +137,20 @@ else
 		"Could not identify web server at '$LIB_HTTPD_PATH'"
 fi
 
+if test -n "$LIB_HTTPD_DAV" && test -f /etc/os-release
+then
+	case "$(grep "^ID=" /etc/os-release | cut -d= -f2-)" in
+	alpine)
+		# The WebDAV module in Alpine Linux is broken at least up to
+		# Alpine v3.16 as the default DBM driver is missing.
+		#
+		# https://gitlab.alpinelinux.org/alpine/aports/-/issues/13112
+		test_skip_or_die GIT_TEST_HTTPD \
+			"Apache WebDAV module does not have default DBM backend driver"
+		;;
+	esac
+fi
+
 install_script () {
 	write_script "$HTTPD_ROOT_PATH/$1" <"$TEST_PATH/$1"
 }
@@ -141,7 +165,7 @@ prepare_httpd() {
 	install_script broken-smart-http.sh
 	install_script error-smart-http.sh
 	install_script error.sh
-	install_script apply-one-time-perl.sh
+	install_script apply-one-time-script.sh
 	install_script nph-custom-auth.sh
 
 	ln -s "$LIB_HTTPD_MODULE_PATH" "$HTTPD_ROOT_PATH/modules"
@@ -255,7 +279,7 @@ test_http_push_nonff () {
 	'
 
 	test_expect_success 'non-fast-forward push shows help message' '
-		test_i18ngrep "Updates were rejected because" output
+		test_grep "Updates were rejected because" output
 	'
 
 	test_expect_${EXPECT_CAS_RESULT} 'force with lease aka cas' '

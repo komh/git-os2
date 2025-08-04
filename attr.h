@@ -190,6 +190,8 @@ struct attr_check {
 };
 
 struct attr_check *attr_check_alloc(void);
+
+LAST_ARG_MUST_BE_NULL
 struct attr_check *attr_check_initl(const char *, ...);
 struct attr_check *attr_check_dup(const struct attr_check *check);
 
@@ -235,5 +237,50 @@ const char *git_attr_global_file(void);
 
 /* Return whether the system gitattributes file is enabled and should be used. */
 int git_attr_system_is_enabled(void);
+
+extern char *git_attr_tree;
+
+/*
+ * Exposed for fuzz-testing only.
+ */
+
+/* What does a matched pattern decide? */
+struct attr_state {
+	const struct git_attr *attr;
+	const char *setto;
+};
+
+struct pattern {
+	const char *pattern;
+	int patternlen;
+	int nowildcardlen;
+	unsigned flags;		/* PATTERN_FLAG_* */
+};
+
+/*
+ * One rule, as from a .gitattributes file.
+ *
+ * If is_macro is true, then u.attr is a pointer to the git_attr being
+ * defined.
+ *
+ * If is_macro is false, then u.pat is the filename pattern to which the
+ * rule applies.
+ *
+ * In either case, num_attr is the number of attributes affected by
+ * this rule, and state is an array listing them.  The attributes are
+ * listed as they appear in the file (macros unexpanded).
+ */
+struct match_attr {
+	union {
+		struct pattern pat;
+		const struct git_attr *attr;
+	} u;
+	char is_macro;
+	size_t num_attr;
+	struct attr_state state[FLEX_ARRAY];
+};
+
+struct match_attr *parse_attr_line(const char *line, const char *src,
+				   int lineno, unsigned flags);
 
 #endif /* ATTR_H */

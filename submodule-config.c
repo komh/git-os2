@@ -1,3 +1,6 @@
+#define USE_THE_REPOSITORY_VARIABLE
+#define DISABLE_SIGN_COMPARE_WARNINGS
+
 #include "git-compat-util.h"
 #include "dir.h"
 #include "environment.h"
@@ -10,10 +13,12 @@
 #include "submodule.h"
 #include "strbuf.h"
 #include "object-name.h"
-#include "object-store-ll.h"
+#include "object-store.h"
 #include "parse-options.h"
 #include "thread-utils.h"
 #include "tree-walk.h"
+#include "url.h"
+#include "urlmatch.h"
 
 /*
  * submodule cache lookup structure
@@ -89,7 +94,9 @@ static void free_one_config(struct submodule_entry *entry)
 	free((void *) entry->config->path);
 	free((void *) entry->config->name);
 	free((void *) entry->config->branch);
-	free((void *) entry->config->update_strategy.command);
+	free((void *) entry->config->url);
+	free((void *) entry->config->ignore);
+	submodule_update_strategy_release(&entry->config->update_strategy);
 	free(entry->config);
 }
 
@@ -223,6 +230,144 @@ in_component:
 			    (!name[2] || is_xplatform_dir_sep(name[2])))
 				return -1;
 		}
+	}
+
+	return 0;
+}
+
+static int starts_with_dot_slash(const char *const path)
+{
+	return path_match_flags(path, PATH_MATCH_STARTS_WITH_DOT_SLASH |
+				PATH_MATCH_XPLATFORM);
+}
+
+static int starts_with_dot_dot_slash(const char *const path)
+{
+	return path_match_flags(path, PATH_MATCH_STARTS_WITH_DOT_DOT_SLASH |
+				PATH_MATCH_XPLATFORM);
+}
+
+static int submodule_url_is_relative(const char *url)
+{
+	return starts_with_dot_slash(url) || starts_with_dot_dot_slash(url);
+}
+
+/*
+ * Count directory components that a relative submodule URL should chop
+ * from the remote_url it is to be resolved against.
+ *
+ * In other words, this counts "../" components at the start of a
+ * submodule URL.
+ *
+ * Returns the number of directory components to chop and writes a
+ * pointer to the next character of url after all leading "./" and
+ * "../" components to out.
+ */
+static int count_leading_dotdots(const char *url, const char **out)
+{
+	int result = 0;
+	while (1) {
+		if (starts_with_dot_dot_slash(url)) {
+			result++;
+			url += strlen("../");
+			continue;
+		}
+		if (starts_with_dot_slash(url)) {
+			url += strlen("./");
+			continue;
+		}
+		*out = url;
+		return result;
+	}
+}
+/*
+ * Check whether a transport is implemented by git-remote-curl.
+ *
+ * If it is, returns 1 and writes the URL that would be passed to
+ * git-remote-curl to the "out" parameter.
+ *
+ * Otherwise, returns 0 and leaves "out" untouched.
+ *
+ * Examples:
+ *   http::https://example.com/repo.git -> 1, https://example.com/repo.git
+ *   https://example.com/repo.git -> 1, https://example.com/repo.git
+ *   git://example.com/repo.git -> 0
+ *
+ * This is for use in checking for previously exploitable bugs that
+ * required a submodule URL to be passed to git-remote-curl.
+ */
+static int url_to_curl_url(const char *url, const char **out)
+{
+	/*
+	 * We don't need to check for case-aliases, "http.exe", and so
+	 * on because in the default configuration, is_transport_allowed
+	 * prevents URLs with those schemes from being cloned
+	 * automatically.
+	 */
+	if (skip_prefix(url, "http::", out) ||
+	    skip_prefix(url, "https::", out) ||
+	    skip_prefix(url, "ftp::", out) ||
+	    skip_prefix(url, "ftps::", out))
+		return 1;
+	if (starts_with(url, "http://") ||
+	    starts_with(url, "https://") ||
+	    starts_with(url, "ftp://") ||
+	    starts_with(url, "ftps://")) {
+		*out = url;
+		return 1;
+	}
+	return 0;
+}
+
+int check_submodule_url(const char *url)
+{
+	const char *curl_url;
+
+	if (looks_like_command_line_option(url))
+		return -1;
+
+	if (submodule_url_is_relative(url) || starts_with(url, "git://")) {
+		char *decoded;
+		const char *next;
+		int has_nl;
+
+		/*
+		 * This could be appended to an http URL and url-decoded;
+		 * check for malicious characters.
+		 */
+		decoded = url_decode(url);
+		has_nl = !!strchr(decoded, '\n');
+
+		free(decoded);
+		if (has_nl)
+			return -1;
+
+		/*
+		 * URLs which escape their root via "../" can overwrite
+		 * the host field and previous components, resolving to
+		 * URLs like https::example.com/submodule.git and
+		 * https:///example.com/submodule.git that were
+		 * susceptible to CVE-2020-11008.
+		 */
+		if (count_leading_dotdots(url, &next) > 0 &&
+		    (*next == ':' || *next == '/'))
+			return -1;
+	}
+
+	else if (url_to_curl_url(url, &curl_url)) {
+		int ret = 0;
+		char *normalized = url_normalize(curl_url, NULL);
+		if (normalized) {
+			char *decoded = url_decode(normalized);
+			if (strchr(decoded, '\n'))
+				ret = -1;
+			free(normalized);
+			free(decoded);
+		} else {
+			ret = -1;
+		}
+
+		return ret;
 	}
 
 	return 0;
@@ -516,7 +661,9 @@ static int parse_config(const char *var, const char *value,
 			submodule->recommend_shallow =
 				git_config_bool(var, value);
 	} else if (!strcmp(item.buf, "branch")) {
-		if (!me->overwrite && submodule->branch)
+		if (!value)
+			ret = config_error_nonbool(var);
+		else if (!me->overwrite && submodule->branch)
 			warn_multiple_config(me->treeish_name, submodule->name,
 					     "branch");
 		else {
@@ -538,7 +685,7 @@ static int gitmodule_oid_from_commit(const struct object_id *treeish_name,
 	int ret = 0;
 
 	if (is_null_oid(treeish_name)) {
-		oidclr(gitmodules_oid);
+		oidclr(gitmodules_oid, the_repository->hash_algo);
 		return 1;
 	}
 
@@ -684,7 +831,7 @@ static int gitmodules_cb(const char *var, const char *value,
 
 	parameter.cache = repo->submodule_cache;
 	parameter.treeish_name = NULL;
-	parameter.gitmodules_oid = null_oid();
+	parameter.gitmodules_oid = null_oid(the_hash_algo);
 	parameter.overwrite = 1;
 
 	return parse_config(var, value, ctx, &parameter);
@@ -753,27 +900,26 @@ static void traverse_tree_submodules(struct repository *r,
 {
 	struct tree_desc tree;
 	struct submodule_tree_entry *st_entry;
-	struct name_entry *name_entry;
+	struct name_entry name_entry;
 	char *tree_path = NULL;
+	char *tree_buf;
 
-	name_entry = xmalloc(sizeof(*name_entry));
-
-	fill_tree_descriptor(r, &tree, treeish_name);
-	while (tree_entry(&tree, name_entry)) {
+	tree_buf = fill_tree_descriptor(r, &tree, treeish_name);
+	while (tree_entry(&tree, &name_entry)) {
 		if (prefix)
 			tree_path =
-				mkpathdup("%s/%s", prefix, name_entry->path);
+				mkpathdup("%s/%s", prefix, name_entry.path);
 		else
-			tree_path = xstrdup(name_entry->path);
+			tree_path = xstrdup(name_entry.path);
 
-		if (S_ISGITLINK(name_entry->mode) &&
+		if (S_ISGITLINK(name_entry.mode) &&
 		    is_tree_submodule_active(r, root_tree, tree_path)) {
 			ALLOC_GROW(out->entries, out->entry_nr + 1,
 				   out->entry_alloc);
 			st_entry = &out->entries[out->entry_nr++];
 
 			st_entry->name_entry = xmalloc(sizeof(*st_entry->name_entry));
-			*st_entry->name_entry = *name_entry;
+			*st_entry->name_entry = name_entry;
 			st_entry->submodule =
 				submodule_from_path(r, root_tree, tree_path);
 			st_entry->repo = xmalloc(sizeof(*st_entry->repo));
@@ -781,11 +927,13 @@ static void traverse_tree_submodules(struct repository *r,
 						root_tree))
 				FREE_AND_NULL(st_entry->repo);
 
-		} else if (S_ISDIR(name_entry->mode))
+		} else if (S_ISDIR(name_entry.mode))
 			traverse_tree_submodules(r, root_tree, tree_path,
-						 &name_entry->oid, out);
+						 &name_entry.oid, out);
 		free(tree_path);
 	}
+
+	free(tree_buf);
 }
 
 void submodules_of_tree(struct repository *r,
@@ -797,6 +945,16 @@ void submodules_of_tree(struct repository *r,
 	out->entry_alloc = 0;
 
 	traverse_tree_submodules(r, treeish_name, NULL, treeish_name, out);
+}
+
+void submodule_entry_list_release(struct submodule_entry_list *list)
+{
+	for (size_t i = 0; i < list->entry_nr; i++) {
+		free(list->entries[i].name_entry);
+		repo_clear(list->entries[i].repo);
+		free(list->entries[i].repo);
+	}
+	free(list->entries);
 }
 
 void submodule_free(struct repository *r)
@@ -836,7 +994,7 @@ int config_set_in_gitmodules_file_gently(const char *key, const char *value)
 {
 	int ret;
 
-	ret = git_config_set_in_file_gently(GITMODULES_FILE, key, value);
+	ret = git_config_set_in_file_gently(GITMODULES_FILE, key, NULL, value);
 	if (ret < 0)
 		/* Maybe the user already did that, don't error out here */
 		warning(_("Could not update .gitmodules entry %s"), key);

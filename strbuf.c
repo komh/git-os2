@@ -1,6 +1,8 @@
+#define DISABLE_SIGN_COMPARE_WARNINGS
+
 #include "git-compat-util.h"
 #include "gettext.h"
-#include "hex.h"
+#include "hex-ll.h"
 #include "strbuf.h"
 #include "string-list.h"
 #include "utf8.h"
@@ -22,6 +24,17 @@ int istarts_with(const char *str, const char *prefix)
 			return 1;
 		else if (tolower(*str) != tolower(*prefix))
 			return 0;
+}
+
+int starts_with_mem(const char *str, size_t len, const char *prefix)
+{
+	const char *end = str + len;
+	for (; ; str++, prefix++) {
+		if (!*prefix)
+			return 1;
+		else if (str == end || *str != *prefix)
+			return 0;
+	}
 }
 
 int skip_to_optional_arg_default(const char *str, const char *prefix,
@@ -266,7 +279,7 @@ void strbuf_vinsertf(struct strbuf *sb, size_t pos, const char *fmt, va_list ap)
 	len = vsnprintf(sb->buf + sb->len, 0, fmt, cp);
 	va_end(cp);
 	if (len < 0)
-		BUG("your vsnprintf is broken (returned %d)", len);
+		die(_("unable to format message: %s"), fmt);
 	if (!len)
 		return; /* nothing to do */
 	if (unsigned_add_overflows(sb->len, len))
@@ -300,6 +313,15 @@ void strbuf_add(struct strbuf *sb, const void *data, size_t len)
 	strbuf_grow(sb, len);
 	memcpy(sb->buf + sb->len, data, len);
 	strbuf_setlen(sb, sb->len + len);
+}
+
+void strbuf_addstrings(struct strbuf *sb, const char *s, size_t n)
+{
+	size_t len = strlen(s);
+
+	strbuf_grow(sb, st_mult(len, n));
+	for (size_t i = 0; i < n; i++)
+		strbuf_add(sb, s, len);
 }
 
 void strbuf_addbuf(struct strbuf *sb, const struct strbuf *sb2)
@@ -340,18 +362,17 @@ void strbuf_addf(struct strbuf *sb, const char *fmt, ...)
 }
 
 static void add_lines(struct strbuf *out,
-			const char *prefix1,
-			const char *prefix2,
-			const char *buf, size_t size)
+			const char *prefix,
+			const char *buf, size_t size,
+			int space_after_prefix)
 {
 	while (size) {
-		const char *prefix;
 		const char *next = memchr(buf, '\n', size);
 		next = next ? (next + 1) : (buf + size);
 
-		prefix = ((prefix2 && (buf[0] == '\n' || buf[0] == '\t'))
-			  ? prefix2 : prefix1);
 		strbuf_addstr(out, prefix);
+		if (space_after_prefix && buf[0] != '\n' && buf[0] != '\t')
+			strbuf_addch(out, ' ');
 		strbuf_add(out, buf, next - buf);
 		size -= next - buf;
 		buf = next;
@@ -360,19 +381,12 @@ static void add_lines(struct strbuf *out,
 }
 
 void strbuf_add_commented_lines(struct strbuf *out, const char *buf,
-				size_t size, char comment_line_char)
+				size_t size, const char *comment_prefix)
 {
-	static char prefix1[3];
-	static char prefix2[2];
-
-	if (prefix1[0] != comment_line_char) {
-		xsnprintf(prefix1, sizeof(prefix1), "%c ", comment_line_char);
-		xsnprintf(prefix2, sizeof(prefix2), "%c", comment_line_char);
-	}
-	add_lines(out, prefix1, prefix2, buf, size);
+	add_lines(out, comment_prefix, buf, size, 1);
 }
 
-void strbuf_commented_addf(struct strbuf *sb, char comment_line_char,
+void strbuf_commented_addf(struct strbuf *sb, const char *comment_prefix,
 			   const char *fmt, ...)
 {
 	va_list params;
@@ -383,7 +397,7 @@ void strbuf_commented_addf(struct strbuf *sb, char comment_line_char,
 	strbuf_vaddf(&buf, fmt, params);
 	va_end(params);
 
-	strbuf_add_commented_lines(sb, buf.buf, buf.len, comment_line_char);
+	strbuf_add_commented_lines(sb, buf.buf, buf.len, comment_prefix);
 	if (incomplete_line)
 		sb->buf[--sb->len] = '\0';
 
@@ -401,7 +415,7 @@ void strbuf_vaddf(struct strbuf *sb, const char *fmt, va_list ap)
 	len = vsnprintf(sb->buf + sb->len, sb->alloc - sb->len, fmt, cp);
 	va_end(cp);
 	if (len < 0)
-		BUG("your vsnprintf is broken (returned %d)", len);
+		die(_("unable to format message: %s"), fmt);
 	if (len > strbuf_avail(sb)) {
 		strbuf_grow(sb, len);
 		len = vsnprintf(sb->buf + sb->len, sb->alloc - sb->len, fmt, ap);
@@ -442,6 +456,26 @@ size_t strbuf_expand_literal(struct strbuf *sb, const char *placeholder)
 	return 0;
 }
 
+void strbuf_expand_bad_format(const char *format, const char *command)
+{
+	const char *end;
+
+	if (*format != '(')
+		/* TRANSLATORS: The first %s is a command like "ls-tree". */
+		die(_("bad %s format: element '%s' does not start with '('"),
+		    command, format);
+
+	end = strchr(format + 1, ')');
+	if (!end)
+		/* TRANSLATORS: The first %s is a command like "ls-tree". */
+		die(_("bad %s format: element '%s' does not end in ')'"),
+		    command, format);
+
+	/* TRANSLATORS: %s is a command like "ls-tree". */
+	die(_("bad %s format: %%%.*s"),
+	    command, (int)(end - format + 1), format);
+}
+
 void strbuf_addbuf_percentquote(struct strbuf *dst, const struct strbuf *src)
 {
 	size_t i, len = src->len;
@@ -463,7 +497,9 @@ void strbuf_add_percentencode(struct strbuf *dst, const char *src, int flags)
 		unsigned char ch = src[i];
 		if (ch <= 0x1F || ch >= 0x7F ||
 		    (ch == '/' && (flags & STRBUF_ENCODE_SLASH)) ||
-		    strchr(URL_UNSAFE_CHARS, ch))
+		    ((flags & STRBUF_ENCODE_HOST_AND_PORT) ?
+		     !isalnum(ch) && !strchr("-.:[]", ch) :
+		     !!strchr(URL_UNSAFE_CHARS, ch)))
 			strbuf_addf(dst, "%%%02X", (unsigned char)ch);
 		else
 			strbuf_addch(dst, ch);
@@ -671,8 +707,10 @@ int strbuf_getwholeline(struct strbuf *sb, FILE *fp, int term)
 int strbuf_appendwholeline(struct strbuf *sb, FILE *fp, int term)
 {
 	struct strbuf line = STRBUF_INIT;
-	if (strbuf_getwholeline(&line, fp, term))
+	if (strbuf_getwholeline(&line, fp, term)) {
+		strbuf_release(&line);
 		return EOF;
+	}
 	strbuf_addbuf(sb, &line);
 	strbuf_release(&line);
 	return 0;
@@ -753,7 +791,7 @@ ssize_t strbuf_read_file(struct strbuf *sb, const char *path, size_t hint)
 void strbuf_add_lines(struct strbuf *out, const char *prefix,
 		      const char *buf, size_t size)
 {
-	add_lines(out, prefix, NULL, buf, size);
+	add_lines(out, prefix, buf, size, 0);
 }
 
 void strbuf_addstr_xml_quoted(struct strbuf *buf, const char *s)
@@ -1008,10 +1046,10 @@ static size_t cleanup(char *line, size_t len)
  *
  * If last line does not have a newline at the end, one is added.
  *
- * Pass a non-NUL comment_line_char to skip every line starting
+ * Pass a non-NULL comment_prefix to skip every line starting
  * with it.
  */
-void strbuf_stripspace(struct strbuf *sb, char comment_line_char)
+void strbuf_stripspace(struct strbuf *sb, const char *comment_prefix)
 {
 	size_t empties = 0;
 	size_t i, j, len, newlen;
@@ -1024,8 +1062,8 @@ void strbuf_stripspace(struct strbuf *sb, char comment_line_char)
 		eol = memchr(sb->buf + i, '\n', sb->len - i);
 		len = eol ? eol - (sb->buf + i) + 1 : sb->len - i;
 
-		if (comment_line_char && len &&
-		    sb->buf[i] == comment_line_char) {
+		if (comment_prefix && len &&
+		    starts_with(sb->buf + i, comment_prefix)) {
 			newlen = 0;
 			continue;
 		}

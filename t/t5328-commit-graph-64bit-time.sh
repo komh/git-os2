@@ -1,6 +1,7 @@
 #!/bin/sh
 
 test_description='commit graph with 64-bit timestamps'
+
 . ./test-lib.sh
 
 if ! test_have_prereq TIME_IS_64BIT || ! test_have_prereq TIME_T_IS_64BIT
@@ -10,6 +11,7 @@ then
 fi
 
 . "$TEST_DIRECTORY"/lib-commit-graph.sh
+. "$TEST_DIRECTORY/lib-chunk.sh"
 
 UNIX_EPOCH_ZERO="@0 +0000"
 FUTURE_DATE="@4147483646 +0000"
@@ -70,6 +72,15 @@ test_expect_success 'single commit with generation data exceeding UINT32_MAX' '
 	git -C repo-uint32-max commit-graph write --reachable &&
 	graph_read_expect -C repo-uint32-max 1 "generation_data" &&
 	git -C repo-uint32-max commit-graph verify
+'
+
+test_expect_success PERL_TEST_HELPERS 'reader notices out-of-bounds generation overflow' '
+	graph=.git/objects/info/commit-graph &&
+	test_when_finished "rm -rf $graph" &&
+	git commit-graph write --reachable &&
+	corrupt_chunk_file $graph GDO2 clear &&
+	test_must_fail git log 2>err &&
+	grep "commit-graph overflow generation data is too small" err
 '
 
 test_done

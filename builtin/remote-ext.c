@@ -195,9 +195,14 @@ static int command_loop(const char *child)
 	}
 }
 
-int cmd_remote_ext(int argc, const char **argv, const char *prefix)
+int cmd_remote_ext(int argc,
+		   const char **argv,
+		   const char *prefix,
+		   struct repository *repo UNUSED)
 {
 	BUG_ON_NON_EMPTY_PREFIX(prefix);
+
+	show_usage_if_asked(argc, argv, usage_msg);
 
 	if (argc != 3)
 		usage(usage_msg);

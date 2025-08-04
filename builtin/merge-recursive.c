@@ -1,13 +1,10 @@
+#define USE_THE_REPOSITORY_VARIABLE
 #include "builtin.h"
 #include "advice.h"
-#include "commit.h"
 #include "gettext.h"
 #include "hash.h"
-#include "tag.h"
-#include "merge-recursive.h"
+#include "merge-ort-wrappers.h"
 #include "object-name.h"
-#include "repository.h"
-#include "xdiff-interface.h"
 
 static const char builtin_merge_recursive_usage[] =
 	"git %s <base>... -- <head> <remote> ...";
@@ -24,9 +21,12 @@ static char *better_branch_name(const char *branch)
 	return xstrdup(name ? name : branch);
 }
 
-int cmd_merge_recursive(int argc, const char **argv, const char *prefix UNUSED)
+int cmd_merge_recursive(int argc,
+			const char **argv,
+			const char *prefix UNUSED,
+			struct repository *repo UNUSED)
 {
-	const struct object_id *bases[21];
+	struct object_id bases[21];
 	unsigned bases_count = 0;
 	int i, failed;
 	struct object_id h1, h2;
@@ -34,9 +34,15 @@ int cmd_merge_recursive(int argc, const char **argv, const char *prefix UNUSED)
 	char *better1, *better2;
 	struct commit *result;
 
-	init_merge_options(&o, the_repository);
+	init_basic_merge_options(&o, the_repository);
 	if (argv[0] && ends_with(argv[0], "-subtree"))
 		o.subtree_shift = "";
+
+	if (argc == 2 && !strcmp(argv[1], "-h")) {
+		struct strbuf msg = STRBUF_INIT;
+		strbuf_addf(&msg, builtin_merge_recursive_usage, argv[0]);
+		show_usage_if_asked(argc, argv, msg.buf);
+	}
 
 	if (argc < 4)
 		usagef(builtin_merge_recursive_usage, argv[0]);
@@ -52,10 +58,8 @@ int cmd_merge_recursive(int argc, const char **argv, const char *prefix UNUSED)
 			continue;
 		}
 		if (bases_count < ARRAY_SIZE(bases)-1) {
-			struct object_id *oid = xmalloc(sizeof(struct object_id));
-			if (repo_get_oid(the_repository, argv[i], oid))
+			if (repo_get_oid(the_repository, argv[i], &bases[bases_count++]))
 				die(_("could not parse object '%s'"), argv[i]);
-			bases[bases_count++] = oid;
 		}
 		else
 			warning(Q_("cannot handle more than %d base. "
@@ -85,7 +89,7 @@ int cmd_merge_recursive(int argc, const char **argv, const char *prefix UNUSED)
 	if (o.verbosity >= 3)
 		printf(_("Merging %s with %s\n"), o.branch1, o.branch2);
 
-	failed = merge_recursive_generic(&o, &h1, &h2, bases_count, bases, &result);
+	failed = merge_ort_generic(&o, &h1, &h2, bases_count, bases, &result);
 
 	free(better1);
 	free(better2);

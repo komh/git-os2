@@ -4,7 +4,6 @@ test_description='test fetching of oddly-named refs'
 GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
 export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
 
-TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 # afterwards we will have:
@@ -52,7 +51,8 @@ test_expect_success LONG_REF 'fetch handles extremely long refname' '
 	long
 	main
 	EOF
-	git for-each-ref --format="%(subject)" refs/remotes/long >actual &&
+	git for-each-ref --format="%(subject)" refs/remotes/long \
+		--exclude=refs/remotes/long/HEAD >actual &&
 	test_cmp expect actual
 '
 

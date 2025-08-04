@@ -5,7 +5,6 @@
 
 test_description='git stripspace'
 
-TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 t40='A quick brown fox jumps over the lazy do'
@@ -399,6 +398,21 @@ test_expect_success 'strip comments, too' '
 test_expect_success 'strip comments with changed comment char' '
 	test ! -z "$(echo "; comment" | git -c core.commentchar=";" stripspace)" &&
 	test -z "$(echo "; comment" | git -c core.commentchar=";" stripspace -s)"
+'
+
+test_expect_success 'strip comments with changed comment string' '
+	test ! -z "$(echo "// comment" | git -c core.commentchar=// stripspace)" &&
+	test -z "$(echo "// comment" | git -c core.commentchar="//" stripspace -s)"
+'
+
+test_expect_success 'newline as commentchar is forbidden' '
+	test_must_fail git -c core.commentChar="$LF" stripspace -s 2>err &&
+	grep "core.commentchar cannot contain newline" err
+'
+
+test_expect_success 'empty commentchar is forbidden' '
+	test_must_fail git -c core.commentchar= stripspace -s 2>err &&
+	grep "core.commentchar must have at least one character" err
 '
 
 test_expect_success '-c with single line' '

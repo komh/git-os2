@@ -428,7 +428,7 @@ test_expect_success 'add notes with empty messages' '
 	git notes add -m "${LF}" \
 		      -m "${MULTI_LF}" \
 		      -m "${LF}" >actual 2>&1 &&
-	test_i18ngrep "Removing note for object" actual
+	test_grep "Removing note for object" actual
 '
 
 test_expect_success 'add note by specifying "-C", "--no-stripspace" is the default behavior' '
@@ -441,7 +441,7 @@ test_expect_success 'add note by specifying "-C", "--no-stripspace" is the defau
 	${LF}
 	EOF
 
-	cat expect | git hash-object -w --stdin >blob &&
+	git hash-object -w --stdin <expect >blob &&
 	git notes add -C $(cat blob) &&
 	git notes show >actual &&
 	test_cmp expect actual &&
@@ -467,7 +467,7 @@ test_expect_success 'reuse note by specifying "-C" and "--stripspace"' '
 	second-line
 	EOF
 
-	cat data | git hash-object -w --stdin >blob &&
+	git hash-object -w --stdin <data >blob &&
 	git notes add --stripspace -C $(cat blob) &&
 	git notes show >actual &&
 	test_cmp expect actual
@@ -491,7 +491,7 @@ test_expect_success 'reuse with "-C" and add note with "-m", "-m" will stripspac
 	third-line
 	EOF
 
-	cat data | git hash-object -w --stdin >blob &&
+	git hash-object -w --stdin <data >blob &&
 	git notes add -C $(cat blob) -m "third-line" &&
 	git notes show >actual &&
 	test_cmp expect actual
@@ -510,7 +510,7 @@ test_expect_success 'add note with "-m" and reuse note with "-C", "-C" will not 
 	second-line
 	EOF
 
-	cat data | git hash-object -w --stdin >blob &&
+	git hash-object -w --stdin <data >blob &&
 	git notes add -m "first-line" -C $(cat blob)  &&
 	git notes show >actual &&
 	test_cmp expect actual

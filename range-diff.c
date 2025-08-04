@@ -1,3 +1,6 @@
+#define USE_THE_REPOSITORY_VARIABLE
+#define DISABLE_SIGN_COMPARE_WARNINGS
+
 #include "git-compat-util.h"
 #include "environment.h"
 #include "gettext.h"
@@ -36,7 +39,8 @@ struct patch_util {
  * as struct object_id (will need to be free()d).
  */
 static int read_patches(const char *range, struct string_list *list,
-			const struct strvec *other_arg)
+			const struct strvec *other_arg,
+			unsigned int include_merges)
 {
 	struct child_process cp = CHILD_PROCESS_INIT;
 	struct strbuf buf = STRBUF_INIT, contents = STRBUF_INIT;
@@ -47,7 +51,7 @@ static int read_patches(const char *range, struct string_list *list,
 	size_t size;
 	int ret = -1;
 
-	strvec_pushl(&cp.args, "log", "--no-color", "-p", "--no-merges",
+	strvec_pushl(&cp.args, "log", "--no-color", "-p",
 		     "--reverse", "--date-order", "--decorate=no",
 		     "--no-prefix", "--submodule=short",
 		     /*
@@ -60,8 +64,10 @@ static int read_patches(const char *range, struct string_list *list,
 		     "--output-indicator-context=#",
 		     "--no-abbrev-commit",
 		     "--pretty=medium",
-		     "--notes",
+		     "--show-notes-by-default",
 		     NULL);
+	if (!include_merges)
+		strvec_push(&cp.args, "--no-merges");
 	strvec_push(&cp.args, range);
 	if (other_arg)
 		strvec_pushv(&cp.args, other_arg->v);
@@ -94,11 +100,14 @@ static int read_patches(const char *range, struct string_list *list,
 		}
 
 		if (skip_prefix(line, "commit ", &p)) {
+			char *q;
 			if (util) {
 				string_list_append(list, buf.buf)->util = util;
 				strbuf_reset(&buf);
 			}
 			CALLOC_ARRAY(util, 1);
+			if (include_merges && (q = strstr(p, " (from ")))
+				*q = '\0';
 			if (repo_get_oid(the_repository, p, &util->oid)) {
 				error(_("could not parse commit '%s'"), p);
 				FREE_AND_NULL(util);
@@ -230,16 +239,19 @@ cleanup:
 }
 
 static int patch_util_cmp(const void *cmp_data UNUSED,
-			  const struct patch_util *a,
-			  const struct patch_util *b,
-			  const char *keydata)
+			  const struct hashmap_entry *ha,
+			  const struct hashmap_entry *hb,
+			  const void *keydata)
 {
+	const struct patch_util
+		*a = container_of(ha, const struct patch_util, e),
+		*b = container_of(hb, const struct patch_util, e);
 	return strcmp(a->diff, keydata ? keydata : b->diff);
 }
 
 static void find_exact_matches(struct string_list *a, struct string_list *b)
 {
-	struct hashmap map = HASHMAP_INIT((hashmap_cmp_fn)patch_util_cmp, NULL);
+	struct hashmap map = HASHMAP_INIT(patch_util_cmp, NULL);
 	int i;
 
 	/* First, add the patches of a to a hash map */
@@ -445,15 +457,17 @@ static void output_pair_header(struct diff_options *diffopt,
 }
 
 static struct userdiff_driver section_headers = {
-	.funcname = { "^ ## (.*) ##$\n"
-		      "^.?@@ (.*)$", REG_EXTENDED }
+	.funcname = {
+		.pattern = "^ ## (.*) ##$\n^.?@@ (.*)$",
+		.cflags = REG_EXTENDED,
+	},
 };
 
 static struct diff_filespec *get_filespec(const char *name, const char *p)
 {
 	struct diff_filespec *spec = alloc_filespec(name);
 
-	fill_filespec(spec, null_oid(), 0, 0100644);
+	fill_filespec(spec, null_oid(the_hash_algo), 0, 0100644);
 	spec->data = (char *)p;
 	spec->size = strlen(p);
 	spec->should_munmap = 0;
@@ -473,7 +487,7 @@ static void patch_diff(const char *a, const char *b,
 	diff_flush(diffopt);
 }
 
-static struct strbuf *output_prefix_cb(struct diff_options *opt UNUSED, void *data)
+static const char *output_prefix_cb(struct diff_options *opt UNUSED, void *data)
 {
 	return data;
 }
@@ -501,7 +515,7 @@ static void output(struct string_list *a, struct string_list *b,
 	opts.flags.suppress_hunk_header_line_count = 1;
 	opts.output_prefix = output_prefix_cb;
 	strbuf_addstr(&indent, "    ");
-	opts.output_prefix_data = &indent;
+	opts.output_prefix_data = indent.buf;
 	diff_setup_done(&opts);
 
 	/*
@@ -564,13 +578,14 @@ int show_range_diff(const char *range1, const char *range2,
 
 	struct string_list branch1 = STRING_LIST_INIT_DUP;
 	struct string_list branch2 = STRING_LIST_INIT_DUP;
+	unsigned int include_merges = range_diff_opts->include_merges;
 
 	if (range_diff_opts->left_only && range_diff_opts->right_only)
 		res = error(_("options '%s' and '%s' cannot be used together"), "--left-only", "--right-only");
 
-	if (!res && read_patches(range1, &branch1, range_diff_opts->other_arg))
+	if (!res && read_patches(range1, &branch1, range_diff_opts->other_arg, include_merges))
 		res = error(_("could not parse log for '%s'"), range1);
-	if (!res && read_patches(range2, &branch2, range_diff_opts->other_arg))
+	if (!res && read_patches(range2, &branch2, range_diff_opts->other_arg, include_merges))
 		res = error(_("could not parse log for '%s'"), range2);
 
 	if (!res) {

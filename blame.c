@@ -1,8 +1,12 @@
+#define USE_THE_REPOSITORY_VARIABLE
+#define DISABLE_SIGN_COMPARE_WARNINGS
+
 #include "git-compat-util.h"
 #include "refs.h"
-#include "object-store-ll.h"
+#include "object-store.h"
 #include "cache-tree.h"
 #include "mergesort.h"
+#include "commit.h"
 #include "convert.h"
 #include "diff.h"
 #include "diffcore.h"
@@ -10,6 +14,7 @@
 #include "hex.h"
 #include "path.h"
 #include "read-cache.h"
+#include "revision.h"
 #include "setup.h"
 #include "tag.h"
 #include "trace2.h"
@@ -250,7 +255,7 @@ static struct commit *fake_working_tree_commit(struct repository *r,
 		switch (st.st_mode & S_IFMT) {
 		case S_IFREG:
 			if (opt->flags.allow_textconv &&
-			    textconv_object(r, read_from, mode, null_oid(), 0, &buf_ptr, &buf_len))
+			    textconv_object(r, read_from, mode, null_oid(the_hash_algo), 0, &buf_ptr, &buf_len))
 				strbuf_attach(&buf, buf_ptr, buf_len, buf_len + 1);
 			else if (strbuf_read_file(&buf, read_from, st.st_size) != st.st_size)
 				die_errno("cannot open or read '%s'", read_from);
@@ -272,7 +277,7 @@ static struct commit *fake_working_tree_commit(struct repository *r,
 	convert_to_git(r->index, path, buf.buf, buf.len, &buf, 0);
 	origin->file.ptr = buf.buf;
 	origin->file.size = buf.len;
-	pretend_object_file(buf.buf, buf.len, OBJ_BLOB, &origin->blob_oid);
+	pretend_object_file(the_repository, buf.buf, buf.len, OBJ_BLOB, &origin->blob_oid);
 
 	/*
 	 * Read the current index, replace the path entry with
@@ -1244,7 +1249,7 @@ static int fill_blob_sha1_and_mode(struct repository *r,
 		goto error_out;
 	return 0;
  error_out:
-	oidclr(&origin->blob_oid);
+	oidclr(&origin->blob_oid, the_repository->hash_algo);
 	origin->mode = S_IFINVALID;
 	return -1;
 }
@@ -2698,7 +2703,7 @@ static struct commit *dwim_reverse_initial(struct rev_info *revs,
 		return NULL;
 
 	/* Do we have HEAD? */
-	if (!resolve_ref_unsafe("HEAD", RESOLVE_REF_READING, &head_oid, NULL))
+	if (!refs_resolve_ref_unsafe(get_main_ref_store(the_repository), "HEAD", RESOLVE_REF_READING, &head_oid, NULL))
 		return NULL;
 	head_commit = lookup_commit_reference_gently(revs->repo,
 						     &head_oid, 1);
@@ -2801,7 +2806,7 @@ void setup_scoreboard(struct blame_scoreboard *sb,
 		if (sb->final) {
 			parent_oid = &sb->final->object.oid;
 		} else {
-			if (!resolve_ref_unsafe("HEAD", RESOLVE_REF_READING, &head_oid, NULL))
+			if (!refs_resolve_ref_unsafe(get_main_ref_store(the_repository), "HEAD", RESOLVE_REF_READING, &head_oid, NULL))
 				die("no such ref: HEAD");
 			parent_oid = &head_oid;
 		}
@@ -2926,6 +2931,11 @@ void setup_blame_bloom_data(struct blame_scoreboard *sb)
 
 void cleanup_scoreboard(struct blame_scoreboard *sb)
 {
+	free(sb->lineno);
+	free(sb->final_buf);
+	clear_prio_queue(&sb->commits);
+	oidset_clear(&sb->ignore_list);
+
 	if (sb->bloom_data) {
 		int i;
 		for (i = 0; i < sb->bloom_data->nr; i++) {

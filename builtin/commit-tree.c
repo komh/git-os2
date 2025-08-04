@@ -3,17 +3,15 @@
  *
  * Copyright (C) Linus Torvalds, 2005
  */
+#define USE_THE_REPOSITORY_VARIABLE
 #include "builtin.h"
 #include "config.h"
 #include "gettext.h"
 #include "hex.h"
 #include "object-name.h"
-#include "object-store-ll.h"
-#include "repository.h"
+#include "object-store.h"
+
 #include "commit.h"
-#include "tree.h"
-#include "utf8.h"
-#include "gpg-interface.h"
 #include "parse-options.h"
 
 static const char * const commit_tree_usage[] = {
@@ -93,7 +91,10 @@ static int parse_file_arg_callback(const struct option *opt,
 	return 0;
 }
 
-int cmd_commit_tree(int argc, const char **argv, const char *prefix)
+int cmd_commit_tree(int argc,
+		    const char **argv,
+		    const char *prefix,
+		    struct repository *repo UNUSED)
 {
 	static struct strbuf buffer = STRBUF_INIT;
 	struct commit_list *parents = NULL;
@@ -110,15 +111,24 @@ int cmd_commit_tree(int argc, const char **argv, const char *prefix)
 		OPT_CALLBACK_F('F', NULL, &buffer, N_("file"),
 			N_("read commit log message from file"), PARSE_OPT_NONEG,
 			parse_file_arg_callback),
-		{ OPTION_STRING, 'S', "gpg-sign", &sign_commit, N_("key-id"),
-			N_("GPG sign commit"), PARSE_OPT_OPTARG, NULL, (intptr_t) "" },
+		{
+			.type = OPTION_STRING,
+			.short_name = 'S',
+			.long_name = "gpg-sign",
+			.value = &sign_commit,
+			.argh = N_("key-id"),
+			.help = N_("GPG sign commit"),
+			.flags = PARSE_OPT_OPTARG,
+			.defval = (intptr_t) "",
+		},
 		OPT_END()
 	};
+	int ret;
 
 	git_config(git_default_config, NULL);
 
-	if (argc < 2 || !strcmp(argv[1], "-h"))
-		usage_with_options(commit_tree_usage, options);
+	show_usage_with_options_if_asked(argc, argv,
+					 commit_tree_usage, options);
 
 	argc = parse_options(argc, argv, prefix, options, commit_tree_usage, 0);
 
@@ -135,11 +145,15 @@ int cmd_commit_tree(int argc, const char **argv, const char *prefix)
 
 	if (commit_tree(buffer.buf, buffer.len, &tree_oid, parents, &commit_oid,
 			NULL, sign_commit)) {
-		strbuf_release(&buffer);
-		return 1;
+		ret = 1;
+		goto out;
 	}
 
 	printf("%s\n", oid_to_hex(&commit_oid));
+	ret = 0;
+
+out:
+	free_commit_list(parents);
 	strbuf_release(&buffer);
-	return 0;
+	return ret;
 }

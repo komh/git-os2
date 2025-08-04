@@ -1,8 +1,10 @@
 #ifndef GIT_ZLIB_H
 #define GIT_ZLIB_H
 
+#include "compat/zlib-compat.h"
+
 typedef struct git_zstream {
-	z_stream z;
+	struct z_stream_s z;
 	unsigned long avail_in;
 	unsigned long avail_out;
 	unsigned long total_in;

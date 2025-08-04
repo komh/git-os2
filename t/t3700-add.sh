@@ -5,7 +5,6 @@
 
 test_description='Test of git add, including the -- option.'
 
-TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 . "$TEST_DIRECTORY"/lib-unique-files.sh
@@ -26,6 +25,16 @@ test_mode_in_index () {
 
 test_expect_success 'Test of git add' '
 	touch foo && git add foo
+'
+
+test_expect_success 'Test with no pathspecs' '
+	cat >expect <<-EOF &&
+	Nothing specified, nothing added.
+	hint: Maybe you wanted to say ${SQ}git add .${SQ}?
+	hint: Disable this message with "git config set advice.addEmptyPathspec false"
+	EOF
+	git add 2>actual &&
+	test_cmp expect actual
 '
 
 test_expect_success 'Post-check that foo is in the index' '
@@ -339,6 +348,40 @@ test_expect_success '"git add ." in empty repo' '
 	)
 '
 
+test_expect_success '"git add" a embedded repository' '
+	rm -fr outer && git init outer &&
+	(
+		cd outer &&
+		for i in 1 2
+		do
+			name=inner$i &&
+			git init $name &&
+			git -C $name commit --allow-empty -m $name ||
+				return 1
+		done &&
+		git add . 2>actual &&
+		cat >expect <<-EOF &&
+		warning: adding embedded git repository: inner1
+		hint: You${SQ}ve added another git repository inside your current repository.
+		hint: Clones of the outer repository will not contain the contents of
+		hint: the embedded repository and will not know how to obtain it.
+		hint: If you meant to add a submodule, use:
+		hint:
+		hint: 	git submodule add <url> inner1
+		hint:
+		hint: If you added this path by mistake, you can remove it from the
+		hint: index with:
+		hint:
+		hint: 	git rm --cached inner1
+		hint:
+		hint: See "git help submodule" for more information.
+		hint: Disable this message with "git config set advice.addEmbeddedRepo false"
+		warning: adding embedded git repository: inner2
+		EOF
+		test_cmp expect actual
+	)
+'
+
 test_expect_success 'error on a repository with no commits' '
 	rm -fr empty &&
 	git init empty &&
@@ -370,8 +413,7 @@ cat >expect.err <<\EOF
 The following paths are ignored by one of your .gitignore files:
 ignored-file
 hint: Use -f if you really want to add them.
-hint: Turn this message off by running
-hint: "git config advice.addIgnoredFile false"
+hint: Disable this message with "git config set advice.addIgnoredFile false"
 EOF
 cat >expect.out <<\EOF
 add 'track-this'
@@ -438,7 +480,7 @@ test_expect_success 'git add --chmod fails with non regular files (but updates t
 	test_ln_s_add foo foo3 &&
 	touch foo4 &&
 	test_must_fail git add --chmod=+x foo3 foo4 2>stderr &&
-	test_i18ngrep "cannot chmod +x .foo3." stderr &&
+	test_grep "cannot chmod +x .foo3." stderr &&
 	test_mode_in_index 120000 foo3 &&
 	test_mode_in_index 100755 foo4
 '
@@ -455,12 +497,12 @@ test_expect_success 'git add --chmod --dry-run reports error for non regular fil
 	git reset --hard &&
 	test_ln_s_add foo foo4 &&
 	test_must_fail git add --chmod=+x --dry-run foo4 2>stderr &&
-	test_i18ngrep "cannot chmod +x .foo4." stderr
+	test_grep "cannot chmod +x .foo4." stderr
 '
 
 test_expect_success 'git add --chmod --dry-run reports error for unmatched pathspec' '
 	test_must_fail git add --chmod=+x --dry-run nonexistent 2>stderr &&
-	test_i18ngrep "pathspec .nonexistent. did not match any files" stderr
+	test_grep "pathspec .nonexistent. did not match any files" stderr
 '
 
 test_expect_success 'no file status change if no pathspec is given' '

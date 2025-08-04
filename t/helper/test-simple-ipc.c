@@ -4,7 +4,6 @@
 
 #include "test-tool.h"
 #include "gettext.h"
-#include "strbuf.h"
 #include "simple-ipc.h"
 #include "parse-options.h"
 #include "thread-utils.h"
@@ -278,7 +277,8 @@ static int daemon__run_server(void)
 
 static start_bg_wait_cb bg_wait_cb;
 
-static int bg_wait_cb(const struct child_process *cp, void *cb_data)
+static int bg_wait_cb(const struct child_process *cp UNUSED,
+		      void *cb_data UNUSED)
 {
 	int s = ipc_get_active_state(cl_args.path);
 
@@ -612,8 +612,8 @@ int cmd__simple_ipc(int argc, const char **argv)
 	if (argc < 2)
 		usage_with_options(simple_ipc_usage, options);
 
-	if (argc == 2 && !strcmp(argv[1], "-h"))
-		usage_with_options(simple_ipc_usage, options);
+	show_usage_with_options_if_asked(argc, argv,
+					 simple_ipc_usage, options);
 
 	if (argc == 2 && !strcmp(argv[1], "SUPPORTS_SIMPLE_IPC"))
 		return 0;

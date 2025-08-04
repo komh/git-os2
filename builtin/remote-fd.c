@@ -53,7 +53,10 @@ static void command_loop(int input_fd, int output_fd)
 	}
 }
 
-int cmd_remote_fd(int argc, const char **argv, const char *prefix)
+int cmd_remote_fd(int argc,
+		  const char **argv,
+		  const char *prefix,
+		  struct repository *repo UNUSED)
 {
 	int input_fd = -1;
 	int output_fd = -1;
@@ -61,6 +64,7 @@ int cmd_remote_fd(int argc, const char **argv, const char *prefix)
 
 	BUG_ON_NON_EMPTY_PREFIX(prefix);
 
+	show_usage_if_asked(argc, argv, usage_msg);
 	if (argc != 3)
 		usage(usage_msg);
 

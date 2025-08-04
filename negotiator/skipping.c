@@ -1,3 +1,5 @@
+#define USE_THE_REPOSITORY_VARIABLE
+
 #include "git-compat-util.h"
 #include "skipping.h"
 #include "../commit.h"
@@ -73,7 +75,7 @@ static struct entry *rev_list_push(struct data *data, struct commit *commit, int
 	return entry;
 }
 
-static int clear_marks(const char *refname, const struct object_id *oid,
+static int clear_marks(const char *refname, const char *referent UNUSED, const struct object_id *oid,
 		       int flag UNUSED,
 		       void *cb_data UNUSED)
 {
@@ -132,7 +134,6 @@ static int push_parent(struct data *data, struct entry *entry,
 	struct entry *parent_entry;
 
 	if (to_push->object.flags & SEEN) {
-		int i;
 		if (to_push->object.flags & POPPED)
 			/*
 			 * The entry for this commit has already been popped,
@@ -143,7 +144,7 @@ static int push_parent(struct data *data, struct entry *entry,
 		/*
 		 * Find the existing entry and use it.
 		 */
-		for (i = 0; i < data->rev_list.nr; i++) {
+		for (size_t i = 0; i < data->rev_list.nr; i++) {
 			parent_entry = data->rev_list.array[i].data;
 			if (parent_entry->commit == to_push)
 				goto parent_found;
@@ -237,7 +238,7 @@ static int ack(struct fetch_negotiator *n, struct commit *c)
 {
 	int known_to_be_common = !!(c->object.flags & COMMON);
 	if (!(c->object.flags & SEEN))
-		die("received ack for commit %s not sent as 'have'\n",
+		die("received ack for commit %s not sent as 'have'",
 		    oid_to_hex(&c->object.oid));
 	mark_common(n->data, c);
 	return known_to_be_common;
@@ -245,8 +246,11 @@ static int ack(struct fetch_negotiator *n, struct commit *c)
 
 static void release(struct fetch_negotiator *n)
 {
-	clear_prio_queue(&((struct data *)n->data)->rev_list);
-	FREE_AND_NULL(n->data);
+	struct data *data = n->data;
+	for (size_t i = 0; i < data->rev_list.nr; i++)
+		free(data->rev_list.array[i].data);
+	clear_prio_queue(&data->rev_list);
+	FREE_AND_NULL(data);
 }
 
 void skipping_negotiator_init(struct fetch_negotiator *negotiator)
@@ -261,6 +265,7 @@ void skipping_negotiator_init(struct fetch_negotiator *negotiator)
 	data->rev_list.compare = compare;
 
 	if (marked)
-		for_each_ref(clear_marks, NULL);
+		refs_for_each_ref(get_main_ref_store(the_repository),
+				  clear_marks, NULL);
 	marked = 1;
 }

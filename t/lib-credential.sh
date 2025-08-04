@@ -43,11 +43,14 @@ helper_test_clean() {
 	reject $1 https example.com store-user
 	reject $1 https example.com user1
 	reject $1 https example.com user2
+	reject $1 https example.com user-expiry
+	reject $1 https example.com user-expiry-overwrite
 	reject $1 https example.com user4
 	reject $1 https example.com user-distinct-pass
 	reject $1 https example.com user-overwrite
 	reject $1 https example.com user-erase1
 	reject $1 https example.com user-erase2
+	reject $1 https victim.example.com user
 	reject $1 http path.tld user
 	reject $1 https timeout.tld user
 	reject $1 https sso.tld
@@ -431,6 +434,81 @@ helper_test_timeout() {
 	'
 }
 
+helper_test_password_expiry_utc() {
+	HELPER=$1
+
+	test_expect_success "helper ($HELPER) stores password_expiry_utc" '
+		check approve $HELPER <<-\EOF
+		protocol=https
+		host=example.com
+		username=user-expiry
+		password=pass
+		password_expiry_utc=9999999999
+		EOF
+	'
+
+	test_expect_success "helper ($HELPER) gets password_expiry_utc" '
+		check fill $HELPER <<-\EOF
+		protocol=https
+		host=example.com
+		username=user-expiry
+		--
+		protocol=https
+		host=example.com
+		username=user-expiry
+		password=pass
+		password_expiry_utc=9999999999
+		--
+		EOF
+	'
+
+	test_expect_success "helper ($HELPER) overwrites when password_expiry_utc changes" '
+		check approve $HELPER <<-\EOF &&
+		protocol=https
+		host=example.com
+		username=user-expiry-overwrite
+		password=pass1
+		password_expiry_utc=9999999998
+		EOF
+		check approve $HELPER <<-\EOF &&
+		protocol=https
+		host=example.com
+		username=user-expiry-overwrite
+		password=pass2
+		password_expiry_utc=9999999999
+		EOF
+		check fill $HELPER <<-\EOF &&
+		protocol=https
+		host=example.com
+		username=user-expiry-overwrite
+		--
+		protocol=https
+		host=example.com
+		username=user-expiry-overwrite
+		password=pass2
+		password_expiry_utc=9999999999
+		EOF
+		check reject $HELPER <<-\EOF &&
+		protocol=https
+		host=example.com
+		username=user-expiry-overwrite
+		password=pass2
+		EOF
+		check fill $HELPER <<-\EOF
+		protocol=https
+		host=example.com
+		username=user-expiry-overwrite
+		--
+		protocol=https
+		host=example.com
+		username=user-expiry-overwrite
+		password=askpass-password
+		--
+		askpass: Password for '\''https://user-expiry-overwrite@example.com'\'':
+		EOF
+	'
+}
+
 helper_test_oauth_refresh_token() {
 	HELPER=$1
 
@@ -456,6 +534,144 @@ helper_test_oauth_refresh_token() {
 		password=pass
 		oauth_refresh_token=xyzzy
 		--
+		EOF
+	'
+}
+
+helper_test_authtype() {
+	HELPER=$1
+
+	test_expect_success "helper ($HELPER) stores authtype and credential" '
+		check approve $HELPER <<-\EOF
+		capability[]=authtype
+		authtype=Bearer
+		credential=random-token
+		protocol=https
+		host=git.example.com
+		EOF
+	'
+
+	test_expect_success "helper ($HELPER) gets authtype and credential" '
+		check fill $HELPER <<-\EOF
+		capability[]=authtype
+		protocol=https
+		host=git.example.com
+		--
+		capability[]=authtype
+		authtype=Bearer
+		credential=random-token
+		protocol=https
+		host=git.example.com
+		--
+		EOF
+	'
+
+	test_expect_success "helper ($HELPER) gets authtype and credential only if request has authtype capability" '
+		check fill $HELPER <<-\EOF
+		protocol=https
+		host=git.example.com
+		--
+		protocol=https
+		host=git.example.com
+		username=askpass-username
+		password=askpass-password
+		--
+		askpass: Username for '\''https://git.example.com'\'':
+		askpass: Password for '\''https://askpass-username@git.example.com'\'':
+		EOF
+	'
+
+	test_expect_success "helper ($HELPER) stores authtype and credential with username" '
+		check approve $HELPER <<-\EOF
+		capability[]=authtype
+		authtype=Bearer
+		credential=other-token
+		protocol=https
+		host=git.example.com
+		username=foobar
+		EOF
+	'
+
+	test_expect_success "helper ($HELPER) gets authtype and credential with username" '
+		check fill $HELPER <<-\EOF
+		capability[]=authtype
+		protocol=https
+		host=git.example.com
+		username=foobar
+		--
+		capability[]=authtype
+		authtype=Bearer
+		credential=other-token
+		protocol=https
+		host=git.example.com
+		username=foobar
+		--
+		EOF
+	'
+
+	test_expect_success "helper ($HELPER) does not get authtype and credential with different username" '
+		check fill $HELPER <<-\EOF
+		capability[]=authtype
+		protocol=https
+		host=git.example.com
+		username=barbaz
+		--
+		protocol=https
+		host=git.example.com
+		username=barbaz
+		password=askpass-password
+		--
+		askpass: Password for '\''https://barbaz@git.example.com'\'':
+		EOF
+	'
+
+	test_expect_success "helper ($HELPER) does not store ephemeral authtype and credential" '
+		check approve $HELPER <<-\EOF &&
+		capability[]=authtype
+		authtype=Bearer
+		credential=git2-token
+		protocol=https
+		host=git2.example.com
+		ephemeral=1
+		EOF
+
+		check fill $HELPER <<-\EOF
+		capability[]=authtype
+		protocol=https
+		host=git2.example.com
+		--
+		protocol=https
+		host=git2.example.com
+		username=askpass-username
+		password=askpass-password
+		--
+		askpass: Username for '\''https://git2.example.com'\'':
+		askpass: Password for '\''https://askpass-username@git2.example.com'\'':
+		EOF
+	'
+
+	test_expect_success "helper ($HELPER) does not store ephemeral username and password" '
+		check approve $HELPER <<-\EOF &&
+		capability[]=authtype
+		protocol=https
+		host=git2.example.com
+		user=barbaz
+		password=secret
+		ephemeral=1
+		EOF
+
+		check fill $HELPER <<-\EOF
+		capability[]=authtype
+		protocol=https
+		host=git2.example.com
+		--
+		protocol=https
+		host=git2.example.com
+		username=askpass-username
+		password=askpass-password
+		--
+		askpass: Username for '\''https://git2.example.com'\'':
+		askpass: Password for '\''https://askpass-username@git2.example.com'\'':
 		EOF
 	'
 }

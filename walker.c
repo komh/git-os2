@@ -1,9 +1,11 @@
+#define USE_THE_REPOSITORY_VARIABLE
+
 #include "git-compat-util.h"
 #include "gettext.h"
 #include "hex.h"
 #include "walker.h"
 #include "repository.h"
-#include "object-store-ll.h"
+#include "object-store.h"
 #include "commit.h"
 #include "strbuf.h"
 #include "tree.h"
@@ -45,7 +47,7 @@ static int process_tree(struct walker *walker, struct tree *tree)
 	if (parse_tree(tree))
 		return -1;
 
-	init_tree_desc(&desc, tree->buffer, tree->size);
+	init_tree_desc(&desc, &tree->object.oid, tree->buffer, tree->size);
 	while (tree_entry(&desc, &entry)) {
 		struct object *obj = NULL;
 
@@ -148,14 +150,15 @@ static int process(struct walker *walker, struct object *obj)
 		return 0;
 	obj->flags |= SEEN;
 
-	if (repo_has_object_file(the_repository, &obj->oid)) {
+	if (has_object(the_repository, &obj->oid,
+		       HAS_OBJECT_RECHECK_PACKED | HAS_OBJECT_FETCH_PROMISOR)) {
 		/* We already have it, so we should scan it now. */
 		obj->flags |= TO_SCAN;
 	}
 	else {
 		if (obj->flags & COMPLETE)
 			return 0;
-		walker->prefetch(walker, obj->oid.hash);
+		walker->prefetch(walker, &obj->oid);
 	}
 
 	object_list_insert(obj, process_queue_end);
@@ -170,7 +173,8 @@ static int loop(struct walker *walker)
 	uint64_t nr = 0;
 
 	if (walker->get_progress)
-		progress = start_delayed_progress(_("Fetching objects"), 0);
+		progress = start_delayed_progress(the_repository,
+						  _("Fetching objects"), 0);
 
 	while (process_queue) {
 		struct object *obj = process_queue->item;
@@ -184,7 +188,7 @@ static int loop(struct walker *walker)
 		 * the queue because we needed to fetch it first.
 		 */
 		if (! (obj->flags & TO_SCAN)) {
-			if (walker->fetch(walker, obj->oid.hash)) {
+			if (walker->fetch(walker, &obj->oid)) {
 				stop_progress(&progress);
 				report_missing(obj);
 				return -1;
@@ -219,6 +223,7 @@ static int interpret_target(struct walker *walker, char *target, struct object_i
 }
 
 static int mark_complete(const char *path UNUSED,
+			const char *referent UNUSED,
 			 const struct object_id *oid,
 			 int flag UNUSED,
 			 void *cb_data UNUSED)
@@ -286,7 +291,8 @@ int walker_fetch(struct walker *walker, int targets, char **target,
 	ALLOC_ARRAY(oids, targets);
 
 	if (write_ref) {
-		transaction = ref_transaction_begin(&err);
+		transaction = ref_store_transaction_begin(get_main_ref_store(the_repository),
+							  0, &err);
 		if (!transaction) {
 			error("%s", err.buf);
 			goto done;
@@ -294,7 +300,8 @@ int walker_fetch(struct walker *walker, int targets, char **target,
 	}
 
 	if (!walker->get_recover) {
-		for_each_ref(mark_complete, NULL);
+		refs_for_each_ref(get_main_ref_store(the_repository),
+				  mark_complete, NULL);
 		commit_list_sort_by_date(&complete);
 	}
 
@@ -324,7 +331,7 @@ int walker_fetch(struct walker *walker, int targets, char **target,
 		strbuf_reset(&refname);
 		strbuf_addf(&refname, "refs/%s", write_ref[i]);
 		if (ref_transaction_update(transaction, refname.buf,
-					   oids + i, NULL, 0,
+					   oids + i, NULL, NULL, NULL, 0,
 					   msg ? msg : "fetch (unknown)",
 					   &err)) {
 			error("%s", err.buf);

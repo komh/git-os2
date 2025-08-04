@@ -2,7 +2,6 @@
 
 test_description='index file specific tests'
 
-TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 sane_unset GIT_TEST_SPLIT_INDEX
@@ -118,7 +117,7 @@ test_index_version () {
 		fi &&
 		git add a &&
 		echo $EXPECTED_OUTPUT_VERSION >expect &&
-		test-tool index-version <.git/index >actual &&
+		git update-index --show-index-version >actual &&
 		test_cmp expect actual
 	)
 }

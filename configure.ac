@@ -94,7 +94,7 @@ AC_DEFUN([GIT_PARSE_WITH_SET_MAKE_VAR],
 [AC_ARG_WITH([$1],
  [AS_HELP_STRING([--with-$1=VALUE], $3)],
  if test -n "$withval"; then
-  if test "$withval" = "yes" -o "$withval" = "no"; then
+  if test "$withval" = "yes" || test "$withval" = "no"; then
     AC_MSG_WARN([You likely do not want either 'yes' or 'no' as]
 		     [a value for $1 ($2).  Maybe you do...?])
   fi
@@ -142,7 +142,7 @@ fi
 ## Configure body starts here.
 
 AC_PREREQ(2.59)
-AC_INIT([git], [@@GIT_VERSION@@], [git@vger.kernel.org])
+AC_INIT([git], [@GIT_VERSION@], [git@vger.kernel.org])
 
 AC_CONFIG_SRCDIR([git.c])
 
@@ -1066,6 +1066,33 @@ AC_CHECK_LIB([iconv], [locale_charset],
        [AC_CHECK_LIB([charset], [locale_charset],
                      [CHARSET_LIB=-lcharset])])
 GIT_CONF_SUBST([CHARSET_LIB])
+
+#
+# Define HAVE_SYSINFO=YesPlease if sysinfo is available.
+#
+AC_DEFUN([HAVE_SYSINFO_SRC], [
+AC_LANG_PROGRAM([[
+#include <stdint.h>
+#include <sys/sysinfo.h>
+]], [[
+struct sysinfo si;
+uint64_t t = 0;
+if (!sysinfo(&si)) {
+	t = si.totalram;
+	if (si.mem_unit > 1)
+		t *= (uint64_t)si.mem_unit;
+}
+return t;
+]])])
+
+AC_MSG_CHECKING([for sysinfo])
+AC_COMPILE_IFELSE([HAVE_SYSINFO_SRC],
+	[AC_MSG_RESULT([yes])
+	HAVE_SYSINFO=YesPlease],
+	[AC_MSG_RESULT([no])
+	HAVE_SYSINFO=])
+GIT_CONF_SUBST([HAVE_SYSINFO])
+
 #
 # Define HAVE_CLOCK_GETTIME=YesPlease if clock_gettime is available.
 GIT_CHECK_FUNC(clock_gettime,

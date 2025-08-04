@@ -1,13 +1,15 @@
+#define USE_THE_REPOSITORY_VARIABLE
+#define DISABLE_SIGN_COMPARE_WARNINGS
+
 #include "git-compat-util.h"
+#include "gettext.h"
 #include "config.h"
 #include "hex.h"
-#include "object-store-ll.h"
+#include "object-store.h"
 #include "strbuf.h"
 #include "xdiff-interface.h"
 #include "xdiff/xtypes.h"
 #include "xdiff/xdiffi.h"
-#include "xdiff/xemit.h"
-#include "xdiff/xmacros.h"
 #include "xdiff/xutils.h"
 
 struct xdiff_emit_state {
@@ -179,7 +181,7 @@ void read_mmblob(mmfile_t *ptr, const struct object_id *oid)
 	unsigned long size;
 	enum object_type type;
 
-	if (oideq(oid, null_oid())) {
+	if (oideq(oid, null_oid(the_hash_algo))) {
 		ptr->ptr = xstrdup("");
 		ptr->size = 0;
 		return;
@@ -306,6 +308,22 @@ int xdiff_compare_lines(const char *l1, long s1,
 	return xdl_recmatch(l1, s1, l2, s2, flags);
 }
 
+int parse_conflict_style_name(const char *value)
+{
+	if (!strcmp(value, "diff3"))
+		return XDL_MERGE_DIFF3;
+	else if (!strcmp(value, "zdiff3"))
+		return XDL_MERGE_ZEALOUS_DIFF3;
+	else if (!strcmp(value, "merge"))
+		return 0;
+	/*
+	 * Please update _git_checkout() in git-completion.bash when
+	 * you add new merge config
+	 */
+	else
+		return -1;
+}
+
 int git_xmerge_style = -1;
 
 int git_xmerge_config(const char *var, const char *value,
@@ -313,20 +331,11 @@ int git_xmerge_config(const char *var, const char *value,
 {
 	if (!strcmp(var, "merge.conflictstyle")) {
 		if (!value)
-			die("'%s' is not a boolean", var);
-		if (!strcmp(value, "diff3"))
-			git_xmerge_style = XDL_MERGE_DIFF3;
-		else if (!strcmp(value, "zdiff3"))
-			git_xmerge_style = XDL_MERGE_ZEALOUS_DIFF3;
-		else if (!strcmp(value, "merge"))
-			git_xmerge_style = 0;
-		/*
-		 * Please update _git_checkout() in
-		 * git-completion.bash when you add new merge config
-		 */
-		else
-			die("unknown style '%s' given for '%s'",
-			    value, var);
+			return config_error_nonbool(var);
+		git_xmerge_style = parse_conflict_style_name(value);
+		if (git_xmerge_style == -1)
+			return error(_("unknown style '%s' given for '%s'"),
+				     value, var);
 		return 0;
 	}
 	return git_default_config(var, value, ctx, cb);

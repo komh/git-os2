@@ -182,8 +182,8 @@ test_expect_success '--skip after failed fixup cleans commit message' '
 
 	: Final squash failed, but there was still a squash &&
 	head -n1 .git/copy.txt >first-line &&
-	test_i18ngrep "# This is a combination of 3 commits" first-line &&
-	test_i18ngrep "# This is the commit message #3:" .git/copy.txt
+	test_grep "# This is a combination of 3 commits" first-line &&
+	test_grep "# This is the commit message #3:" .git/copy.txt
 '
 
 test_expect_success 'setup rerere database' '
@@ -268,6 +268,24 @@ test_expect_success 'the todo command "break" works' '
 	test_path_is_file execed
 '
 
+test_expect_success 'patch file is removed before break command' '
+	test_when_finished "git rebase --abort" &&
+	cat >todo <<-\EOF &&
+	pick commit-new-file-F2-on-topic-branch
+	break
+	EOF
+
+	(
+		set_replace_editor todo &&
+		test_must_fail git rebase -i --onto commit-new-file-F2 HEAD
+	) &&
+	test_path_is_file .git/rebase-merge/patch &&
+	echo 22>F2 &&
+	git add F2 &&
+	git rebase --continue &&
+	test_path_is_missing .git/rebase-merge/patch
+'
+
 test_expect_success '--reschedule-failed-exec' '
 	test_when_finished "git rebase --abort" &&
 	test_must_fail git rebase -x false --reschedule-failed-exec HEAD^ &&
@@ -276,7 +294,7 @@ test_expect_success '--reschedule-failed-exec' '
 	test_must_fail git -c rebase.rescheduleFailedExec=true \
 		rebase -x false HEAD^ 2>err &&
 	grep "^exec false" .git/rebase-merge/git-rebase-todo &&
-	test_i18ngrep "has been rescheduled" err
+	test_grep "has been rescheduled" err
 '
 
 test_expect_success 'rebase.rescheduleFailedExec only affects `rebase -i`' '

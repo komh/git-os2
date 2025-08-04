@@ -1,6 +1,7 @@
 #!/bin/sh
 
 test_description='test skipping fetch negotiator'
+
 . ./test-lib.sh
 
 test_expect_success 'fetch.negotiationalgorithm config' '

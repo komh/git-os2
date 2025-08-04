@@ -4,6 +4,8 @@
  * Copyright (C) Linus Torvalds, 2005
  */
 
+#define DISABLE_SIGN_COMPARE_WARNINGS
+
 #include "git-compat-util.h"
 #include "date.h"
 #include "gettext.h"
@@ -207,13 +209,13 @@ void show_date_relative(timestamp_t time, struct strbuf *timebuf)
 		 (diff + 183) / 365);
 }
 
-struct date_mode *date_mode_from_type(enum date_mode_type type)
+struct date_mode date_mode_from_type(enum date_mode_type type)
 {
-	static struct date_mode mode = DATE_MODE_INIT;
+	struct date_mode mode = DATE_MODE_INIT;
 	if (type == DATE_STRFTIME)
 		BUG("cannot create anonymous strftime date_mode struct");
 	mode.type = type;
-	return &mode;
+	return mode;
 }
 
 static void show_date_normal(struct strbuf *buf, timestamp_t time, struct tm *tm, int tz, struct tm *human_tm, int human_tz, int local)
@@ -283,7 +285,7 @@ static void show_date_normal(struct strbuf *buf, timestamp_t time, struct tm *tm
 		strbuf_addf(buf, " %+05d", tz);
 }
 
-const char *show_date(timestamp_t time, int tz, const struct date_mode *mode)
+const char *show_date(timestamp_t time, int tz, struct date_mode mode)
 {
 	struct tm *tm;
 	struct tm tmbuf = { 0 };
@@ -291,13 +293,13 @@ const char *show_date(timestamp_t time, int tz, const struct date_mode *mode)
 	int human_tz = -1;
 	static struct strbuf timebuf = STRBUF_INIT;
 
-	if (mode->type == DATE_UNIX) {
+	if (mode.type == DATE_UNIX) {
 		strbuf_reset(&timebuf);
 		strbuf_addf(&timebuf, "%"PRItime, time);
 		return timebuf.buf;
 	}
 
-	if (mode->type == DATE_HUMAN) {
+	if (mode.type == DATE_HUMAN) {
 		struct timeval now;
 
 		get_time(&now);
@@ -306,22 +308,22 @@ const char *show_date(timestamp_t time, int tz, const struct date_mode *mode)
 		human_tz = local_time_tzoffset(now.tv_sec, &human_tm);
 	}
 
-	if (mode->local)
+	if (mode.local)
 		tz = local_tzoffset(time);
 
-	if (mode->type == DATE_RAW) {
+	if (mode.type == DATE_RAW) {
 		strbuf_reset(&timebuf);
 		strbuf_addf(&timebuf, "%"PRItime" %+05d", time, tz);
 		return timebuf.buf;
 	}
 
-	if (mode->type == DATE_RELATIVE) {
+	if (mode.type == DATE_RELATIVE) {
 		strbuf_reset(&timebuf);
 		show_date_relative(time, &timebuf);
 		return timebuf.buf;
 	}
 
-	if (mode->local)
+	if (mode.local)
 		tm = time_to_tm_local(time, &tmbuf);
 	else
 		tm = time_to_tm(time, tz, &tmbuf);
@@ -331,35 +333,39 @@ const char *show_date(timestamp_t time, int tz, const struct date_mode *mode)
 	}
 
 	strbuf_reset(&timebuf);
-	if (mode->type == DATE_SHORT)
+	if (mode.type == DATE_SHORT)
 		strbuf_addf(&timebuf, "%04d-%02d-%02d", tm->tm_year + 1900,
 				tm->tm_mon + 1, tm->tm_mday);
-	else if (mode->type == DATE_ISO8601)
+	else if (mode.type == DATE_ISO8601)
 		strbuf_addf(&timebuf, "%04d-%02d-%02d %02d:%02d:%02d %+05d",
 				tm->tm_year + 1900,
 				tm->tm_mon + 1,
 				tm->tm_mday,
 				tm->tm_hour, tm->tm_min, tm->tm_sec,
 				tz);
-	else if (mode->type == DATE_ISO8601_STRICT) {
-		char sign = (tz >= 0) ? '+' : '-';
-		tz = abs(tz);
-		strbuf_addf(&timebuf, "%04d-%02d-%02dT%02d:%02d:%02d%c%02d:%02d",
+	else if (mode.type == DATE_ISO8601_STRICT) {
+		strbuf_addf(&timebuf, "%04d-%02d-%02dT%02d:%02d:%02d",
 				tm->tm_year + 1900,
 				tm->tm_mon + 1,
 				tm->tm_mday,
-				tm->tm_hour, tm->tm_min, tm->tm_sec,
-				sign, tz / 100, tz % 100);
-	} else if (mode->type == DATE_RFC2822)
+				tm->tm_hour, tm->tm_min, tm->tm_sec);
+		if (tz == 0) {
+			strbuf_addch(&timebuf, 'Z');
+		} else {
+			strbuf_addch(&timebuf, tz >= 0 ? '+' : '-');
+			tz = abs(tz);
+			strbuf_addf(&timebuf, "%02d:%02d", tz / 100, tz % 100);
+		}
+	} else if (mode.type == DATE_RFC2822)
 		strbuf_addf(&timebuf, "%.3s, %d %.3s %d %02d:%02d:%02d %+05d",
 			weekday_names[tm->tm_wday], tm->tm_mday,
 			month_names[tm->tm_mon], tm->tm_year + 1900,
 			tm->tm_hour, tm->tm_min, tm->tm_sec, tz);
-	else if (mode->type == DATE_STRFTIME)
-		strbuf_addftime(&timebuf, mode->strftime_fmt, tm, tz,
-				!mode->local);
+	else if (mode.type == DATE_STRFTIME)
+		strbuf_addftime(&timebuf, mode.strftime_fmt, tm, tz,
+				!mode.local);
 	else
-		show_date_normal(&timebuf, time, tm, tz, &human_tm, human_tz, mode->local);
+		show_date_normal(&timebuf, time, tm, tz, &human_tm, human_tz, mode.local);
 	return timebuf.buf;
 }
 
@@ -864,6 +870,10 @@ static int match_object_header_date(const char *date, timestamp_t *timestamp, in
 	return 0;
 }
 
+
+/* timestamp of 2099-12-31T23:59:59Z, including 32 leap days */
+static const timestamp_t timestamp_max = (((timestamp_t)2100 - 1970) * 365 + 32) * 24 * 60 * 60 - 1;
+
 /* Gr. strptime is crap for this; it doesn't have a way to require RFC2822
    (i.e. English) day/month names, and it doesn't work correctly with %z. */
 int parse_date_basic(const char *date, timestamp_t *timestamp, int *offset)
@@ -933,8 +943,14 @@ int parse_date_basic(const char *date, timestamp_t *timestamp, int *offset)
 		}
 	}
 
-	if (!tm_gmt)
+	if (!tm_gmt) {
+		if (*offset > 0 && *offset * 60 > *timestamp)
+			return -1;
+		if (*offset < 0 && -*offset * 60 > timestamp_max - *timestamp)
+			return -1;
 		*timestamp -= *offset * 60;
+	}
+
 	return 0; /* success */
 }
 
@@ -1228,7 +1244,7 @@ static const char *approxidate_alpha(const char *date, struct tm *tm, struct tm 
 	}
 
 	for (s = special; s->name; s++) {
-		int len = strlen(s->name);
+		size_t len = strlen(s->name);
 		if (match_string(date, s->name) == len) {
 			s->fn(tm, now, num);
 			*touched = 1;
@@ -1238,7 +1254,7 @@ static const char *approxidate_alpha(const char *date, struct tm *tm, struct tm 
 
 	if (!*num) {
 		for (i = 1; i < 11; i++) {
-			int len = strlen(number_name[i]);
+			size_t len = strlen(number_name[i]);
 			if (match_string(date, number_name[i]) == len) {
 				*num = i;
 				*touched = 1;
@@ -1254,7 +1270,7 @@ static const char *approxidate_alpha(const char *date, struct tm *tm, struct tm 
 
 	tl = typelen;
 	while (tl->type) {
-		int len = strlen(tl->type);
+		size_t len = strlen(tl->type);
 		if (match_string(date, tl->type) >= len-1) {
 			update_tm(tm, now, tl->length * *num);
 			*num = 0;

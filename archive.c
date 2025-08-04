@@ -1,15 +1,20 @@
+#define USE_THE_REPOSITORY_VARIABLE
+#define DISABLE_SIGN_COMPARE_WARNINGS
+
 #include "git-compat-util.h"
 #include "abspath.h"
 #include "config.h"
 #include "convert.h"
 #include "environment.h"
 #include "gettext.h"
+#include "git-zlib.h"
 #include "hex.h"
+#include "object-name.h"
 #include "path.h"
 #include "pretty.h"
 #include "setup.h"
 #include "refs.h"
-#include "object-store-ll.h"
+#include "object-store.h"
 #include "commit.h"
 #include "tree.h"
 #include "tree-walk.h"
@@ -17,7 +22,6 @@
 #include "archive.h"
 #include "parse-options.h"
 #include "unpack-trees.h"
-#include "dir.h"
 #include "quote.h"
 
 static char const * const archive_usage[] = {
@@ -212,7 +216,7 @@ static int write_archive_entry(const struct object_id *oid, const char *base,
 	/* Stream it? */
 	if (S_ISREG(mode) && !args->convert &&
 	    oid_object_info(args->repo, oid, &size) == OBJ_BLOB &&
-	    size > big_file_threshold)
+	    size > repo_settings_get_big_file_threshold(the_repository))
 		return write_entry(args, oid, path.buf, path.len, mode, NULL, size);
 
 	buffer = object_file_to_archive(args, path.buf, oid, mode, &type, &size);
@@ -302,15 +306,13 @@ int write_archive_entries(struct archiver_args *args,
 		write_archive_entry_fn_t write_entry)
 {
 	struct archiver_context context;
-	struct unpack_trees_options opts;
-	struct tree_desc t;
 	int err;
 	struct strbuf path_in_archive = STRBUF_INIT;
 	struct strbuf content = STRBUF_INIT;
 	struct object_id fake_oid;
 	int i;
 
-	oidcpy(&fake_oid, null_oid());
+	oidcpy(&fake_oid, null_oid(the_hash_algo));
 
 	if (args->baselen > 0 && args->base[args->baselen - 1] == '/') {
 		size_t len = args->baselen;
@@ -328,22 +330,6 @@ int write_archive_entries(struct archiver_args *args,
 	memset(&context, 0, sizeof(context));
 	context.args = args;
 	context.write_entry = write_entry;
-
-	/*
-	 * Setup index and instruct attr to read index only
-	 */
-	if (!args->worktree_attributes) {
-		memset(&opts, 0, sizeof(opts));
-		opts.index_only = 1;
-		opts.head_idx = -1;
-		opts.src_index = args->repo->index;
-		opts.dst_index = args->repo->index;
-		opts.fn = oneway_merge;
-		init_tree_desc(&t, args->tree->buffer, args->tree->size);
-		if (unpack_trees(1, &t, &opts))
-			return -1;
-		git_attr_set_direction(GIT_ATTR_INDEX);
-	}
 
 	err = read_tree(args->repo, args->tree,
 			&args->pathspec,
@@ -537,6 +523,27 @@ static void parse_treeish_arg(const char **argv,
 	if (!tree)
 		die(_("not a tree object: %s"), oid_to_hex(&oid));
 
+	/*
+	 * Setup index and instruct attr to read index only
+	 */
+	if (!ar_args->worktree_attributes) {
+		struct unpack_trees_options opts;
+		struct tree_desc t;
+
+		memset(&opts, 0, sizeof(opts));
+		opts.index_only = 1;
+		opts.head_idx = -1;
+		opts.src_index = ar_args->repo->index;
+		opts.dst_index = ar_args->repo->index;
+		opts.fn = oneway_merge;
+		init_tree_desc(&t, &tree->object.oid, tree->buffer, tree->size);
+		if (unpack_trees(1, &t, &opts))
+			die(_("failed to unpack tree object %s"),
+			    oid_to_hex(&tree->object.oid));
+
+		git_attr_set_direction(GIT_ATTR_INDEX);
+	}
+
 	ar_args->refname = ref;
 	ar_args->tree = tree;
 	ar_args->commit_oid = commit_oid;
@@ -643,20 +650,37 @@ static int parse_archive_args(int argc, const char **argv,
 		OPT_STRING(0, "format", &format, N_("fmt"), N_("archive format")),
 		OPT_STRING(0, "prefix", &base, N_("prefix"),
 			N_("prepend prefix to each pathname in the archive")),
-		{ OPTION_CALLBACK, 0, "add-file", args, N_("file"),
-		  N_("add untracked file to archive"), 0, add_file_cb,
-		  (intptr_t)&base },
-		{ OPTION_CALLBACK, 0, "add-virtual-file", args,
-		  N_("path:content"), N_("add untracked file to archive"), 0,
-		  add_file_cb, (intptr_t)&base },
+		{
+			.type = OPTION_CALLBACK,
+			.long_name = "add-file",
+			.value = args,
+			.argh = N_("file"),
+			.help = N_("add untracked file to archive"),
+			.callback = add_file_cb,
+			.defval = (intptr_t) &base,
+		},
+		{
+			.type = OPTION_CALLBACK,
+			.long_name = "add-virtual-file",
+			.value = args,
+			.argh = N_("path:content"),
+			.help = N_("add untracked file to archive"),
+			.callback = add_file_cb,
+			.defval = (intptr_t) &base,
+		},
 		OPT_STRING('o', "output", &output, N_("file"),
 			N_("write the archive to this file")),
 		OPT_BOOL(0, "worktree-attributes", &worktree_attributes,
 			N_("read .gitattributes in working directory")),
 		OPT__VERBOSE(&verbose, N_("report archived files on stderr")),
-		{ OPTION_STRING, 0, "mtime", &mtime_option, N_("time"),
-		  N_("set modification time of archive entries"),
-		  PARSE_OPT_NONEG },
+		{
+			.type = OPTION_STRING,
+			.long_name = "mtime",
+			.value = &mtime_option,
+			.argh = N_("time"),
+			.help = N_("set modification time of archive entries"),
+			.flags = PARSE_OPT_NONEG,
+		},
 		OPT_NUMBER_CALLBACK(&compression_level,
 			N_("set compression level"), number_callback),
 		OPT_GROUP(""),
@@ -685,6 +709,8 @@ static int parse_archive_args(int argc, const char **argv,
 		base = "";
 
 	if (list) {
+		if (argc)
+			die(_("extra command line parameter '%s'"), *argv);
 		for (i = 0; i < nr_archivers; i++)
 			if (!is_remote || archivers[i]->flags & ARCHIVER_REMOTE)
 				printf("%s\n", archivers[i]->name);
@@ -731,6 +757,7 @@ int write_archive(int argc, const char **argv, const char *prefix,
 	struct pretty_print_describe_status describe_status = {0};
 	struct pretty_print_context ctx = {0};
 	struct archiver_args args;
+	const char **argv_copy;
 	int rc;
 
 	git_config_get_bool("uploadarchive.allowunreachable", &remote_allow_unreachable);
@@ -744,6 +771,14 @@ int write_archive(int argc, const char **argv, const char *prefix,
 	args.repo = repo;
 	args.prefix = prefix;
 	string_list_init_dup(&args.extra_files);
+
+	/*
+	 * `parse_archive_args()` modifies contents of `argv`, which is what we
+	 * want. Our callers may not want it though, so we create a copy here.
+	 */
+	DUP_ARRAY(argv_copy, argv, argc);
+	argv = argv_copy;
+
 	argc = parse_archive_args(argc, argv, &ar, &args, name_hint, remote);
 	if (!startup_info->have_repository) {
 		/*
@@ -762,6 +797,7 @@ int write_archive(int argc, const char **argv, const char *prefix,
 	string_list_clear_func(&args.extra_files, extra_file_info_clear);
 	free(args.refname);
 	clear_pathspec(&args.pathspec);
+	free(argv_copy);
 
 	return rc;
 }

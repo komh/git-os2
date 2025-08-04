@@ -3,7 +3,6 @@
 test_description='checkout'
 
 TEST_CREATE_REPO_NO_TEMPLATE=1
-TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 # Arguments: [!] <branch> <oid> [<checkout options>]
@@ -278,12 +277,12 @@ test_expect_success 'checkout -b to a new branch preserves mergeable changes des
 
 test_expect_success 'checkout -b rejects an invalid start point' '
 	test_must_fail git checkout -b branch4 file1 2>err &&
-	test_i18ngrep "is not a commit" err
+	test_grep "is not a commit" err
 '
 
 test_expect_success 'checkout -b rejects an extra path argument' '
 	test_must_fail git checkout -b branch5 branch1 file1 2>err &&
-	test_i18ngrep "Cannot update paths and switch to branch" err
+	test_grep "Cannot update paths and switch to branch" err
 '
 
 test_done

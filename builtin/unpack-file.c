@@ -1,8 +1,10 @@
+#define USE_THE_REPOSITORY_VARIABLE
 #include "builtin.h"
 #include "config.h"
 #include "hex.h"
+#include "object-file.h"
 #include "object-name.h"
-#include "object-store-ll.h"
+#include "object-store.h"
 
 static char *create_temp_file(struct object_id *oid)
 {
@@ -25,12 +27,19 @@ static char *create_temp_file(struct object_id *oid)
 	return path;
 }
 
-int cmd_unpack_file(int argc, const char **argv, const char *prefix UNUSED)
+static const char usage_msg[] =
+"git unpack-file <blob>";
+
+int cmd_unpack_file(int argc,
+		    const char **argv,
+		    const char *prefix UNUSED,
+		    struct repository *repo UNUSED)
 {
 	struct object_id oid;
 
-	if (argc != 2 || !strcmp(argv[1], "-h"))
-		usage("git unpack-file <blob>");
+	show_usage_if_asked(argc, argv, usage_msg);
+	if (argc != 2)
+		usage(usage_msg);
 	if (repo_get_oid(the_repository, argv[1], &oid))
 		die("Not a valid object name %s", argv[1]);
 

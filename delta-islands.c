@@ -1,18 +1,15 @@
+#define DISABLE_SIGN_COMPARE_WARNINGS
+
 #include "git-compat-util.h"
-#include "attr.h"
 #include "object.h"
-#include "blob.h"
 #include "commit.h"
 #include "gettext.h"
 #include "hex.h"
 #include "tag.h"
 #include "tree.h"
-#include "delta.h"
 #include "pack.h"
 #include "tree-walk.h"
 #include "diff.h"
-#include "revision.h"
-#include "list-objects.h"
 #include "progress.h"
 #include "refs.h"
 #include "khash.h"
@@ -269,7 +266,7 @@ void resolve_tree_islands(struct repository *r,
 	QSORT(todo, nr, tree_depth_compare);
 
 	if (progress)
-		progress_state = start_progress(_("Propagating island marks"), nr);
+		progress_state = start_progress(r, _("Propagating island marks"), nr);
 
 	for (i = 0; i < nr; i++) {
 		struct object_entry *ent = todo[i].entry;
@@ -289,7 +286,7 @@ void resolve_tree_islands(struct repository *r,
 		if (!tree || parse_tree(tree) < 0)
 			die(_("bad tree object %s"), oid_to_hex(&ent->idx.oid));
 
-		init_tree_desc(&desc, tree->buffer, tree->size);
+		init_tree_desc(&desc, &tree->object.oid, tree->buffer, tree->size);
 		while (tree_entry(&desc, &entry)) {
 			struct object *obj;
 
@@ -318,7 +315,7 @@ struct island_load_data {
 	size_t nr;
 	size_t alloc;
 };
-static const char *core_island_name;
+static char *core_island_name;
 
 static void free_config_regexes(struct island_load_data *ild)
 {
@@ -393,7 +390,7 @@ static void add_ref_to_island(kh_str_t *remote_islands, const char *island_name,
 	rl->hash += sha_core;
 }
 
-static int find_island_for_ref(const char *refname, const struct object_id *oid,
+static int find_island_for_ref(const char *refname, const char *referent UNUSED, const struct object_id *oid,
 			       int flags UNUSED, void *cb)
 {
 	struct island_load_data *ild = cb;
@@ -491,9 +488,10 @@ void load_delta_islands(struct repository *r, int progress)
 
 	island_marks = kh_init_oid_map();
 
-	git_config(island_config_callback, &ild);
+	repo_config(r, island_config_callback, &ild);
 	ild.remote_islands = kh_init_str();
-	for_each_ref(find_island_for_ref, &ild);
+	refs_for_each_ref(get_main_ref_store(r),
+			  find_island_for_ref, &ild);
 	free_config_regexes(&ild);
 	deduplicate_islands(ild.remote_islands, r);
 	free_remote_islands(ild.remote_islands);
@@ -502,7 +500,7 @@ void load_delta_islands(struct repository *r, int progress)
 		fprintf(stderr, _("Marked %d islands, done.\n"), island_counter);
 }
 
-void propagate_island_marks(struct commit *commit)
+void propagate_island_marks(struct repository *r, struct commit *commit)
 {
 	khiter_t pos = kh_get_oid_map(island_marks, commit->object.oid);
 
@@ -510,8 +508,8 @@ void propagate_island_marks(struct commit *commit)
 		struct commit_list *p;
 		struct island_bitmap *root_marks = kh_value(island_marks, pos);
 
-		repo_parse_commit(the_repository, commit);
-		set_island_marks(&repo_get_commit_tree(the_repository, commit)->object,
+		repo_parse_commit(r, commit);
+		set_island_marks(&repo_get_commit_tree(r, commit)->object,
 				 root_marks);
 		for (p = commit->parents; p; p = p->next)
 			set_island_marks(&p->item->object, root_marks);

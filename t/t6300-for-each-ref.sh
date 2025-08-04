@@ -20,11 +20,19 @@ setdate_and_increment () {
     export GIT_COMMITTER_DATE GIT_AUTHOR_DATE
 }
 
+test_object_file_size () {
+	oid=$(git rev-parse "$1")
+	path=".git/objects/$(test_oid_to_path $oid)"
+	test_file_size "$path"
+}
+
 test_expect_success setup '
-	test_oid_cache <<-EOF &&
-	disklen sha1:138
-	disklen sha256:154
+	# setup .mailmap
+	cat >.mailmap <<-EOF &&
+	A Thor <athor@example.com> A U Thor <author@example.com>
+	C Mitter <cmitter@example.com> C O Mitter <committer@example.com>
 	EOF
+
 	setdate_and_increment &&
 	echo "Using $datestamp" > one &&
 	git add one &&
@@ -41,25 +49,29 @@ test_expect_success setup '
 	git config push.default current
 '
 
-test_atom() {
+test_atom () {
 	case "$1" in
 		head) ref=refs/heads/main ;;
 		 tag) ref=refs/tags/testtag ;;
 		 sym) ref=refs/heads/sym ;;
 		   *) ref=$1 ;;
 	esac
+	format=$2
+	test_do=test_expect_${4:-success}
+
 	printf '%s\n' "$3" >expected
-	test_expect_${4:-success} $PREREQ "basic atom: $1 $2" "
-		git for-each-ref --format='%($2)' $ref >actual &&
+	$test_do $PREREQ "basic atom: $ref $format" '
+		git for-each-ref --format="%($format)" "$ref" >actual &&
 		sanitize_pgp <actual >actual.clean &&
 		test_cmp expected actual.clean
-	"
+	'
+
 	# Automatically test "contents:size" atom after testing "contents"
-	if test "$2" = "contents"
+	if test "$format" = "contents"
 	then
 		# for commit leg, $3 is changed there
 		expect=$(printf '%s' "$3" | wc -c)
-		test_expect_${4:-success} $PREREQ "basic atom: $1 contents:size" '
+		$test_do $PREREQ "basic atom: $ref contents:size" '
 			type=$(git cat-file -t "$ref") &&
 			case $type in
 			tag)
@@ -83,7 +95,6 @@ test_atom() {
 }
 
 hexlen=$(test_oid hexsz)
-disklen=$(test_oid disklen)
 
 test_atom head refname refs/heads/main
 test_atom head refname: refs/heads/main
@@ -118,7 +129,7 @@ test_atom head push:strip=1 remotes/myfork/main
 test_atom head push:strip=-1 main
 test_atom head objecttype commit
 test_atom head objectsize $((131 + hexlen))
-test_atom head objectsize:disk $disklen
+test_atom head objectsize:disk $(test_object_file_size refs/heads/main)
 test_atom head deltabase $ZERO_OID
 test_atom head objectname $(git rev-parse refs/heads/main)
 test_atom head objectname:short $(git rev-parse --short refs/heads/main)
@@ -141,15 +152,31 @@ test_atom head '*objectname' ''
 test_atom head '*objecttype' ''
 test_atom head author 'A U Thor <author@example.com> 1151968724 +0200'
 test_atom head authorname 'A U Thor'
+test_atom head authorname:mailmap 'A Thor'
 test_atom head authoremail '<author@example.com>'
 test_atom head authoremail:trim 'author@example.com'
 test_atom head authoremail:localpart 'author'
+test_atom head authoremail:trim,localpart 'author'
+test_atom head authoremail:mailmap '<athor@example.com>'
+test_atom head authoremail:mailmap,trim 'athor@example.com'
+test_atom head authoremail:trim,mailmap 'athor@example.com'
+test_atom head authoremail:mailmap,localpart 'athor'
+test_atom head authoremail:localpart,mailmap 'athor'
+test_atom head authoremail:mailmap,trim,localpart,mailmap,trim 'athor'
 test_atom head authordate 'Tue Jul 4 01:18:44 2006 +0200'
 test_atom head committer 'C O Mitter <committer@example.com> 1151968723 +0200'
 test_atom head committername 'C O Mitter'
+test_atom head committername:mailmap 'C Mitter'
 test_atom head committeremail '<committer@example.com>'
 test_atom head committeremail:trim 'committer@example.com'
 test_atom head committeremail:localpart 'committer'
+test_atom head committeremail:localpart,trim 'committer'
+test_atom head committeremail:mailmap '<cmitter@example.com>'
+test_atom head committeremail:mailmap,trim 'cmitter@example.com'
+test_atom head committeremail:trim,mailmap 'cmitter@example.com'
+test_atom head committeremail:mailmap,localpart 'cmitter'
+test_atom head committeremail:localpart,mailmap 'cmitter'
+test_atom head committeremail:trim,mailmap,trim,trim,localpart 'cmitter'
 test_atom head committerdate 'Tue Jul 4 01:18:43 2006 +0200'
 test_atom head tag ''
 test_atom head tagger ''
@@ -176,8 +203,8 @@ test_atom tag upstream ''
 test_atom tag push ''
 test_atom tag objecttype tag
 test_atom tag objectsize $((114 + hexlen))
-test_atom tag objectsize:disk $disklen
-test_atom tag '*objectsize:disk' $disklen
+test_atom tag objectsize:disk $(test_object_file_size refs/tags/testtag)
+test_atom tag '*objectsize:disk' $(test_object_file_size refs/heads/main)
 test_atom tag deltabase $ZERO_OID
 test_atom tag '*deltabase' $ZERO_OID
 test_atom tag objectname $(git rev-parse refs/tags/testtag)
@@ -199,22 +226,46 @@ test_atom tag '*objectname' $(git rev-parse refs/tags/testtag^{})
 test_atom tag '*objecttype' 'commit'
 test_atom tag author ''
 test_atom tag authorname ''
+test_atom tag authorname:mailmap ''
 test_atom tag authoremail ''
 test_atom tag authoremail:trim ''
 test_atom tag authoremail:localpart ''
+test_atom tag authoremail:trim,localpart ''
+test_atom tag authoremail:mailmap ''
+test_atom tag authoremail:mailmap,trim ''
+test_atom tag authoremail:trim,mailmap ''
+test_atom tag authoremail:mailmap,localpart ''
+test_atom tag authoremail:localpart,mailmap ''
+test_atom tag authoremail:mailmap,trim,localpart,mailmap,trim ''
 test_atom tag authordate ''
 test_atom tag committer ''
 test_atom tag committername ''
+test_atom tag committername:mailmap ''
 test_atom tag committeremail ''
 test_atom tag committeremail:trim ''
 test_atom tag committeremail:localpart ''
+test_atom tag committeremail:localpart,trim ''
+test_atom tag committeremail:mailmap ''
+test_atom tag committeremail:mailmap,trim ''
+test_atom tag committeremail:trim,mailmap ''
+test_atom tag committeremail:mailmap,localpart ''
+test_atom tag committeremail:localpart,mailmap ''
+test_atom tag committeremail:trim,mailmap,trim,trim,localpart ''
 test_atom tag committerdate ''
 test_atom tag tag 'testtag'
 test_atom tag tagger 'C O Mitter <committer@example.com> 1151968725 +0200'
 test_atom tag taggername 'C O Mitter'
+test_atom tag taggername:mailmap 'C Mitter'
 test_atom tag taggeremail '<committer@example.com>'
 test_atom tag taggeremail:trim 'committer@example.com'
 test_atom tag taggeremail:localpart 'committer'
+test_atom tag taggeremail:trim,localpart 'committer'
+test_atom tag taggeremail:mailmap '<cmitter@example.com>'
+test_atom tag taggeremail:mailmap,trim 'cmitter@example.com'
+test_atom tag taggeremail:trim,mailmap 'cmitter@example.com'
+test_atom tag taggeremail:mailmap,localpart 'cmitter'
+test_atom tag taggeremail:localpart,mailmap 'cmitter'
+test_atom tag taggeremail:trim,mailmap,trim,localpart,localpart 'cmitter'
 test_atom tag taggerdate 'Tue Jul 4 01:18:45 2006 +0200'
 test_atom tag creator 'C O Mitter <committer@example.com> 1151968725 +0200'
 test_atom tag creatordate 'Tue Jul 4 01:18:45 2006 +0200'
@@ -239,6 +290,13 @@ test_expect_success 'basic atom: refs/tags/testtag *raw' '
 
 test_expect_success 'Check invalid atoms names are errors' '
 	test_must_fail git for-each-ref --format="%(INVALID)" refs/heads
+'
+
+test_expect_success 'for-each-ref does not crash with -h' '
+	test_expect_code 129 git for-each-ref -h >usage &&
+	test_grep "[Uu]sage: git for-each-ref " usage &&
+	test_expect_code 129 nongit git for-each-ref -h >usage &&
+	test_grep "[Uu]sage: git for-each-ref " usage
 '
 
 test_expect_success 'Check format specifiers are ignored in naming date atoms' '
@@ -266,6 +324,66 @@ test_expect_success 'arguments to %(objectname:short=) must be positive integers
 	test_must_fail git for-each-ref --format="%(objectname:short=-1)" &&
 	test_must_fail git for-each-ref --format="%(objectname:short=foo)"
 '
+
+test_bad_atom () {
+	case "$1" in
+	head) ref=refs/heads/main ;;
+	 tag) ref=refs/tags/testtag ;;
+	 sym) ref=refs/heads/sym ;;
+	   *) ref=$1 ;;
+	esac
+	format=$2
+	test_do=test_expect_${4:-success}
+
+	printf '%s\n' "$3" >expect
+	$test_do $PREREQ "err basic atom: $ref $format" '
+		test_must_fail git for-each-ref \
+			--format="%($format)" "$ref" 2>error &&
+		test_cmp expect error
+	'
+}
+
+test_bad_atom head 'authoremail:foo' \
+	'fatal: unrecognized %(authoremail) argument: foo'
+
+test_bad_atom head 'authoremail:mailmap,trim,bar' \
+	'fatal: unrecognized %(authoremail) argument: bar'
+
+test_bad_atom head 'authoremail:trim,' \
+	'fatal: unrecognized %(authoremail) argument: '
+
+test_bad_atom head 'authoremail:mailmaptrim' \
+	'fatal: unrecognized %(authoremail) argument: trim'
+
+test_bad_atom head 'committeremail: ' \
+	'fatal: unrecognized %(committeremail) argument:  '
+
+test_bad_atom head 'committeremail: trim,foo' \
+	'fatal: unrecognized %(committeremail) argument:  trim,foo'
+
+test_bad_atom head 'committeremail:mailmap,localpart ' \
+	'fatal: unrecognized %(committeremail) argument:  '
+
+test_bad_atom head 'committeremail:trim_localpart' \
+	'fatal: unrecognized %(committeremail) argument: _localpart'
+
+test_bad_atom head 'committeremail:localpart,,,trim' \
+	'fatal: unrecognized %(committeremail) argument: ,,trim'
+
+test_bad_atom tag 'taggeremail:mailmap,trim, foo ' \
+	'fatal: unrecognized %(taggeremail) argument:  foo '
+
+test_bad_atom tag 'taggeremail:trim,localpart,' \
+	'fatal: unrecognized %(taggeremail) argument: '
+
+test_bad_atom tag 'taggeremail:mailmap;localpart trim' \
+	'fatal: unrecognized %(taggeremail) argument: ;localpart trim'
+
+test_bad_atom tag 'taggeremail:localpart trim' \
+	'fatal: unrecognized %(taggeremail) argument:  trim'
+
+test_bad_atom tag 'taggeremail:mailmap,mailmap,trim,qux,localpart,trim' \
+	'fatal: unrecognized %(taggeremail) argument: qux,localpart,trim'
 
 test_date () {
 	f=$1 &&
@@ -658,7 +776,7 @@ test_expect_success 'describe:abbrev=... vs describe --abbrev=...' '
 			refs/heads/master >actual &&
 		test_cmp expect actual &&
 
-		# Make sure the hash used is atleast 14 digits long
+		# Make sure the hash used is at least 14 digits long
 		sed -e "s/^.*-g\([0-9a-f]*\)$/\1/" <actual >hexpart &&
 		test 15 -le $(wc -c <hexpart) &&
 
@@ -1017,16 +1135,16 @@ test_expect_success 'Verify sorts with raw' '
 test_expect_success 'Verify sorts with raw:size' '
 	cat >expected <<-EOF &&
 	refs/myblobs/blob8
-	refs/myblobs/first
 	refs/myblobs/blob7
-	refs/heads/main
 	refs/myblobs/blob4
 	refs/myblobs/blob1
 	refs/myblobs/blob2
 	refs/myblobs/blob3
 	refs/myblobs/blob5
 	refs/myblobs/blob6
+	refs/myblobs/first
 	refs/mytrees/first
+	refs/heads/main
 	EOF
 	git for-each-ref --format="%(refname)" --sort=raw:size \
 		refs/heads/main refs/myblobs/ refs/mytrees/first >actual &&
@@ -1098,7 +1216,7 @@ test_expect_success '%(raw) with --tcl must fail' '
 	test_must_fail git for-each-ref --format="%(raw)" --tcl
 '
 
-test_expect_success '%(raw) with --perl' '
+test_expect_success PERL_TEST_HELPERS '%(raw) with --perl' '
 	git for-each-ref --format="\$name= %(raw);
 print \"\$name\"" refs/myblobs/blob1 --perl | perl >actual &&
 	cmp blob1 actual &&
@@ -1136,6 +1254,17 @@ test_expect_success 'for-each-ref --format compare with cat-file --batch' '
 	git for-each-ref --format="%(objectname) %(objecttype) %(objectsize)
 %(raw)" refs/mytrees/first >actual &&
 	test_cmp expected actual
+'
+
+test_expect_success 'verify sorts with contents:size' '
+	cat >expect <<-\EOF &&
+	refs/heads/main
+	refs/heads/newtag
+	refs/heads/ambiguous
+	EOF
+	git for-each-ref --format="%(refname)" \
+		--sort=contents:size refs/heads/ >actual &&
+	test_cmp expect actual
 '
 
 test_expect_success 'set up multiple-sort tags' '
@@ -1213,6 +1342,73 @@ test_expect_success '--no-sort cancels the previous sort keys' '
 	test_cmp expected actual
 '
 
+test_expect_success '--no-sort without subsequent --sort prints expected refs' '
+	cat >expected <<-\EOF &&
+	refs/tags/multi-ref1-100000-user1
+	refs/tags/multi-ref1-100000-user2
+	refs/tags/multi-ref1-200000-user1
+	refs/tags/multi-ref1-200000-user2
+	refs/tags/multi-ref2-100000-user1
+	refs/tags/multi-ref2-100000-user2
+	refs/tags/multi-ref2-200000-user1
+	refs/tags/multi-ref2-200000-user2
+	EOF
+
+	# Sort the results with `sort` for a consistent comparison against
+	# expected
+	git for-each-ref \
+		--format="%(refname)" \
+		--no-sort \
+		"refs/tags/multi-*" | sort >actual &&
+	test_cmp expected actual
+'
+
+test_expect_success 'set up custom date sorting' '
+	# Dates:
+	# - Wed Feb 07 2024 21:34:20 +0000
+	# - Tue Dec 14 1999 00:05:22 +0000
+	# - Fri Jun 04 2021 11:26:51 +0000
+	# - Mon Jan 22 2007 16:44:01 GMT+0000
+	i=1 &&
+	for when in 1707341660 945129922 1622806011 1169484241
+	do
+		GIT_COMMITTER_DATE="@$when +0000" \
+		GIT_COMMITTER_EMAIL="user@example.com" \
+		git tag -m "tag $when" custom-dates-$i &&
+		i=$(($i+1)) || return 1
+	done
+'
+
+test_expect_success 'sort by date defaults to full timestamp' '
+	cat >expected <<-\EOF &&
+	945129922 refs/tags/custom-dates-2
+	1169484241 refs/tags/custom-dates-4
+	1622806011 refs/tags/custom-dates-3
+	1707341660 refs/tags/custom-dates-1
+	EOF
+
+	git for-each-ref \
+		--format="%(creatordate:unix) %(refname)" \
+		--sort=creatordate \
+		"refs/tags/custom-dates-*" >actual &&
+	test_cmp expected actual
+'
+
+test_expect_success 'sort by custom date format' '
+	cat >expected <<-\EOF &&
+	00:05:22 refs/tags/custom-dates-2
+	11:26:51 refs/tags/custom-dates-3
+	16:44:01 refs/tags/custom-dates-4
+	21:34:20 refs/tags/custom-dates-1
+	EOF
+
+	git for-each-ref \
+		--format="%(creatordate:format:%H:%M:%S) %(refname)" \
+		--sort="creatordate:format:%H:%M:%S" \
+		"refs/tags/custom-dates-*" >actual &&
+	test_cmp expected actual
+'
+
 test_expect_success 'do not dereference NULL upon %(HEAD) on unborn branch' '
 	test_when_finished "git checkout main" &&
 	git for-each-ref --format="%(HEAD) %(refname:short)" refs/heads/ >actual &&
@@ -1247,9 +1443,14 @@ test_expect_success 'set up trailers for next test' '
 '
 
 test_trailer_option () {
+	if test "$#" -eq 3
+	then
+		prereq="$1"
+		shift
+	fi &&
 	title=$1 option=$2
 	cat >expect
-	test_expect_success "$title" '
+	test_expect_success $prereq "$title" '
 		git for-each-ref --format="%($option)" refs/heads/main >actual &&
 		test_cmp expect actual &&
 		git for-each-ref --format="%(contents:$option)" refs/heads/main >actual &&
@@ -1257,7 +1458,7 @@ test_trailer_option () {
 	'
 }
 
-test_trailer_option '%(trailers:unfold) unfolds trailers' \
+test_trailer_option PERL_TEST_HELPERS '%(trailers:unfold) unfolds trailers' \
 	'trailers:unfold' <<-EOF
 	$(unfold <trailers)
 
@@ -1287,13 +1488,13 @@ test_trailer_option '%(trailers:only=no) shows all trailers' \
 
 	EOF
 
-test_trailer_option '%(trailers:only) and %(trailers:unfold) work together' \
+test_trailer_option PERL_TEST_HELPERS '%(trailers:only) and %(trailers:unfold) work together' \
 	'trailers:only,unfold' <<-EOF
 	$(grep -v patch.description <trailers | unfold)
 
 	EOF
 
-test_trailer_option '%(trailers:unfold) and %(trailers:only) work together' \
+test_trailer_option PERL_TEST_HELPERS '%(trailers:unfold) and %(trailers:only) work together' \
 	'trailers:unfold,only' <<-EOF
 	$(grep -v patch.description <trailers | unfold)
 
@@ -1370,6 +1571,25 @@ test_trailer_option '%(trailers:separator,key_value_separator) changes both sepa
 	'trailers:separator=%x2C,key_value_separator=%x2C,key=Reviewed-by,key=Signed-off-by:' <<-EOF
 	Reviewed-by,A U Thor <author@example.com>,Signed-off-by,A U Thor <author@example.com>
 	EOF
+
+test_expect_success 'multiple %(trailers) use their own options' '
+	git tag -F - tag-with-trailers <<-\EOF &&
+	body
+
+	one: foo
+	one: bar
+	two: baz
+	two: qux
+	EOF
+	t1="%(trailers:key=one,key_value_separator=W,separator=X)" &&
+	t2="%(trailers:key=two,key_value_separator=Y,separator=Z)" &&
+	git for-each-ref --format="$t1%0a$t2" refs/tags/tag-with-trailers >actual &&
+	cat >expect <<-\EOF &&
+	oneWfooXoneWbar
+	twoYbazZtwoYqux
+	EOF
+	test_cmp expect actual
+'
 
 test_failing_trailer_option () {
 	title=$1 option=$2
@@ -1646,6 +1866,24 @@ sig_crlf="$(printf "%s" "$sig" | append_cr; echo dummy)"
 sig_crlf=${sig_crlf%dummy}
 test_atom refs/tags/fake-sig-crlf contents:signature "$sig_crlf"
 
+test_expect_success 'set up tag with signature and trailers' '
+	git tag -F - fake-sig-trailer <<-\EOF
+	this is the subject
+
+	this is the body
+
+	My-Trailer: foo
+	-----BEGIN PGP SIGNATURE-----
+
+	not a real signature, but we just care about the
+	subject/body/trailer parsing.
+	-----END PGP SIGNATURE-----
+	EOF
+'
+
+# use "separator=" here to suppress the terminating newline
+test_atom refs/tags/fake-sig-trailer trailers:separator= 'My-Trailer: foo'
+
 test_expect_success 'git for-each-ref --stdin: empty' '
 	>in &&
 	git for-each-ref --format="%(refname)" --stdin <in >actual &&
@@ -1694,6 +1932,37 @@ test_expect_success 'git for-each-ref with non-existing refs' '
 
 	xargs git for-each-ref --format="%(refname)" <in >actual &&
 	test_must_be_empty actual
+'
+
+test_expect_success 'git for-each-ref with nested tags' '
+	git tag -am "Normal tag" nested/base HEAD &&
+	git tag -am "Nested tag" nested/nest1 refs/tags/nested/base &&
+	git tag -am "Double nested tag" nested/nest2 refs/tags/nested/nest1 &&
+
+	head_oid="$(git rev-parse HEAD)" &&
+	base_tag_oid="$(git rev-parse refs/tags/nested/base)" &&
+	nest1_tag_oid="$(git rev-parse refs/tags/nested/nest1)" &&
+	nest2_tag_oid="$(git rev-parse refs/tags/nested/nest2)" &&
+
+	cat >expect <<-EOF &&
+	refs/tags/nested/base $base_tag_oid tag $head_oid commit
+	refs/tags/nested/nest1 $nest1_tag_oid tag $head_oid commit
+	refs/tags/nested/nest2 $nest2_tag_oid tag $head_oid commit
+	EOF
+
+	git for-each-ref \
+		--format="%(refname) %(objectname) %(objecttype) %(*objectname) %(*objecttype)" \
+		refs/tags/nested/ >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'is-base atom with non-commits' '
+	git for-each-ref --format="%(is-base:HEAD) %(refname)" >out 2>err &&
+	grep "(HEAD) refs/heads/main" out &&
+
+	test_line_count = 2 err &&
+	grep "error: object .* is a commit, not a blob" err &&
+	grep "error: bad tag pointer to" err
 '
 
 GRADE_FORMAT="%(signature:grade)%0a%(signature:key)%0a%(signature:signer)%0a%(signature:fingerprint)%0a%(signature:primarykeyfingerprint)"
@@ -1763,10 +2032,7 @@ test_expect_success GPGSSH 'setup for signature atom using ssh' '
 '
 
 test_expect_success GPG2 'bare signature atom' '
-	git verify-commit first-signed 2>out.raw &&
-	grep -Ev "checking the trustdb|PGP trust model" out.raw >out &&
-	head -3 out >expect &&
-	tail -1 out >>expect &&
+	git verify-commit first-signed 2>expect &&
 	echo  >>expect &&
 	git for-each-ref refs/tags/first-signed \
 		--format="%(signature)" >actual &&
@@ -1786,8 +2052,7 @@ test_expect_success GPG 'show good signature with custom format' '
 		--format="$GRADE_FORMAT" >actual &&
 	test_cmp expect actual
 '
-test_expect_success GPGSSH 'show good signature with custom format
-			    with ssh' '
+test_expect_success GPGSSH 'show good signature with custom format with ssh' '
 	test_config gpg.ssh.allowedSignersFile "${GPGSSH_ALLOWED_SIGNERS}" &&
 	FINGERPRINT=$(ssh-keygen -lf "${GPGSSH_KEY_PRIMARY}" | awk "{print \$2;}") &&
 	cat >expect.tmpl <<-\EOF &&
