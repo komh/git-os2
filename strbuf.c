@@ -7,6 +7,9 @@
 #include "string-list.h"
 #include "utf8.h"
 #include "date.h"
+#ifdef __OS2__
+#include <io.h>
+#endif
 
 int starts_with(const char *str, const char *prefix)
 {

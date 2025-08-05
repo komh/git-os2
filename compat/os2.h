@@ -1,25 +1,9 @@
 #include "os2-posix.h"
 
-extern struct passwd * wrapped_getpwuid_for_klibc (uid_t);
-extern int wrapped_unlink_for_dosish_system (const char *);
-extern char * wrapped_getenv_for_os2 (const char *);
-
-extern int wrapped_poll_for_os2 (struct pollfd *, nfds_t, int);
-extern int wrapped_pipe_for_os2 (int *);
-
-extern int wrapped_execl_for_os2 (const char *, const char *, ...);
-extern int wrapped_execlp_for_os2 (const char *, const char *, ...);
-extern int wrapped_execv_for_os2 (const char *, char **);
-extern int wrapped_execvp_for_os2 (const char *, char **);
-
-extern const char *git_os2_runtime_prefix (void);
 extern const char *git_os2_default_template_dir (void);
 extern const char *git_os2_default_html_path (void);
 extern const char *git_os2_default_info_path (void);
 extern const char *git_os2_default_man_path (void);
-
-extern ssize_t git_os2_read (int, void *, size_t);
-extern ssize_t git_os2_write (int, const void *, size_t);
 
 #undef DEFAULT_GIT_TEMPLATE_DIR
 #define DEFAULT_GIT_TEMPLATE_DIR (git_os2_default_template_dir ())
