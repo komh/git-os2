@@ -118,7 +118,7 @@
 #include <poll.h>
 #elif !defined(NO_SYS_POLL_H)
 #include <sys/poll.h>
-#else
+#elif !defined(__OS2__)
 /* Pull the compat stuff */
 #include <poll.h>
 #endif
@@ -131,6 +131,9 @@
 #elif defined(_MSC_VER)
 #include "msvc-posix.h"
 #else
+#if defined(__OS2__)
+#include "os2-posix.h"
+#endif
 #include <sys/utsname.h>
 #include <sys/wait.h>
 #include <sys/resource.h>
