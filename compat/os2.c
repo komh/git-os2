@@ -1649,7 +1649,7 @@ static int fromutf8(char *out, int outsize, const char *in)
 {
 	static iconv_t cd = (iconv_t)-1;
 
-	const char *inbuf = in;
+	char *inbuf = (char *)in;
 	size_t inleft = strlen(inbuf) + 1;
 	char *outbuf = out;
 	size_t outleft = outsize;
@@ -1691,7 +1691,7 @@ static int toutf8(char *out, int outsize, const char *in)
 {
 	static iconv_t cd = (iconv_t)-1;
 
-	const char *inbuf = in;
+	char *inbuf = (char *)in;
 	size_t inleft = strlen(inbuf) + 1;
 	char *outbuf = out;
 	size_t outleft = outsize;
