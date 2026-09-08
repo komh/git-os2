@@ -2400,9 +2400,9 @@ char *getenv(const char *uname)
 	return uvalue;
 }
 
-int _std_putenv(const char *);
+int _std_putenv(char *);
 
-int putenv(const char *ustr)
+int putenv(char *ustr)
 {
 	char *str;
 
