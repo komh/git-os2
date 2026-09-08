@@ -2829,9 +2829,18 @@ int finish_http_object_request(struct http_object_request *freq)
 void abort_http_object_request(struct http_object_request **freq_p)
 {
 	struct http_object_request *freq = *freq_p;
+#ifndef __OS2__
 	unlink_or_warn(freq->tmpfile.buf);
+#else
+	struct strbuf tmpfile = STRBUF_INIT;
+	strbuf_addbuf(&tmpfile, &freq->tmpfile);
+#endif
 
 	release_http_object_request(freq_p);
+#ifdef __OS2__
+	unlink_or_warn(tmpfile.buf);
+	strbuf_release(&tmpfile);
+#endif
 }
 
 void release_http_object_request(struct http_object_request **freq_p)
